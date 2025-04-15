@@ -1,0 +1,20 @@
+security: {SANITIZE_INPUT: true, RATE_LIMIT: 20, API_TIMEOUT: 30, CACHE_ENABLED: true}
+retrieval: {COLLECTION_NAME: industrial_tech, K_VALUE: 6, SCORE_THRESHOLD: 0.6, LAMBDA_MULT: 0.6,
+  SEARCH_TYPE: mmr, DOMAIN_SIMILARITY_THRESHOLD: 0.65, SPARSE_RELEVANCE_THRESHOLD: 0.15,
+  FUSED_RELEVANCE_THRESHOLD: 0.45, SEMANTIC_WEIGHT: 0.7, SPARSE_WEIGHT: 0.3, PERFORM_DOMAIN_CHECK: true}
+model: {LLM_TEMPERATURE: 0.6, MAX_TOKENS: 1024, OLLAMA_MODEL: deepseek-r1, EMBEDDING_MODEL: nomic-embed-text,
+  TOP_P: 0.9, FREQUENCY_PENALTY: 0.1, SYSTEM_MESSAGE: You are a helpful AI assistant
+    for industrial automation. Use the provided context and conversation history to
+    answer accurately and clearly. Provide sufficient detail but remain focused on
+    the question., EXTERNAL_API_PROVIDER: deepseek, EXTERNAL_API_MODEL_NAME: null}
+document:
+  CHUNK_SIZE: 345
+  CHUNK_OVERLAP: 56
+  FILE_TYPES: [pdf, txt, csv, docx, md]
+  PARSE_TABLES: true
+  GENERATE_SUMMARY: false
+paths: {DOCUMENT_DIR: ./data, DOMAIN_CENTROID_PATH: ./domain_centroid.npy}
+env:
+  DOMAIN_KEYWORDS: []
+  AUTO_DOMAIN_KEYWORDS: []
+  USER_ADDED_KEYWORDS: [Emerson, competitors, SLB, VSD]

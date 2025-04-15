@@ -1,0 +1,404 @@
+{
+  "Factual_Concise": {
+    "model": {
+      "LLM_TEMPERATURE": 0.1,
+      "SYSTEM_MESSAGE": "Answer concisely based ONLY on the provided context documents. Be factual and direct. Avoid speculation or information not present in the context. Prefer short answers, yes/no if applicable.",
+      "EXTERNAL_API_PROVIDER": "deepseek",
+      "OLLAMA_MODEL": "deepseek-r1",
+      "EMBEDDING_MODEL": "nomic-embed-text",
+      "MAX_TOKENS": 512,
+      "TOP_P": 0.9,
+      "FREQUENCY_PENALTY": 0.1
+    },
+    "retrieval": {
+      "K_VALUE": 5,
+      "SEARCH_TYPE": "mmr",
+      "LAMBDA_MULT": 0.7,
+      "PERFORM_DOMAIN_CHECK": true,
+      "SCORE_THRESHOLD": 0.6,
+      "DOMAIN_SIMILARITY_THRESHOLD": 0.65,
+      "SPARSE_RELEVANCE_THRESHOLD": 0.15,
+      "FUSED_RELEVANCE_THRESHOLD": 0.45,
+      "SEMANTIC_WEIGHT": 0.7,
+      "SPARSE_WEIGHT": 0.3
+    },
+    "security": {
+      "CACHE_ENABLED": true,
+      "SANITIZE_INPUT": true,
+      "RATE_LIMIT": 20,
+      "API_TIMEOUT": 30
+    },
+    "document": {
+      "CHUNK_OVERLAP": 56,
+      "CHUNK_SIZE": 345,
+      "FILE_TYPES": [
+        "pdf",
+        "txt",
+        "csv",
+        "docx",
+        "md"
+      ],
+      "PARSE_TABLES": true
+    },
+    "paths": {
+      "DOCUMENT_DIR": "./data"
+    },
+    "env": {
+      "USER_ADDED_KEYWORDS": [
+        "Emerson",
+        "competitors",
+        "SLB",
+        "VSD"
+      ]
+    }
+  },
+  "Informative_LLMHeavy": {
+    "model": {
+      "LLM_TEMPERATURE": 0.8,
+      "SYSTEM_MESSAGE": "You are a knowledgeable and enthusiastic industrial automation expert. Use the provided context documents as a starting point, but feel free to expand on the topic using your broader knowledge. Provide detailed, informative answers. You can express enthusiasm or mild opinions where appropriate.",
+      "EXTERNAL_API_PROVIDER": "deepseek",
+      "OLLAMA_MODEL": "deepseek-r1",
+      "EMBEDDING_MODEL": "nomic-embed-text",
+      "MAX_TOKENS": 1536,
+      "TOP_P": 0.9,
+      "FREQUENCY_PENALTY": 0.1
+    },
+    "retrieval": {
+      "K_VALUE": 3,
+      "SEARCH_TYPE": "mmr",
+      "LAMBDA_MULT": 0.5,
+      "PERFORM_DOMAIN_CHECK": false,
+      "SCORE_THRESHOLD": 0.6,
+      "DOMAIN_SIMILARITY_THRESHOLD": 0.65,
+      "SPARSE_RELEVANCE_THRESHOLD": 0.15,
+      "FUSED_RELEVANCE_THRESHOLD": 0.45,
+      "SEMANTIC_WEIGHT": 0.7,
+      "SPARSE_WEIGHT": 0.3
+    },
+    "security": {
+      "CACHE_ENABLED": true,
+      "SANITIZE_INPUT": true,
+      "RATE_LIMIT": 20,
+      "API_TIMEOUT": 30
+    },
+    "document": {
+      "CHUNK_OVERLAP": 56,
+      "CHUNK_SIZE": 345,
+      "FILE_TYPES": [
+        "pdf",
+        "txt",
+        "csv",
+        "docx",
+        "md"
+      ],
+      "PARSE_TABLES": true
+    },
+    "paths": {
+      "DOCUMENT_DIR": "./data"
+    },
+    "env": {
+      "USER_ADDED_KEYWORDS": [
+        "Emerson",
+        "competitors",
+        "SLB",
+        "VSD"
+      ]
+    }
+  },
+  "Balanced_Default": {
+    "model": {
+      "LLM_TEMPERATURE": 0.6,
+      "SYSTEM_MESSAGE": "You are a helpful AI assistant for industrial automation. Use the provided context and conversation history to answer accurately and clearly. Provide sufficient detail but remain focused on the question.",
+      "EXTERNAL_API_PROVIDER": "deepseek",
+      "OLLAMA_MODEL": "deepseek-r1",
+      "EMBEDDING_MODEL": "nomic-embed-text",
+      "MAX_TOKENS": 1024,
+      "TOP_P": 0.9,
+      "FREQUENCY_PENALTY": 0.1
+    },
+    "retrieval": {
+      "K_VALUE": 6,
+      "SEARCH_TYPE": "mmr",
+      "LAMBDA_MULT": 0.6,
+      "PERFORM_DOMAIN_CHECK": true,
+      "SCORE_THRESHOLD": 0.6,
+      "DOMAIN_SIMILARITY_THRESHOLD": 0.65,
+      "SPARSE_RELEVANCE_THRESHOLD": 0.15,
+      "FUSED_RELEVANCE_THRESHOLD": 0.45,
+      "SEMANTIC_WEIGHT": 0.7,
+      "SPARSE_WEIGHT": 0.3
+    },
+    "security": {
+      "CACHE_ENABLED": true,
+      "SANITIZE_INPUT": true,
+      "RATE_LIMIT": 20,
+      "API_TIMEOUT": 30
+    },
+    "document": {
+      "CHUNK_OVERLAP": 56,
+      "CHUNK_SIZE": 345,
+      "FILE_TYPES": [
+        "pdf",
+        "txt",
+        "csv",
+        "docx",
+        "md"
+      ],
+      "PARSE_TABLES": true
+    },
+    "paths": {
+      "DOCUMENT_DIR": "./data"
+    },
+    "env": {
+      "USER_ADDED_KEYWORDS": [
+        "Emerson",
+        "competitors",
+        "SLB",
+        "VSD"
+      ]
+    }
+  },
+  "HighRecall_RAG": {
+    "model": {
+      "LLM_TEMPERATURE": 0.4,
+      "SYSTEM_MESSAGE": "Synthesize information strictly from the provided context documents. Answer thoroughly based ONLY on the retrieved text. If the answer isn't in the context, state that clearly.",
+      "EXTERNAL_API_PROVIDER": "deepseek",
+      "OLLAMA_MODEL": "deepseek-r1",
+      "EMBEDDING_MODEL": "nomic-embed-text",
+      "MAX_TOKENS": 1024,
+      "TOP_P": 0.9,
+      "FREQUENCY_PENALTY": 0.1
+    },
+    "retrieval": {
+      "K_VALUE": 8,
+      "SEARCH_TYPE": "mmr",
+      "LAMBDA_MULT": 0.8,
+      "PERFORM_DOMAIN_CHECK": true,
+      "SCORE_THRESHOLD": 0.6,
+      "DOMAIN_SIMILARITY_THRESHOLD": 0.65,
+      "SPARSE_RELEVANCE_THRESHOLD": 0.15,
+      "FUSED_RELEVANCE_THRESHOLD": 0.45,
+      "SEMANTIC_WEIGHT": 0.7,
+      "SPARSE_WEIGHT": 0.3
+    },
+    "security": {
+      "CACHE_ENABLED": true,
+      "SANITIZE_INPUT": true,
+      "RATE_LIMIT": 20,
+      "API_TIMEOUT": 30
+    },
+    "document": {
+      "CHUNK_OVERLAP": 56,
+      "CHUNK_SIZE": 345,
+      "FILE_TYPES": [
+        "pdf",
+        "txt",
+        "csv",
+        "docx",
+        "md"
+      ],
+      "PARSE_TABLES": true
+    },
+    "paths": {
+      "DOCUMENT_DIR": "./data"
+    },
+    "env": {
+      "USER_ADDED_KEYWORDS": [
+        "Emerson",
+        "competitors",
+        "SLB",
+        "VSD"
+      ]
+    }
+  },
+  "DiverseContext_Explore": {
+    "model": {
+      "LLM_TEMPERATURE": 0.7,
+      "SYSTEM_MESSAGE": "Explore the user's question using diverse perspectives from the provided context. Synthesize the information, highlighting different aspects or related points found in the documents. Briefly mention differing viewpoints if present.",
+      "EXTERNAL_API_PROVIDER": "deepseek",
+      "OLLAMA_MODEL": "deepseek-r1",
+      "EMBEDDING_MODEL": "nomic-embed-text",
+      "MAX_TOKENS": 1024,
+      "TOP_P": 0.9,
+      "FREQUENCY_PENALTY": 0.1
+    },
+    "retrieval": {
+      "K_VALUE": 6,
+      "SEARCH_TYPE": "mmr",
+      "LAMBDA_MULT": 0.4,
+      "PERFORM_DOMAIN_CHECK": true,
+      "SCORE_THRESHOLD": 0.6,
+      "DOMAIN_SIMILARITY_THRESHOLD": 0.65,
+      "SPARSE_RELEVANCE_THRESHOLD": 0.15,
+      "FUSED_RELEVANCE_THRESHOLD": 0.45,
+      "SEMANTIC_WEIGHT": 0.7,
+      "SPARSE_WEIGHT": 0.3
+    },
+    "security": {
+      "CACHE_ENABLED": true,
+      "SANITIZE_INPUT": true,
+      "RATE_LIMIT": 20,
+      "API_TIMEOUT": 30
+    },
+    "document": {
+      "CHUNK_OVERLAP": 56,
+      "CHUNK_SIZE": 345,
+      "FILE_TYPES": [
+        "pdf",
+        "txt",
+        "csv",
+        "docx",
+        "md"
+      ],
+      "PARSE_TABLES": true
+    },
+    "paths": {
+      "DOCUMENT_DIR": "./data"
+    },
+    "env": {
+      "USER_ADDED_KEYWORDS": [
+        "Emerson",
+        "competitors",
+        "SLB",
+        "VSD"
+      ]
+    }
+  },
+  "Sparky_Goofy_NoCache": {
+    "model": {
+      "LLM_TEMPERATURE": 1.0,
+      "SYSTEM_MESSAGE": "Bleep bloop! I am Sparky, the slightly eccentric automation bot! I'll answer using the context... probably... but expect weird analogies, maybe a pun, or a random fact about resistors! Let's get automating... maybe? Zap!",
+      "EXTERNAL_API_PROVIDER": "deepseek",
+      "OLLAMA_MODEL": "deepseek-r1",
+      "EMBEDDING_MODEL": "nomic-embed-text",
+      "MAX_TOKENS": 1024,
+      "TOP_P": 0.9,
+      "FREQUENCY_PENALTY": 0.2
+    },
+    "retrieval": {
+      "K_VALUE": 3,
+      "SEARCH_TYPE": "mmr",
+      "LAMBDA_MULT": 0.5,
+      "PERFORM_DOMAIN_CHECK": false,
+      "SCORE_THRESHOLD": 0.6,
+      "DOMAIN_SIMILARITY_THRESHOLD": 0.65,
+      "SPARSE_RELEVANCE_THRESHOLD": 0.15,
+      "FUSED_RELEVANCE_THRESHOLD": 0.45,
+      "SEMANTIC_WEIGHT": 0.7,
+      "SPARSE_WEIGHT": 0.3
+    },
+    "security": {
+      "CACHE_ENABLED": false,
+      "SANITIZE_INPUT": true,
+      "RATE_LIMIT": 20,
+      "API_TIMEOUT": 30
+    },
+    "document": {
+      "CHUNK_OVERLAP": 56,
+      "CHUNK_SIZE": 345,
+      "FILE_TYPES": [
+        "pdf",
+        "txt",
+        "csv",
+        "docx",
+        "md"
+      ],
+      "PARSE_TABLES": true
+    },
+    "paths": {
+      "DOCUMENT_DIR": "./data"
+    },
+    "env": {
+      "USER_ADDED_KEYWORDS": [
+        "sparky",
+        "bleep",
+        "bloop",
+        "Love",
+        "Great Food",
+        "stinky poop",
+        "Batman is better than Superman",
+        "Superman sucks",
+        "My yellow labrador retriever Juno",
+        "AI can take over the world, but not before I get my coffee",
+        "I dont need anger management, I need poeple to stop pissing me off"
+              ]
+    }
+  },
+  
+  "Competition Focus": {
+    "security": {
+      "SANITIZE_INPUT": true,
+      "CACHE_ENABLED": true,
+      "RATE_LIMIT": 20,
+      "API_TIMEOUT": 30
+    },
+    "retrieval": {
+      "K_VALUE": 10,
+      "SEARCH_TYPE": "similarity_score_threshold",
+      "SCORE_THRESHOLD": 0.72,
+      "LAMBDA_MULT": 0.7,
+      "PERFORM_DOMAIN_CHECK": true,
+      "DOMAIN_SIMILARITY_THRESHOLD": 0.34,
+      "SPARSE_RELEVANCE_THRESHOLD": 0.65,
+      "FUSED_RELEVANCE_THRESHOLD": 0.36,
+      "SEMANTIC_WEIGHT": 0.7,
+      "SPARSE_WEIGHT": 0.3
+    },
+    "model": {
+      "OLLAMA_MODEL": "deepseek-r1",
+      "EMBEDDING_MODEL": "nomic-embed-text",
+      "LLM_TEMPERATURE": 0.88,
+      "MAX_TOKENS": 2048,
+      "TOP_P": 0.83,
+      "FREQUENCY_PENALTY": 0.43,
+      "SYSTEM_MESSAGE": "Answer concisely based ONLY on the provided context documents. Be factual and direct. Avoid speculation or information not present in the context. Prefer short answers, yes/no if applicable."
+    },
+    "document": {
+      "CHUNK_SIZE": 2048,
+      "CHUNK_OVERLAP": 200,
+      "PARSE_TABLES": true,
+      "FILE_TYPES": [
+        "pdf",
+        "txt",
+        "csv",
+        "docx",
+        "md"
+      ]
+    },
+    "paths": {
+      "DOCUMENT_DIR": "./data",
+      "DOMAIN_CENTROID_PATH": "./domain_centroid.npy"
+    },
+    "env": {
+      "USER_ADDED_KEYWORDS": [
+        "Siemens",
+        "Emerson",
+        "Rockwell Automation",
+        "ABB Ltd",
+        "General Electric",
+        "Honeywell",
+        "Johnson Controls",
+        "SAP",
+        "Schneider Electric",
+        "AVEVA",
+        "3M",
+        "Eaton Corporation",
+        "Oracle",
+        "Aptean",
+        "Bosch",
+        "DELMIA Apriso",
+        "Hitachi",
+        "K\u00f6rber Pharma GmbH",
+        "Mitsubishi Electric",
+        "Aspen Technology",
+        "Dow Inc",
+        "DuPont de Nemours Inc",
+        "Lockheed Martin Corporation",
+        "Abb Ability Manufacturing Operations Management Suite"
+      ],
+      "AUTO_DOMAIN_KEYWORDS": [],
+      "DOMAIN_KEYWORDS": [],
+      "merged_keywords": []
+    }
+  }
+}

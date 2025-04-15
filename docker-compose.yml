@@ -1,0 +1,28 @@
+services:
+  weaviate:
+    image: semitechnologies/weaviate:1.28.12 # Pinned version
+    container_name: weaviate
+    environment:
+      # --- Keep Essential ---
+      CLUSTER_JOIN: ""
+      CLUSTER_HOSTNAME: "weaviate"
+      PERSISTENCE_DATA_PATH: "/var/lib/weaviate"
+      ENABLE_MODULES: "text2vec-ollama"
+      DEFAULT_VECTORIZER_MODULE: "text2vec-ollama"
+      OLLAMA_API_ENDPOINT: "http://host.docker.internal:11434"
+      LIMIT_RESOURCES: "true"
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
+      # --- REMOVED ---
+      # QUERY_DEFAULTS: local
+      # WEAVIATE_HOST: 0.0.0.0
+      # WEAVIATE_PORT: 8080
+      # GRPC_ENABLED: "true"
+      # GRPC_PORT: "50051"
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+
+volumes:
+  weaviate_data:
