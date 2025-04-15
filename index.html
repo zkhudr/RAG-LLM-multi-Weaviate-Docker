@@ -1,0 +1,1341 @@
+<!DOCTYPE html>
+<html lang="en">
+   <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>RAG Control Center</title>
+      <!-- Tailwind CSS via CDN -->
+      <script src="https://cdn.tailwindcss.com?plugins=forms"></script>
+      <!-- Custom Styles for Apple-like feel -->
+      <style>
+         /* Apply a system font stack prioritizing Apple's fonts */
+         body {
+         font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+         background-color: #c94848;
+         /* Cooler background: slate-100 */
+         color: #334155;
+         /* Default text: slate-700 */
+         -webkit-font-smoothing: antialiased;
+         -moz-osx-font-smoothing: grayscale;
+         }
+         /* Style for collapsible sections */
+         [x-cloak] {
+         display: none !important;
+         }
+         /* Toast Notification Styling (Subtle) */
+         .toast {
+         position: fixed;
+         bottom: 1.5rem;
+         right: 1.5rem;
+         background-color: rgba(61, 115, 209, 0.9);
+         color: #275b8f;
+         padding: 0.75rem 1.25rem;
+         border-radius: 0.5rem;
+         box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+         z-index: 50;
+         opacity: 0;
+         transform: translateY(10px);
+         transition: opacity 0.3s ease-out, transform 0.3s ease-out;
+         }
+         .toast.show {
+         opacity: 1;
+         transform: translateY(0);
+         }
+         /* Slightly softer focus rings */
+         *:focus-visible {
+         outline: 2px solid #2b5e9b;
+         outline-offset: 2px;
+         }
+         /* Custom scrollbar styling (optional, subtle) */
+         ::-webkit-scrollbar {
+         width: 6px;
+         height: 6px;
+         }
+         ::-webkit-scrollbar-track {
+         background: #28292b;
+         border-radius: 3px;
+         }
+         ::-webkit-scrollbar-thumb {
+         background: #486b9c;
+         border-radius: 3px;
+         }
+         ::-webkit-scrollbar-thumb:hover {
+         background: #64748b;
+         }
+      </style>
+      <style>
+         .draggable-card {
+         cursor: move;
+         transition: transform 0.2s, box-shadow 0.2s;
+         }
+         .draggable-card.dragging {
+         opacity: 0.5;
+         transform: scale(0.98);
+         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+         }
+         .drop-target {
+         border: 2px dashed #3b82f6;
+         background-color: rgba(59, 130, 246, 0.05);
+         }
+      </style>
+      <script src="https://cdn.jsdelivr.net/npm/@babel/standalone/babel.min.js"></script>
+      <script>
+         function ragApp() {
+           return {
+             // === Drag & Drop State & Handlers ===
+             dragState: {
+               draggedElement: null,
+               sourceColumn: null,
+               lastDragTarget: null
+             },
+             handleDragStart(event) {
+               this.dragState.draggedElement = event.target.closest('.draggable-card');
+               this.dragState.sourceColumn = event.target.closest('[data-column]');
+               event.target.classList.add('dragging');
+               event.dataTransfer.setData('text/plain', ''); // Required for Firefox
+             },
+             handleDragEnd(event) {
+               event.target.classList.remove('dragging');
+               this.dragState.draggedElement = null;
+               this.dragState.sourceColumn = null;
+               document.querySelectorAll('.drop-target').forEach(el => el.classList.remove('drop-target'));
+             },
+             handleDragOver(event) {
+               const rect = event.currentTarget.getBoundingClientRect();
+               const isInLeftHalf = event.clientX < rect.left + (rect.width / 2);
+               const columns = Array.from(event.currentTarget.children);
+               columns.forEach(column => column.classList.remove('drop-target'));
+               const targetColumn = isInLeftHalf ? columns[0] : columns[1];
+               targetColumn.classList.add('drop-target');
+             },
+             handleDrop(event) {
+               const targetColumn = event.currentTarget.querySelector('.drop-target');
+               if (targetColumn && this.dragState.draggedElement) {
+                 targetColumn.appendChild(this.dragState.draggedElement);
+               }
+               targetColumn.classList.remove('drop-target');
+             },
+             handleColumnDragOver(event) {
+               const cards = Array.from(event.currentTarget.children)
+               .filter(el => el.classList.contains('draggable-card'));
+               const closest = cards.reduce((closest, card) => {
+                 const box = card.getBoundingClientRect();
+                 const offset = event.clientY - box.top - box.height / 2;
+                 if (offset < 0 && offset > closest.offset) {
+                   return { offset, element: card };
+                 }
+                 return closest;
+               }, { offset: Number.NEGATIVE_INFINITY });
+               const closestCard = closest.element;
+               if (closestCard && closestCard !== this.dragState.lastDragTarget) {
+                 this.dragState.lastDragTarget = closestCard;
+                 const rect = closestCard.getBoundingClientRect();
+                 const insertPosition = event.clientY > rect.top + rect.height / 2 ? 'after' : 'before';
+                 closestCard.classList.remove('drop-target');
+                 // Insert a temporary element to act as drop target
+                 const tempEl = document.createElement('div');
+                 if (insertPosition === 'after') {
+                   closestCard.after(tempEl);
+                 } else {
+                   closestCard.before(tempEl);
+                 }
+                 tempEl.classList.add('drop-target');
+               }
+             },
+             handleColumnDrop(event) {
+               const dropTarget = event.currentTarget.querySelector('.drop-target');
+               if (dropTarget && this.dragState.draggedElement) {
+                 // Insert dragged element before or after the dropTarget as appropriate
+                 const insertPosition = dropTarget.nextSibling === null ? 'before' : 'after';
+                 if (insertPosition === 'after') {
+                   dropTarget.after(this.dragState.draggedElement);
+                 } else {
+                   dropTarget.before(this.dragState.draggedElement);
+                 }
+               }
+               document.querySelectorAll('.drop-target').forEach(el => el.remove());
+             },
+             
+             // === Application State ===
+             status: 'idle', // 'idle', 'loading', 'success', 'error'
+             statusMessage: 'Idle',
+             currentQuery: '', // For the chat input field
+             chatHistory: [],
+             formConfig: {{ config | tojson | safe }},
+             presets: {{ presets | tojson | safe }},
+             
+             selectedPreset: '',
+             newPresetName: '',
+             selectedFileNames: [],
+             userKeywordsInput: '{{ config.env.USER_ADDED_KEYWORDS | default([]) | join(", ") }}',
+             toast: { visible: false, message: '', type: 'info', timer: null },
+             newChatName: '',
+             savedChats: [],
+             selectedChatId: null,
+             
+             // === Helper Functions ===
+             formatTimestamp(isoString) {
+               if (!isoString) return 'N/A';
+               try {
+                 return new Date(isoString).toLocaleString();
+               } catch (e) {
+                 return isoString;
+               }
+             },
+             showToast(message, type = 'info', duration = 3000) {
+               this.toast.message = message;
+               this.toast.type = type;
+               this.toast.visible = true;
+               if (this.toast.timer) clearTimeout(this.toast.timer);
+               this.toast.timer = setTimeout(() => { this.toast.visible = false; }, duration);
+             },
+             toggleFileType(type) {
+               if (!Array.isArray(this.formConfig.document.FILE_TYPES)) {
+                 this.formConfig.document.FILE_TYPES = [];
+               }
+               const index = this.formConfig.document.FILE_TYPES.indexOf(type);
+               if (index === -1) {
+                 this.formConfig.document.FILE_TYPES.push(type);
+               } else {
+                 this.formConfig.document.FILE_TYPES.splice(index, 1);
+               }
+             },
+             prepareConfigFormData() {
+               const configForm = document.getElementById('config-form');
+               if (!configForm) {
+                 console.error("Config form not found for preparing data!");
+                 return new FormData();
+               }
+               const formData = new FormData(configForm);
+               // Manually add checkbox values if not checked
+               if (!formData.has('SANITIZE_INPUT')) formData.set('SANITIZE_INPUT', 'false');
+               if (!formData.has('CACHE_ENABLED')) formData.set('CACHE_ENABLED', 'false');
+               if (!formData.has('PERFORM_DOMAIN_CHECK')) formData.set('PERFORM_DOMAIN_CHECK', 'false');
+               if (!formData.has('PARSE_TABLES')) formData.set('PARSE_TABLES', 'false');
+               const fileTypeCheckboxes = configForm.querySelectorAll('input[name="FILE_TYPES"]:checked');
+               formData.delete('FILE_TYPES');
+               fileTypeCheckboxes.forEach(checkbox => {
+                 formData.append('FILE_TYPES', checkbox.value);
+               });
+               formData.set('USER_KEYWORDS', this.userKeywordsInput);
+               return formData;
+             },
+             scrollToBottom() {
+               this.$nextTick(() => {
+                 const chatLogEl = this.$refs.chatLog;
+                 if (chatLogEl) {
+                   chatLogEl.scrollTop = chatLogEl.scrollHeight;
+                 }
+               });
+             },
+             adjustTextareaHeight(el) {
+               if (!el) return;
+               const maxHeight = 150;
+               el.style.height = 'auto';
+               el.style.height = Math.min(el.scrollHeight, maxHeight) + 'px';
+             },
+             
+             // === Async Actions & Other Methods ===
+             async fetchSavedChats() {
+               try {
+                 const response = await fetch('/list_chats');
+                 if (!response.ok) throw new Error('Failed to fetch saved chats');
+                 this.savedChats = await response.json();
+               } catch (error) {
+                 console.error("Error fetching saved chats:", error);
+                 this.showToast(`Error fetching chats: ${error.message}`, 'error');
+                 this.savedChats = [];
+               }
+             },
+             async saveChat() {
+               const chatName = this.newChatName.trim();
+               if (!chatName) {
+                 this.showToast("Please enter a name for the chat.", "info");
+                 return;
+               }
+               if (this.status === 'loading') return;
+               this.status = 'loading';
+               this.statusMessage = 'Saving chat...';
+               try {
+                 const response = await fetch('/save_chat', {
+                   method: 'POST',
+                   headers: { 'Content-Type': 'application/json' },
+                   body: JSON.stringify({ name: chatName })
+                 });
+                 const result = await response.json();
+                 if (!response.ok || !result.success) {
+                   throw new Error(result.error || 'Failed to save chat on server.');
+                 }
+                 this.newChatName = '';
+                 this.showToast('Chat saved successfully!', 'success');
+                 await this.fetchSavedChats();
+               } catch (error) {
+                 console.error("Error saving chat:", error);
+                 this.showToast(`Error saving chat: ${error.message}`, 'error');
+               } finally {
+                 this.status = 'idle';
+                 this.statusMessage = 'Idle';
+               }
+             },
+             async loadChat() {
+               if (!this.selectedChatId) {
+                 this.showToast("Please select a chat to load.", "info");
+                 return;
+               }
+               if (this.status === 'loading') return;
+               this.status = 'loading';
+               this.statusMessage = 'Loading chat...';
+               try {
+                 const response = await fetch(`/load_chat/${this.selectedChatId}`);
+                 const result = await response.json();
+                 if (!response.ok) {
+                   throw new Error(result.error || 'Failed to load chat from server.');
+                 }
+                 this.chatHistory = result.history || [];
+                 this.showToast('Chat loaded successfully!', 'success');
+                 this.scrollToBottom();
+               } catch (error) {
+                 console.error("Error loading chat:", error);
+                 this.showToast(`Error loading chat: ${error.message}`, 'error');
+               } finally {
+                 this.status = 'idle';
+                 this.statusMessage = 'Idle';
+               }
+             },
+             async sendMessage() {
+               const queryToSend = this.currentQuery.trim();
+               if (this.status === 'loading' || !queryToSend) {
+                 if (!queryToSend) this.showToast("Please enter a query.", "info", 2000);
+                 return;
+               }
+               this.chatHistory.push({
+                 role: 'user',
+                 content: queryToSend,
+                 timestamp: new Date().toISOString()
+               });
+               const inputEl = this.$refs.inputArea;
+               this.currentQuery = '';
+               this.$nextTick(() => this.adjustTextareaHeight(inputEl));
+               this.scrollToBottom();
+               this.status = 'loading';
+               this.statusMessage = 'Assistant is replying...';
+               const formData = new FormData();
+               formData.append('query', queryToSend);
+               try {
+                 const response = await fetch('/run_pipeline', {
+                   method: 'POST',
+                   body: formData
+                 });
+                 const assistantMsg = await response.json();
+                 if (!response.ok) {
+                   throw new Error(assistantMsg.content || assistantMsg.error || assistantMsg.details || `HTTP error! Status: ${response.status}`);
+                 }
+                 assistantMsg.role = 'assistant';
+                 assistantMsg.timestamp = assistantMsg.timestamp || new Date().toISOString();
+                 assistantMsg.content = assistantMsg.content || assistantMsg.response || "";
+                 this.chatHistory.push(assistantMsg);
+                 this.status = 'success';
+                 this.statusMessage = 'Idle';
+               } catch (error) {
+                 console.error('Pipeline Error:', error);
+                 this.chatHistory.push({
+                   role: 'assistant',
+                   content: `Sorry, I encountered an error: ${error.message}`,
+                   timestamp: new Date().toISOString(),
+                   error: true
+                 });
+                 this.status = 'error';
+                 this.statusMessage = 'Error occurred';
+                 this.showToast(`Error: ${error.message}`, 'error', 5000);
+               } finally {
+                 this.scrollToBottom();
+                 if (inputEl) inputEl.focus();
+                 setTimeout(() => {
+                   if (this.status !== 'loading') {
+                     this.status = 'idle';
+                     this.statusMessage = 'Idle';
+                   }
+                 }, 1500);
+               }
+             },
+             async clearChat() {
+               if (this.status === 'loading' || !Array.isArray(this.chatHistory) || this.chatHistory.length === 0) return;
+               if (!confirm("Are you sure you want to clear the chat history?")) return;
+               this.status = 'loading';
+               this.statusMessage = 'Clearing history...';
+               try {
+                 const response = await fetch('/clear_chat', { method: 'POST' });
+                 const result = await response.json();
+                 if (!response.ok || !result.success) {
+                   throw new Error(result.message || result.error || 'Failed to clear history on server.');
+                 }
+                 this.chatHistory = [];
+                 this.chatHistory.push({
+                   role: 'assistant',
+                   content: 'Chat history cleared. How can I help?',
+                   timestamp: new Date().toISOString()
+                 });
+                 this.scrollToBottom();
+                 this.showToast('Chat history cleared.', 'success');
+                 this.status = 'success';
+               } catch (error) {
+                 console.error('Clear Chat Error:', error);
+                 this.showToast(`Error clearing chat: ${error.message}`, 'error');
+                 this.status = 'error';
+               } finally {
+                 setTimeout(() => {
+                   this.status = 'idle';
+                   this.statusMessage = 'Idle';
+                 }, 1500);
+               }
+             },
+             async saveConfig() {
+               if (this.status === 'loading') return;
+               const configForm = document.getElementById('config-form');
+               if (!configForm) {
+                 this.showToast("Error: Cannot find the configuration form.", "error");
+                 return;
+               }
+               this.updateStatus && this.updateStatus('loading', 'Saving configuration...');
+               const formData = this.prepareConfigFormData();
+               try {
+                 const response = await fetch('/', {
+                   method: 'POST',
+                   body: formData
+                 });
+                 if (response.redirected) {
+                   this.showToast("Configuration saved. Reloading page...", "success", 2000);
+                   setTimeout(() => { window.location.reload(); }, 1000);
+                   return;
+                 } else if (response.ok) {
+                   this.showToast("Configuration saved. Reloading page...", "success", 2000);
+                   setTimeout(() => { window.location.reload(); }, 1000);
+                   return;
+                 } else {
+                   let errorMsg = `Save failed: Server responded with status ${response.status}`;
+                   try {
+                     const errorJson = await response.json();
+                     errorMsg = errorJson.error || errorJson.message || errorMsg;
+                   } catch (e) {
+                     errorMsg = `${errorMsg} (${response.statusText || 'No status text'})`;
+                   }
+                   throw new Error(errorMsg);
+                 }
+               } catch (error) {
+                 console.error('Configuration Save Error:', error);
+                 this.updateStatus && this.updateStatus('error', 'Save Error');
+                 this.showToast(`Error saving config: ${error.message || 'Network error or server issue'}`, 'error', 6000);
+                 setTimeout(() => {
+                   this.updateStatus && this.updateStatus('idle');
+                 }, 3000);
+               }
+             },
+             async applyPreset() {
+               if (!this.selectedPreset || this.status === 'loading') return;
+               this.status = 'loading';
+               this.statusMessage = 'Applying Preset...';
+               try {
+                 const response = await fetch(`/apply_preset/${this.selectedPreset}`, {
+                   method: 'POST'
+                 });
+                 const result = await response.json();
+                 if (!response.ok) {
+                   throw new Error(result.error || result.details || `HTTP error! Status: ${response.status}`);
+                 }
+                 this.status = 'success';
+                 this.statusMessage = 'Preset Applied';
+                 this.showToast(`Preset '${this.selectedPreset}' applied successfully! Reloading...`, 'success');
+                 setTimeout(() => { window.location.reload(); }, 1500);
+               } catch (error) {
+                 console.error('Apply Preset Error:', error);
+                 this.status = 'error';
+                 this.statusMessage = 'Preset Error';
+                 this.showToast(`Error applying preset: ${error.message}`, 'error', 5000);
+                 setTimeout(() => {
+                   this.status = 'idle';
+                   this.statusMessage = 'Idle';
+                 }, 3000);
+               }
+             },
+             async savePreset() {
+               const presetName = this.newPresetName.trim();
+               if (!presetName || this.status === 'loading') return;
+               const configForm = document.getElementById('config-form');
+               if (!configForm) {
+                 console.error("Config form not found for saving preset!");
+                 this.showToast("Error: Configuration form element missing.", "error");
+                 return;
+               }
+               this.status = 'loading';
+               this.statusMessage = 'Saving Preset...';
+               const formData = this.prepareConfigFormData();
+               formData.append('preset_name', presetName);
+               try {
+                 const response = await fetch('/save_preset', {
+                   method: 'POST',
+                   body: formData
+                 });
+                 if (response.redirected && response.url !== window.location.href) {
+                   window.location.reload();
+                   return;
+                 } else if (response.ok) {
+                   let message = `Preset '${presetName}' saved. Reloading...`;
+                   try {
+                     const result = await response.json();
+                     message = result.message || message;
+                   } catch (e) { }
+                   this.showToast(message, "success");
+                   this.newPresetName = '';
+                   setTimeout(() => { window.location.reload(); }, 1500);
+                 } else {
+                   let errorMsg = `Save failed: HTTP ${response.status}`;
+                   try {
+                     const errorJson = await response.json();
+                     errorMsg = errorJson.error || errorJson.details || errorMsg;
+                   } catch (e) { }
+                   throw new Error(errorMsg);
+                 }
+               } catch (error) {
+                 console.error('Save Preset Error:', error);
+                 this.status = 'error';
+                 this.statusMessage = 'Preset Error';
+                 this.showToast(`Error saving preset: ${error.message}`, 'error', 5000);
+                 setTimeout(() => {
+                   this.status = 'idle';
+                   this.statusMessage = 'Idle';
+                 }, 3000);
+               }
+             },
+             async updateAutoKeywords() {
+               if (this.status === 'loading') return;
+               this.status = 'loading';
+               this.statusMessage = 'Updating Keywords...';
+               try {
+                 const response = await fetch('/update_auto_keywords', { method: 'POST' });
+                 const result = await response.json();
+                 if (!response.ok) {
+                   throw new Error(result.error || `HTTP error! Status: ${response.status}`);
+                 }
+                 this.status = 'success';
+                 this.statusMessage = 'Keywords Updated';
+                 this.showToast(result.message || 'Auto keywords updated! Reloading...', 'success');
+                 setTimeout(() => window.location.reload(), 1500);
+               } catch (error) {
+                 console.error('Update Keywords Error:', error);
+                 this.status = 'error';
+                 this.statusMessage = 'Keyword Error';
+                 this.showToast(`Error updating keywords: ${error.message}`, 'error', 5000);
+                 setTimeout(() => {
+                   this.status = 'idle';
+                   this.statusMessage = 'Idle';
+                 }, 3000);
+               }
+             },
+             async uploadFiles() {
+               const fileInput = document.getElementById('file-upload');
+               if (!fileInput || !fileInput.files.length || this.status === 'loading') {
+                 if (!fileInput?.files?.length) this.showToast("No files selected for upload.", "info");
+                 return;
+               }
+               this.status = 'loading';
+               this.statusMessage = 'Uploading Files...';
+               const formData = new FormData();
+               for (const file of fileInput.files) {
+                 formData.append('files', file);
+               }
+               try {
+                 const response = await fetch('/upload_files', {
+                   method: 'POST',
+                   body: formData
+                 });
+                 const result = await response.json();
+                 if (!response.ok || !result.success) {
+                   throw new Error(result.error || `HTTP error! Status: ${response.status}`);
+                 }
+                 this.status = 'success';
+                 this.statusMessage = 'Upload Complete';
+                 this.showToast(`Files uploaded: ${result.files.join(', ')}`, 'success');
+                 fileInput.value = '';
+                 this.selectedFileNames = [];
+               } catch (error) {
+                 console.error('Upload Error:', error);
+                 this.status = 'error';
+                 this.statusMessage = 'Upload Error';
+                 this.showToast(`Upload failed: ${error.message}`, 'error', 5000);
+               } finally {
+                 setTimeout(() => {
+                   if (this.status !== 'loading') {
+                     this.status = 'idle';
+                     this.statusMessage = 'Idle';
+                   }
+                 }, 2000);
+               }
+             },
+             async startIngestion() {
+               if (this.status === 'loading') return;
+               this.status = 'loading';
+               this.statusMessage = 'Starting Ingestion...';
+               try {
+                 const formData = new FormData();
+                 const docDir = this.formConfig?.paths?.DOCUMENT_DIR || './data';
+                 formData.append('document_dir', docDir);
+                 const response = await fetch('/start_ingestion', {
+                   method: 'POST',
+                   body: formData
+                 });
+                 const result = await response.json();
+                 if (!response.ok || !result.success) {
+                   let errorDetail = result.error || `HTTP error! Status: ${response.status}`;
+                   if (result.traceback) {
+                     console.error("Ingestion Traceback:\n", result.traceback);
+                     errorDetail += " (See console)";
+                   }
+                   throw new Error(errorDetail);
+                 }
+                 this.status = 'success';
+                 this.statusMessage = 'Ingestion Finished';
+                 let successMsg = result.message || 'Ingestion finished successfully!';
+                 if (result.stats && Object.keys(result.stats).length > 0) {
+                   successMsg += ` (Processed: ${result.stats.processed || 'N/A'}, Errors: ${result.stats.errors || 0})`;
+                 }
+                 this.showToast(successMsg, 'success', 6000);
+               } catch (error) {
+                 console.error('Ingestion Error:', error);
+                 this.status = 'error';
+                 this.statusMessage = 'Ingestion Error';
+                 this.showToast(`Ingestion failed: ${error.message}`, 'error', 10000);
+               } finally {
+                 setTimeout(() => {
+                   if (this.status !== 'loading') {
+                     this.status = 'idle';
+                     this.statusMessage = 'Idle';
+                   }
+                 }, 4000);
+               }
+             },
+             async startIncrementalIngestion() {
+               if (this.status === 'loading') return;
+               this.status = 'loading';
+               this.statusMessage = 'Starting Incremental Ingestion...';
+               try {
+                 const formData = new FormData();
+                 const docDir = this.formConfig?.paths?.DOCUMENT_DIR || './data';
+                 formData.append('document_dir', docDir);
+                 const response = await fetch('/ingest_block', {
+                   method: 'POST',
+                   body: formData
+                 });
+                 const result = await response.json();
+                 if (!response.ok || !result.success) {
+                   let errorDetail = result.error || `HTTP error! Status: ${response.status}`;
+                   throw new Error(errorDetail);
+                 }
+                 this.status = 'success';
+                 this.statusMessage = 'Ingestion Finished';
+                 let successMsg = result.message || 'Incremental Ingestion finished successfully!';
+                 this.showToast(successMsg, 'success', 6000);
+               } catch (error) {
+                 console.error('Incremental Ingestion Error:', error);
+                 this.status = 'error';
+                 this.statusMessage = 'Ingestion Error';
+                 this.showToast(`Incremental Ingestion failed: ${error.message}`, 'error', 10000);
+               } finally {
+                 setTimeout(() => {
+                   if (this.status !== 'loading') {
+                     this.status = 'idle';
+                     this.statusMessage = 'Idle';
+                   }
+                 }, 4000);
+               }
+             },
+             async fetchWeaviateInstances() {
+               try {
+                 const response = await fetch('/list_weaviate_instances');
+                 const instances = await response.json();
+                 this.weaviateInstances = instances;
+               } catch (error) {
+                 console.error('Failed to fetch Weaviate instances:', error);
+               }
+             },
+             async createWeaviateInstance() {
+               const instanceName = document.getElementById('new-weaviate-instance').value.trim();
+               if (!instanceName) {
+                 alert("Please enter a valid instance name.");
+                 return;
+               }
+               try {
+                 const response = await fetch('/create_weaviate_instance', {
+                   method: 'POST',
+                   headers: { 'Content-Type': 'application/json' },
+                   body: JSON.stringify({ instance_name: instanceName })
+                 });
+                 const result = await response.json();
+                 if (response.ok) {
+                   alert(result.message);
+                   this.fetchWeaviateInstances();
+                 } else {
+                   alert(`Error: ${result.error}`);
+                 }
+               } catch (error) {
+                 alert("Error creating Weaviate instance.");
+               }
+             },
+             async activateRAG(event) {
+               // This function is used for both dropdown change & button click; adjust as necessary.
+               const selectedInstance = event?.target?.value || this.selectedInstance;
+               if (!selectedInstance) {
+                 alert("Please select a Weaviate instance.");
+                 return;
+               }
+               try {
+                 this.status = 'loading';
+                 this.statusMessage = 'Activating instance for RAG...';
+                 const response = await fetch('/select_weaviate_instance', {
+                   method: 'POST',
+                   headers: { 'Content-Type': 'application/json' },
+                   body: JSON.stringify({ instance_name: selectedInstance })
+                 });
+                 const result = await response.json();
+                 if (response.ok) {
+                   alert(result.message);
+                 } else {
+                   alert(`Error: ${result.error}`);
+                 }
+               } catch (error) {
+                 alert("Error activating the selected Weaviate instance.");
+               } finally {
+                 this.status = 'idle';
+                 this.statusMessage = 'Idle';
+               }
+             },
+             
+             // === Consolidated Initialization ===
+             init() {
+               console.log("RAG App Initialized (Merged Version)");
+               // Initialize drag & drop listeners
+               this.$nextTick(() => {
+                 document.addEventListener('dragover', (e) => e.preventDefault());
+                 document.addEventListener('drop', (e) => e.preventDefault());
+               });
+               
+               // Setup defaults for formConfig structure
+               this.chatHistory = [];
+               this.formConfig = this.formConfig || {};
+               this.formConfig.document = this.formConfig.document || {};
+               this.formConfig.env = this.formConfig.env || {};
+               this.formConfig.paths = this.formConfig.paths || {};
+               this.formConfig.security = this.formConfig.security || {};
+               this.formConfig.retrieval = this.formConfig.retrieval || {};
+               this.formConfig.model = this.formConfig.model || {};
+               this.formConfig.document.FILE_TYPES = Array.isArray(this.formConfig.document.FILE_TYPES) ? this.formConfig.document.FILE_TYPES : [];
+               this.formConfig.env.USER_ADDED_KEYWORDS = Array.isArray(this.formConfig.env.USER_ADDED_KEYWORDS) ? this.formConfig.env.USER_ADDED_KEYWORDS : [];
+               this.userKeywordsInput = this.formConfig.env.USER_ADDED_KEYWORDS.join(', ');
+               this.formConfig.env.AUTO_DOMAIN_KEYWORDS = Array.isArray(this.formConfig.env.AUTO_DOMAIN_KEYWORDS) ? this.formConfig.env.AUTO_DOMAIN_KEYWORDS : [];
+               this.formConfig.env.DOMAIN_KEYWORDS = Array.isArray(this.formConfig.env.DOMAIN_KEYWORDS) ? this.formConfig.env.DOMAIN_KEYWORDS : [];
+               
+               // Convert numeric paths
+               const numericPaths = [
+               'security.RATE_LIMIT', 'security.API_TIMEOUT', 'retrieval.K_VALUE', 'retrieval.SCORE_THRESHOLD', 'retrieval.LAMBDA_MULT',
+               'retrieval.DOMAIN_SIMILARITY_THRESHOLD', 'retrieval.SPARSE_RELEVANCE_THRESHOLD', 'retrieval.FUSED_RELEVANCE_THRESHOLD',
+               'retrieval.SEMANTIC_WEIGHT', 'retrieval.SPARSE_WEIGHT', 'model.LLM_TEMPERATURE', 'model.MAX_TOKENS',
+               'model.TOP_P', 'model.FREQUENCY_PENALTY', 'document.CHUNK_SIZE', 'document.CHUNK_OVERLAP'
+               ];
+               numericPaths.forEach(path => {
+                 const keys = path.split('.');
+                 let obj = this.formConfig;
+                 try {
+                   for (let i = 0; i < keys.length - 1; i++) {
+                     if (obj === undefined || obj === null) break;
+                     obj = obj[keys[i]];
+                   }
+                   const finalKey = keys[keys.length - 1];
+                   if (obj && obj.hasOwnProperty(finalKey) && obj[finalKey] !== null) {
+                     obj[finalKey] = Number(obj[finalKey]);
+                     if (isNaN(obj[finalKey])) {
+                       console.warn(`NaN after converting ${path}. Resetting might be needed.`);
+                     }
+                   }
+                 } catch (e) {
+                   console.warn(`Error converting number for path ${path}: ${e}`);
+                 }
+               });
+               this.chatHistory.push({
+                 role: 'assistant',
+                 content: 'Hello! Ask me anything about industrial automation.',
+                 timestamp: new Date().toISOString()
+               });
+               this.$nextTick(() => {
+                 const inputEl = this.$refs.inputArea;
+                 if (inputEl) this.adjustTextareaHeight(inputEl);
+                 this.scrollToBottom();
+               });
+               setTimeout(() => { this.$refs.inputArea?.focus(); }, 100);
+               this.fetchSavedChats();
+               this.fetchWeaviateInstances();
+             }
+           };
+         }
+      </script>
+      <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+   </head>
+   <body x-data="ragApp()" x-cloak class="bg-gray-100 text-gray-800 font-sans">
+      <!-- Main Container -->
+      <div class="container mx-auto p-4 md:p-6 lg:p-8 max-w-7xl" @dragover.prevent="handleDragOver($event)"
+         @drop.prevent="handleDrop($event)">
+         >
+         <!-- Header -->
+         <header class="mb-6 md:mb-8 flex justify-between items-center">
+            <h1 class="text-xl md:text-2xl font-semibold text-slate-800">RAG Control Center</h1>
+            <div class="flex items-center space-x-3">
+               <!-- Status Indicator -->
+               <span x-text="statusMessage" class="text-xs font-medium px-3 py-1 rounded-full transition-colors duration-200"
+                  :class="{
+                  'bg-slate-200 text-slate-600': status === 'idle',
+                  'bg-yellow-100 text-yellow-700 animate-pulse': status === 'loading',
+                  'bg-green-100 text-green-700': status === 'success',
+                  'bg-red-100 text-red-700': status === 'error'
+                  }">Idle</span>
+               <!-- API Key Status Indicators -->
+               <span title="DeepSeek API Key Status" class="text-xs font-medium px-2 py-1 rounded-full"
+                  :class="config.security.DEEPSEEK_API_KEY ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'">
+               DS: <span x-text="config.security.DEEPSEEK_API_KEY ? 'OK' : 'X'"></span>
+               </span>
+               <span title="OpenAI API Key Status" class="text-xs font-medium px-2 py-1 rounded-full"
+                  :class="config.security.OPENAI_API_KEY ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-400'">
+               OA: <span x-text="config.security.OPENAI_API_KEY ? 'OK' : '-'"></span>
+               </span>
+               <span title="Anthropic API Key Status" class="text-xs font-medium px-2 py-1 rounded-full"
+                  :class="config.security.ANTHROPIC_API_KEY ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-400'">
+               AN: <span x-text="config.security.ANTHROPIC_API_KEY ? 'OK' : '-'"></span>
+               </span>
+               <span title="Cohere API Key Status" class="text-xs font-medium px-2 py-1 rounded-full"
+                  :class="config.security.COHERE_API_KEY ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-400'">
+               CO: <span x-text="config.security.COHERE_API_KEY ? 'OK' : '-'"></span>
+               </span>
+            </div>
+         </header>
+         <!-- Main Grid Layout -->
+         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 md:gap-8">
+            <!-- Left Column (Main Interaction) -->
+            <div class="lg:col-span-2 space-y-6 md:space-y-8" data-column="left"
+               @dragover.prevent="handleColumnDragOver($event)" @drop.prevent="handleColumnDrop($event)">
+               <!-- Chat Interface -->
+               <div class="draggable-card bg-white p-5 md:p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col"
+                  draggable="true" @dragstart="handleDragStart($event)" @dragend="handleDragEnd($event)">
+                  <h2 class="text-lg font-semibold mb-4 text-slate-800 border-b border-slate-200 pb-3">Conversation</h2>
+                  <!-- Chat Log Area -->
+                  <div x-ref="chatLog" class="flex-grow space-y-4 overflow-y-auto pr-2 mb-4 h-[60vh]">
+                     <template x-for="(message, index) in chatHistory" :key="index">
+                        <div class="flex" :class="message.role === 'user' ? 'justify-end' : 'justify-start'">
+                           <div class="max-w-[80%] p-3 rounded-lg shadow-sm" :class="{
+                              'bg-blue-100': message.role === 'user',
+                              'bg-slate-100': message.role === 'assistant' && !message.error,
+                              'bg-red-100': message.error
+                              }">
+                              <pre class="text-sm whitespace-pre-wrap" x-text="message.content"></pre>
+                              <p x-show="message.role === 'assistant' && !message.error && (message.source || message.model)"
+                                 class="text-xs text-slate-500 mt-1 pt-1 border-t border-slate-300">
+                                 <span
+                                    x-text="`${message.source ? 'Source: ' + message.source : ''}${message.source && message.model ? ' | ' : ''}${message.model ? 'Model: ' + message.model : ''}`"></span>
+                              </p>
+                           </div>
+                        </div>
+                     </template>
+                     <!-- Typing Indicator -->
+                     <div x-show="status === 'loading'" class="flex justify-start">
+                        <div class="bg-slate-100 p-3 rounded-lg shadow-sm animate-pulse max-w-[80%]">
+                           <span class="text-sm">...</span>
+                        </div>
+                     </div>
+                  </div>
+               </div>
+               <!-- Input Area -->
+               <form @submit.prevent="sendMessage" class="mt-auto pt-4 border-t border-slate-200">
+                  <div class="flex items-end space-x-2">
+                     <textarea id="query-input" name="query" rows="1"
+                        class="flex-grow rounded-lg border-slate-300 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-200 focus:ring-opacity-50 sm:text-base placeholder-slate-400 resize-none overflow-hidden min-h-[44px]"
+                        placeholder="Ask anything..." x-model="currentQuery"
+                        @keydown.enter.prevent="if (!$event.shiftKey) sendMessage()" @input="adjustTextareaHeight($el)"
+                        x-ref="inputArea" required></textarea>
+                     <button type="button" @click="clearChat" :disabled="status === 'loading' || chatHistory.length === 0"
+                        title="Clear Chat History"
+                        class="p-2 text-slate-500 hover:text-red-600 disabled:opacity-50 transition-colors">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                           stroke="currentColor" class="w-6 h-6">
+                           <path stroke-linecap="round" stroke-linejoin="round"
+                              d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                        </svg>
+                     </button>
+                     <button type="submit" :disabled="status === 'loading' || !currentQuery.trim()"
+                        class="inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-60 disabled:cursor-not-allowed transition-opacity">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                           stroke="currentColor" class="w-5 h-5">
+                           <path stroke-linecap="round" stroke-linejoin="round"
+                              d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" />
+                        </svg>
+                     </button>
+                  </div>
+               </form>
+            </div>
+            <!-- End Chat Interface -->
+            <!-- Document Management Card -->
+            <div class="draggable-card bg-white p-5 md:p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col"
+               draggable="true" @dragstart="handleDragStart($event)" @dragend="handleDragEnd($event)">
+               <h2 class="text-lg font-semibold mb-4 text-slate-800">Document Management</h2>
+               <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                  <!-- File Upload -->
+                  <div>
+                     <form @submit.prevent="uploadFiles">
+                        <label for="file-upload" class="block text-sm font-medium text-slate-600 mb-1.5">Upload Documents:</label>
+                        <input id="file-upload" name="files" type="file" multiple
+                           class="block w-full text-sm text-slate-500 file:mr-4 file:py-1.5 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer"
+                           @change="selectedFileNames = Array.from($event.target.files).map(f => f.name)">
+                        <div class="text-xs text-slate-500 mt-1.5 min-h-[1em]" x-show="selectedFileNames.length > 0">
+                           Selected: <span x-text="selectedFileNames.join(', ')"></span>
+                        </div>
+                        <button type="submit" :disabled="!selectedFileNames.length || status === 'loading'"
+                           class="mt-2 inline-flex items-center px-3 py-1.5 border border-slate-300 text-sm font-medium rounded-lg shadow-sm text-slate-700 bg-white hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-60 disabled:cursor-not-allowed transition-opacity">
+                        Upload
+                        </button>
+                     </form>
+                  </div>
+                  <!-- File Upload end -->
+                  <!-- Ingestion Trigger -->
+                  <div>
+                     <label class="block text-sm font-medium text-slate-600 mb-1.5">Process Uploaded Documents:</label>
+                     <button @click="startIngestion" :disabled="status === 'loading'"
+                        class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-60 disabled:cursor-not-allowed transition-opacity">
+                     Start Ingestion
+                     </button>
+                     <!-- New button for incremental ingestion -->
+                     <div class="mt-4">
+                        <button @click="startIncrementalIngestion" :disabled="status === 'loading'"
+                           class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:opacity-60 disabled:cursor-not-allowed transition-opacity">
+                        Start Incremental Ingestion
+                        </button>
+                        <!-- New button for incremental ingestion end-->
+                        <p class="text-xs text-slate-500 mt-1.5">
+                           Processes files in:
+                           <code class="text-xs bg-slate-100 px-1 py-0.5 rounded"
+                              x-text="formConfig.paths.DOCUMENT_DIR || 'Not Set'">
+                           {{ config.paths.DOCUMENT_DIR }}
+                           </code>
+                        </p>
+                     </div>
+                     <!-- Ingestion Trigger end -->
+                  </div>
+               </div>
+            </div>
+            <!-- Current Live Settings Card -->
+            <div class="draggable-card bg-white p-5 md:p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col"
+               draggable="true" @dragstart="handleDragStart($event)" @dragend="handleDragEnd($event)">
+               <h2 class="text-lg font-semibold mb-4 text-slate-800">Current Live Settings</h2>
+               <div class="space-y-3 text-xs max-h-[70vh] overflow-y-auto pr-2">
+                  <template x-for="(sectionData, sectionName) in formConfig" :key="sectionName">
+                     <div class="border-t border-slate-200 pt-3">
+                        <h4 class="text-sm font-semibold uppercase text-slate-500 mb-2" x-text="sectionName"></h4>
+                        <div class="space-y-1 pl-2">
+                           <template x-for="([key, value]) in Object.entries(sectionData)" :key="key">
+                              <template x-if="key !== 'DOMAIN_KEYWORDS' && key !== 'DEEPSEEK_API_KEY'">
+                                 <div class="flex justify-between items-start gap-2">
+                                    <span class="font-medium text-slate-600 whitespace-nowrap" x-text="key"></span>
+                                    <span class="text-right text-slate-700 break-words text-ellipsis overflow-hidden" x-text="
+                                       Array.isArray(value)
+                                       ? (value.length > 0 ? value.join(', ') : '[]')
+                                       : (typeof value === 'boolean')
+                                       ? String(value)
+                                       : (typeof value === 'number' && !Number.isInteger(value))
+                                       ? value.toFixed(2)
+                                       : (value === null || value === undefined)
+                                       ? 'null'
+                                       : String(value)
+                                       " :title="String(value)"></span>
+                                 </div>
+                              </template>
+                           </template>
+                        </div>
+                     </div>
+                  </template>
+               </div>
+               <!-- Added closing div for Live Settings -->
+            </div>
+            <!-- Added closing div for Left Column -->
+            <!-- Right Column (Configuration & Management) -->
+            <div class="lg:col-span-1 space-y-6 md:space-y-8" data-column="right"
+               @dragover.prevent="handleColumnDragOver($event)" @drop.prevent="handleColumnDrop($event)">
+               <!-- Presets Card -->
+               <div class="draggable-card bg-white p-5 md:p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col"
+                  draggable="true" @dragstart="handleDragStart($event)" @dragend="handleDragEnd($event)">
+                  <h2 class="text-lg font-semibold mb-4 text-slate-800">Configuration Presets</h2>
+                  <!-- Preset Selection Row -->
+                  <div class="flex items-center space-x-2 mb-3">
+                     <select id="preset-select" x-model="selectedPreset"
+                        class="block w-full rounded-lg border-slate-300 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-200 focus:ring-opacity-50 sm:text-sm">
+                        <option value="">Select a Preset...</option>
+                        <template x-for="(value, key) in presets" :key="key">
+                           <option :value="key" x-text="key"></option>
+                        </template>
+                     </select>
+                     <button @click="applyPreset" :disabled="!selectedPreset || status === 'loading'"
+                        class="px-3 py-2 border border-slate-300 text-sm font-medium rounded-lg shadow-sm text-slate-700 bg-white hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed whitespace-nowrap transition-opacity">
+                     Apply
+                     </button>
+                  </div>
+                  <!-- Preset Selection Row end -->
+                  <!-- New Preset Creation Row -->
+                  <div class="flex items-center space-x-2">
+                     <input type="text" x-model="newPresetName" placeholder="New preset name..."
+                        class="block w-full rounded-lg border-slate-300 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-200 focus:ring-opacity-50 sm:text-sm placeholder-slate-400">
+                     <button @click="savePreset" :disabled="!newPresetName.trim() || status === 'loading'"
+                        class="px-3 py-2 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-60 disabled:cursor-not-allowed whitespace-nowrap transition-opacity">
+                     Save Current
+                     </button>
+                  </div>
+               </div>
+               <!-- Configuration Card -->
+               <div class="draggable-card bg-white p-5 md:p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col"
+                  draggable="true" @dragstart="handleDragStart($event)" @dragend="handleDragEnd($event)">
+                  <div class="flex justify-between items-center mb-5">
+                     <h2 class="text-lg font-semibold text-slate-800">System Configuration</h2>
+                     <button @click="saveConfig" :disabled="status === 'loading'"
+                        class="px-4 py-1.5 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-60 disabled:cursor-not-allowed transition-opacity">
+                     Save Config
+                     </button>
+                  </div>
+                  <form id="config-form" @submit.prevent="saveConfig" class="space-y-6">
+                     {% set input_class = "block w-full rounded-lg border-slate-300 shadow-sm focus:border-blue-500 focus:ring
+                     focus:ring-blue-200 focus:ring-opacity-50 sm:text-sm placeholder-slate-400 text-slate-700" %}
+                     {% set label_class = "block text-sm font-medium text-slate-600 mb-1" %}
+                     {% set checkbox_class = "h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500
+                     focus:ring-offset-0" %}
+                     {% set checkbox_label_class = "ml-2 block text-sm text-slate-700" %}
+                     {% set range_class = "mt-1 block w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer
+                     focus:outline-none focus:ring-2 focus:ring-blue-300" %}
+                     {% set range_label_class = "block text-xs font-medium text-slate-600" %}
+                     <!-- Security Section -->
+                     <div x-data="{ open: false }" class="border-t border-slate-200 pt-4">
+                        <button type="button" @click="open = !open" class="flex justify-between items-center w-full text-left">
+                           <span class="text-base font-semibold text-slate-700">Security</span>
+                           <svg :class="{ 'rotate-180': open }" class="h-5 w-5 text-slate-500 transform transition-transform"
+                              xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2"
+                              stroke="currentColor">
+                              <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+                           </svg>
+                        </button>
+                        <div x-show="open" x-cloak x-transition class="mt-4 space-y-4 pl-1">
+                           <div class="flex items-center">
+                              <input id="sec_sanitize" name="SANITIZE_INPUT" type="checkbox"
+                                 x-model="formConfig.security.SANITIZE_INPUT" class="{{ checkbox_class }}">
+                              <label for="sec_sanitize" class="{{ checkbox_label_class }}">Sanitize Input</label>
+                           </div>
+                           <div class="flex items-center">
+                              <input id="sec_cache_enabled" name="CACHE_ENABLED" type="checkbox"
+                                 x-model="formConfig.security.CACHE_ENABLED" class="{{ checkbox_class }}">
+                              <label for="sec_cache_enabled" class="{{ checkbox_label_class }}">Enable Caching</label>
+                           </div>
+                           <div>
+                              <label for="sec_rate_limit" class="{{ label_class }}">Rate Limit (reqs/period)</label>
+                              <input type="number" id="sec_rate_limit" name="RATE_LIMIT"
+                                 x-model.number="formConfig.security.RATE_LIMIT" min="1" class="{{ input_class }}">
+                           </div>
+                           <div>
+                              <label for="sec_api_timeout" class="{{ label_class }}">API Timeout (seconds)</label>
+                              <input type="number" id="sec_api_timeout" name="API_TIMEOUT"
+                                 x-model.number="formConfig.security.API_TIMEOUT" min="1" class="{{ input_class }}">
+                           </div>
+                        </div>
+                     </div>
+                     <!-- Retrieval Section -->
+                     <div x-data="{ open: false }" class="border-t border-slate-200 pt-4">
+                        <button type="button" @click="open = !open" class="flex justify-between items-center w-full text-left">
+                           <span class="text-base font-semibold text-slate-700">Retrieval</span>
+                           <svg :class="{ 'rotate-180': open }" class="h-5 w-5 text-slate-500 transform transition-transform"
+                              xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2"
+                              stroke="currentColor">
+                              <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+                           </svg>
+                        </button>
+                        <div x-show="open" x-cloak x-transition class="mt-4 space-y-4 pl-1">
+                           <div>
+                              <label for="ret_coll_name" class="{{ label_class }}">Collection Name</label>
+                              <input type="text" id="ret_coll_name" name="COLLECTION_NAME"
+                                 x-model="formConfig.retrieval.COLLECTION_NAME" class="{{ input_class }} bg-slate-100" readonly>
+                           </div>
+                           <div>
+                              <label for="ret_k_value" class="{{ label_class }}">K Value (Chunks)</label>
+                              <input type="number" id="ret_k_value" name="K_VALUE" x-model.number="formConfig.retrieval.K_VALUE"
+                                 min="1" class="{{ input_class }}">
+                           </div>
+                           <div>
+                              <label for="ret_search_type" class="{{ label_class }}">Search Type</label>
+                              <select id="ret_search_type" name="SEARCH_TYPE" x-model="formConfig.retrieval.SEARCH_TYPE"
+                                 class="{{ input_class }}">
+                                 <option value="mmr">MMR (Maximal Marginal Relevance)</option>
+                                 <option value="similarity">Similarity</option>
+                                 <option value="similarity_score_threshold">Similarity + Threshold</option>
+                              </select>
+                           </div>
+                           <div x-show="formConfig.retrieval.SEARCH_TYPE !== 'mmr'">
+                              <label for="ret_score_thresh" class="{{ label_class }}">Score Threshold (<span
+                                 class="font-medium text-slate-700"
+                                 x-text="formConfig.retrieval.SCORE_THRESHOLD.toFixed(2)"></span></label>
+                              <input type="range" id="ret_score_thresh" name="SCORE_THRESHOLD"
+                                 x-model.number="formConfig.retrieval.SCORE_THRESHOLD" min="0" max="1" step="0.01"
+                                 class="{{ range_class }}">
+                           </div>
+                           <div x-show="formConfig.retrieval.SEARCH_TYPE === 'mmr'">
+                              <label for="ret_lambda_mult" class="{{ label_class }}">MMR Diversity (Lambda) (<span
+                                 class="font-medium text-slate-700"
+                                 x-text="formConfig.retrieval.LAMBDA_MULT.toFixed(2)"></span></label>
+                              <input type="range" id="ret_lambda_mult" name="LAMBDA_MULT"
+                                 x-model.number="formConfig.retrieval.LAMBDA_MULT" min="0" max="1" step="0.01"
+                                 class="{{ range_class }}">
+                           </div>
+                           <hr class="my-4 border-slate-200">
+                           <div class="flex items-center">
+                              <input id="ret_domain_check" name="PERFORM_DOMAIN_CHECK" type="checkbox"
+                                 x-model="formConfig.retrieval.PERFORM_DOMAIN_CHECK" class="{{ checkbox_class }}">
+                              <label for="ret_domain_check" class="{{ checkbox_label_class }}">Perform Hybrid Domain Check</label>
+                           </div>
+                           <div x-show="formConfig.retrieval.PERFORM_DOMAIN_CHECK"
+                              class="space-y-3 pl-4 border-l-2 border-slate-200 ml-2">
+                              <div>
+                                 <label for="ret_domain_sim_thresh" class="{{ range_label_class }}">Semantic Threshold (<span
+                                    class="font-semibold"
+                                    x-text="formConfig.retrieval.DOMAIN_SIMILARITY_THRESHOLD.toFixed(2)"></span></label>
+                                 <input type="range" id="ret_domain_sim_thresh" name="DOMAIN_SIMILARITY_THRESHOLD"
+                                    x-model.number="formConfig.retrieval.DOMAIN_SIMILARITY_THRESHOLD" min="0" max="1" step="0.01"
+                                    class="{{ range_class }}">
+                              </div>
+                              <div>
+                                 <label for="ret_sparse_thresh" class="{{ range_label_class }}">Sparse Threshold (<span
+                                    class="font-semibold"
+                                    x-text="formConfig.retrieval.SPARSE_RELEVANCE_THRESHOLD.toFixed(2)"></span></label>
+                                 <input type="range" id="ret_sparse_thresh" name="SPARSE_RELEVANCE_THRESHOLD"
+                                    x-model.number="formConfig.retrieval.SPARSE_RELEVANCE_THRESHOLD" min="0" max="1" step="0.01"
+                                    class="{{ range_class }}">
+                              </div>
+                              <div>
+                                 <label for="ret_fused_thresh" class="{{ range_label_class }}">Fused Threshold (<span
+                                    class="font-semibold"
+                                    x-text="formConfig.retrieval.FUSED_RELEVANCE_THRESHOLD.toFixed(2)"></span></label>
+                                 <input type="range" id="ret_fused_thresh" name="FUSED_RELEVANCE_THRESHOLD"
+                                    x-model.number="formConfig.retrieval.FUSED_RELEVANCE_THRESHOLD" min="0" max="1" step="0.01"
+                                    class="{{ range_class }}">
+                              </div>
+                              <div class="grid grid-cols-2 gap-3">
+                                 <div>
+                                    <label for="ret_semantic_weight" class="{{ range_label_class }}">Semantic Weight (<span
+                                       class="font-semibold" x-text="formConfig.retrieval.SEMANTIC_WEIGHT.toFixed(2)"></span></label>
+                                    <input type="range" id="ret_semantic_weight" name="SEMANTIC_WEIGHT"
+                                       x-model.number="formConfig.retrieval.SEMANTIC_WEIGHT" min="0" max="1" step="0.01"
+                                       class="{{ range_class }}">
+                                 </div>
+                                 <div>
+                                    <label for="ret_sparse_weight" class="{{ range_label_class }}">Sparse Weight (<span
+                                       class="font-semibold" x-text="formConfig.retrieval.SPARSE_WEIGHT.toFixed(2)"></span></label>
+                                    <input type="range" id="ret_sparse_weight" name="SPARSE_WEIGHT"
+                                       x-model.number="formConfig.retrieval.SPARSE_WEIGHT" min="0" max="1" step="0.01"
+                                       class="{{ range_class }}">
+                                 </div>
+                              </div>
+                           </div>
+                        </div>
+                     </div>
+               </div>
+               <!-- Model Section -->
+               <div x-data="{ open: false }" class="border-t border-slate-200 pt-4">
+               <button type="button" @click="open = !open" class="flex justify-between items-center w-full text-left">
+               <span class="text-base font-semibold text-slate-700">Model Parameters</span>
+               <svg :class="{ 'rotate-180': open }" class="h-5 w-5 text-slate-500 transform transition-transform"
+                  xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+               <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+               </svg>
+               </button>
+               <div x-show="open" x-cloak x-transition class="mt-4 space-y-4 pl-1">
+               <div>
+               <label for="mod_ollama" class="{{ label_class }}">Ollama LLM Model</label>
+               <input type="text" id="mod_ollama" name="OLLAMA_MODEL" x-model="formConfig.model.OLLAMA_MODEL"
+                  class="{{ input_class }}">
+               </div>
+               <div>
+               <label for="mod_embed" class="{{ label_class }}">Embedding Model</label>
+               <input type="text" id="mod_embed" name="EMBEDDING_MODEL" x-model="formConfig.model.EMBEDDING_MODEL"
+                  class="{{ input_class }}">
+               </div>
+               <div>
+               <label for="mod_temp" class="{{ label_class }}">LLM Temperature (<span class="font-medium text-slate-700"
+                  x-text="formConfig.model.LLM_TEMPERATURE.toFixed(2)"></span>)</label>
+               <input type="range" id="mod_temp" name="LLM_TEMPERATURE" x-model.number="formConfig.model.LLM_TEMPERATURE"
+                  min="0" max="2" step="0.01" class="{{ range_class }}">
+               </div>
+               <div>
+               <label for="mod_tokens" class="{{ label_class }}">Max Tokens</label>
+               <input type="number" id="mod_tokens" name="MAX_TOKENS" x-model.number="formConfig.model.MAX_TOKENS"
+                  min="1" class="{{ input_class }}">
+               </div>
+               <div>
+               <label for="mod_top_p" class="{{ label_class }}">Top P (<span class="font-medium text-slate-700"
+                  x-text="formConfig.model.TOP_P.toFixed(2)"></span>)</label>
+               <input type="range" id="mod_top_p" name="TOP_P" x-model.number="formConfig.model.TOP_P" min="0" max="1"
+                  step="0.01" class="{{ range_class }}">
+               </div>
+               <div>
+               <label for="mod_freq_penalty" class="{{ label_class }}">Frequency Penalty (<span
+                  class="font-medium text-slate-700"
+                  x-text="formConfig.model.FREQUENCY_PENALTY.toFixed(2)"></span>)</label>
+               <input type="range" id="mod_freq_penalty" name="FREQUENCY_PENALTY"
+                  x-model.number="formConfig.model.FREQUENCY_PENALTY" min="0" max="1" step="0.01"
+                  class="{{ range_class }}">
+               </div>
+               <div>
+               <label for="mod_system_msg" class="{{ label_class }}">System Message</label>
+               <textarea id="mod_system_msg" name="SYSTEM_MESSAGE" rows="3" x-model="formConfig.model.SYSTEM_MESSAGE"
+                  class="{{ input_class }}"></textarea>
+               </div>
+               </div>
+               </div>
+            </div>
+            <!-- Document Section -->
+            <div x-data="{ open: false }" class="border-t border-slate-200 pt-4">
+            <button type="button" @click="open = !open" class="flex justify-between items-center w-full text-left">
+            <span class="text-base font-semibold text-slate-700">Document Processing</span>
+            <svg :class="{ 'rotate-180': open }" class="h-5 w-5 text-slate-500 transform transition-transform"
+               xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+            </svg>
+            </button>
+            <div x-show="open" x-cloak x-transition class="mt-4 space-y-4 pl-1">
+            <div>
+            <label for="doc_chunk_size" class="{{ label_class }}">Chunk Size</label>
+            <input type="number" id="doc_chunk_size" name="CHUNK_SIZE" x-model.number="formConfig.document.CHUNK_SIZE"
+               min="50" class="{{ input_class }}">
+            </div>
+            <div>
+            <label for="doc_chunk_overlap" class="{{ label_class }}">Chunk Overlap</label>
+            <input type="number" id="doc_chunk_overlap" name="CHUNK_OVERLAP"
+               x-model.number="formConfig.document.CHUNK_OVERLAP" min="0" class="{{ input_class }}">
+            </div>
+            <div class="flex items-center">
+            <input id="doc_parse_tables" name="PARSE_TABLES" type="checkbox" x-model="formConfig.document.PARSE_TABLES"
+               class="{{ checkbox_class }}">
+            <label for="doc_parse_tables" class="{{ checkbox_label_class }}">Parse Tables (PDF)</label>
+            </div>
+            <div>
+            <span class="{{ label_class }} mb-1.5">Ingest File Types</span>
+            <div class="flex flex-wrap gap-x-4 gap-y-2">
+            {% for file_type in ['pdf', 'txt', 'csv', 'docx', 'md'] %}
+            <div class="flex items-center">
+            <input id="ft_{{ file_type }}" name="FILE_TYPES" type="checkbox" value="{{ file_type }}"
+               :checked="formConfig.document.FILE_TYPES.includes('{{ file_type }}')"
+               @change="toggleFileType('{{ file_type }}')" class="{{ checkbox_class }}">
+            <label for="ft_{{ file_type }}" class="ml-1.5 block text-sm text-slate-600">.{{ file_type }}</label>
+            </div>
+            {% endfor %}
+            </div>
+            </div>
+            </div>
+            </div>
+            <!-- Paths Section -->
+            <div x-data="{ open: false }" class="border-t border-slate-200 pt-4">
+            <button type="button" @click="open = !open" class="flex justify-between items-center w-full text-left">
+            <span class="text-base font-semibold text-slate-700">Paths</span>
+            <svg :class="{ 'rotate-180': open }" class="h-5 w-5 text-slate-500 transform transition-transform"
+               xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+            </svg>
+            </button>
+            <div x-show="open" x-cloak x-transition class="mt-4 space-y-4 pl-1">
+            <div>
+            <label for="path_doc_dir" class="{{ label_class }}">Document Directory</label>
+            <input type="text" id="path_doc_dir" name="DOCUMENT_DIR" x-model="formConfig.paths.DOCUMENT_DIR"
+               class="{{ input_class }}">
+            </div>
+            <div>
+            <label for="path_centroid" class="{{ label_class }}">Domain Centroid Path</label>
+            <input type="text" id="path_centroid" name="DOMAIN_CENTROID_PATH"
+               x-model="formConfig.paths.DOMAIN_CENTROID_PATH" class="{{ input_class }} bg-slate-100" readonly>
+            </div>
+            </div>
+            </div>
+            <!-- Keywords Section -->
+            <div x-data="{ open: false }" class="border-t border-slate-200 pt-4">
+            <button type="button" @click="open = !open" class="flex justify-between items-center w-full text-left">
+            <span class="text-base font-semibold text-slate-700">Keywords</span>
+            <svg :class="{ 'rotate-180': open }" class="h-5 w-5 text-slate-500 transform transition-transform"
+               xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+            </svg>
+            </button>
+            <div x-show="open" x-cloak x-transition class="mt-4 space-y-4 pl-1">
+            <div>
+            <label for="env_user_keywords" class="{{ label_class }}">User Added Keywords <span
+               class="text-slate-400">(comma-separated)</span></label>
+            <textarea id="env_user_keywords" name="USER_KEYWORDS" rows="3" x-model="userKeywordsInput"
+               class="{{ input_class }}"></textarea>
+            </div>
+            <div class="border border-slate-200 rounded-lg p-3 bg-slate-50 space-y-2">
+            <label class="block text-sm font-medium text-slate-600">Auto Domain Keywords</label>
+            <p
+               class="text-xs text-slate-500 break-words max-h-24 overflow-y-auto p-2 bg-white rounded border border-slate-200">
+            {{ config.env.AUTO_DOMAIN_KEYWORDS | join(', ') if config.env.AUTO_DOMAIN_KEYWORDS else 'None - Update via
+            file.' }}
+            </p>
+            <button type="button" @click="updateAutoKeywords" :disabled="status === 'loading'"
+               class="px-3 py-1 border border-slate-300 text-xs font-medium rounded-md shadow-sm text-slate-700 bg-white hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed transition-opacity">
+            Update from `new_auto_keywords.txt`
+            </button>
+            </div>
+            <div class="border border-slate-200 rounded-lg p-3 bg-slate-50 space-y-2 opacity-80">
+            <label class="block text-sm font-medium text-slate-600">System Domain Keywords</label>
+            <p
+               class="text-xs text-slate-500 break-words max-h-24 overflow-y-auto p-2 bg-white rounded border border-slate-200">
+            ({{ config.env.DOMAIN_KEYWORDS | length }} keywords) <span
+               x-text="(formConfig.env.DOMAIN_KEYWORDS || []).join(', ').substring(0, 150) + '...'"></span>
+            </p>
+            <p class="text-xs text-slate-400 italic">(Managed in config file)</p>
+            </div>
+            </div>
+            <div class="mb-6">
+            <label for="new-weaviate-instance" class="block text-sm font-medium text-slate-700">Enter Weaviate Instance
+            Name</label>
+            <input type="text" id="new-weaviate-instance" placeholder="Enter instance name"
+               class="mt-1 block w-full p-2 border border-slate-300 rounded-md">
+            </div>
+            <!-- Button to Create the Weaviate Instance -->
+            <div class="mb-6">
+            <button @click="createWeaviateInstance" class="btn-primary">
+            Create Weaviate Instance
+            </button>
+            </div>
+            <!-- Dropdown for selecting Weaviate instance -->
+            <div class="mb-6">
+            <label for="weaviate-instance" class="block text-sm font-medium text-slate-700">Select Weaviate
+            Instance</label>
+            <select id="weaviate-instance" @change="activateRAG"
+               class="mt-1 block w-full p-2 border border-slate-300 rounded-md">
+            <option value="">Choose an instance</option>
+            <!-- Populate dropdown dynamically -->
+            <template x-for="instance in weaviateInstances" :key="instance">
+            <option :value="instance" x-text="instance"></option>
+            </template>
+            </select>
+            </div>
+            </div>
+         </div>
+         </form>
+      </div>
+      <!-- closes configuration card content -->
+      <!-- </div>  closes right column -->
+      <!-- </div>  closes main grid -->
+      <!-- Toast Notification -->
+      <div x-show="toast.visible" x-text="toast.message" class="toast" :class="{ 'show': toast.visible }" x-cloak></div>
+      <!-- Hidden Flask Data -->
+      <script type="application/json" id="initial-config" style="display: none;">
+         {{ config | tojson | safe }}
+      </script>
+      <script type="application/json" id="initial-presets" style="display: none;">
+         {{ presets | tojson | safe }}
+      </script>
+   </body>
+</html>
