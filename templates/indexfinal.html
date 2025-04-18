@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAG-LLM - Control Center</title>
+    <!-- Tailwind CSS via CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Alpine.js via CDN -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <style>
+        /* Optional: Add custom scrollbar styling if desired */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+        /* Basic styling for draggable cards (can be expanded) */
+        .draggable-card {
+            cursor: grab;
+            border: 1px solid #ddd;
+            padding: 8px;
+            margin-bottom: 8px;
+            background-color: #f9f9f9;
+            border-radius: 4px;
+        }
+        .drop-zone {
+            border: 2px dashed #ccc;
+            padding: 10px;
+            min-height: 100px;
+            background-color: #fafafa;
+        }
+         /* Helper class to prevent interaction during loading */
+        .loading-overlay::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background-color: rgba(255, 255, 255, 0.5);
+            z-index: 10; /* Ensure it's above content but below modal */
+        }
+    </style>
+</head>
+<body x-data="ragApp()" x-init="init()" class="bg-gray-100 font-sans flex flex-col min-h-screen relative">
+
+    <!-- Header -->
+    <header class="bg-gray-800 text-white p-3 sm:p-4 flex justify-between items-center shadow-md sticky top-0 z-30">
+        <h1 class="text-lg sm:text-xl font-bold truncate pr-2">RAG-LLM - Data Ingestion Control Center</h1>
+        <!-- Status Bar Area -->
+        <div class="flex items-center space-x-2 flex-shrink-0">
+             <!-- Toast Notification Area -->
+            <div x-show="toast.show"
+                 class="fixed top-5 right-5 text-xs sm:text-sm p-2 sm:p-3 rounded shadow-lg z-50"
+                 :class="{
+                    'bg-green-500 text-white': toast.type === 'success',
+                    'bg-red-500 text-white': toast.type === 'error',
+                    'bg-blue-500 text-white': toast.type === 'info' || !toast.type
+                 }"
+                 x-text="toast.message"
+                 x-transition:enter="transform ease-out duration-300 transition"
+                 x-transition:enter-start="translate-y-2 opacity-0 sm:translate-y-0 sm:translate-x-2"
+                 x-transition:enter-end="translate-y-0 opacity-100 sm:translate-x-0"
+                 x-transition:leave="transition ease-in duration-100"
+                 x-transition:leave-start="opacity-100"
+                 x-transition:leave-end="opacity-0"
+                 style="display: none;" <!-- Avoid flash of unstyled content -->
+                 >
+            </div>
+             <!-- Status Indicator -->
+            <span class="text-xs sm:text-sm">Status:
+                <span class="font-semibold" x-text="statusMessage">Idle</span>
+                <!-- Loading Spinner -->
+                <svg x-show="statusMessage === 'Loading...'" class="animate-spin h-4 w-4 text-white inline-block ml-1" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+            </span>
+        </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="flex-grow p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+
+        <!-- Cell 1: Configuration & Presets -->
+        <div class="bg-white p-4 rounded-lg shadow-md flex flex-col overflow-hidden relative" :class="{ 'loading-overlay': statusMessage === 'Loading...' }">
+            <h2 class="text-lg font-semibold mb-3 border-b pb-2 text-gray-700">Configuration & Presets</h2>
+            <div class="overflow-y-auto flex-grow pr-2 text-sm">
+                <!-- Configuration Form -->
+                <form @submit.prevent="saveConfig">
+                    <!-- Example Config Field (Repeat for all fields in formConfig) -->
+                     <div class="mb-3">
+                        <label for="docDir" class="block text-xs font-medium text-gray-600 mb-1">Document Directory</label>
+                        <input type="text" id="docDir" x-model="formConfig.paths.DOCUMENT_DIR" class="w-full p-1 border border-gray-300 rounded text-xs" placeholder="/path/to/docs">
+                    </div>
+                    <div class="mb-3">
+                        <label for="ollamaHost" class="block text-xs font-medium text-gray-600 mb-1">Ollama Host</label>
+                        <input type="text" id="ollamaHost" x-model="formConfig.env.OLLAMA_HOST" class="w-full p-1 border border-gray-300 rounded text-xs" placeholder="e.g., http://localhost:11434">
+                    </div>
+                     <div class="mb-3">
+                        <label for="llmModel" class="block text-xs font-medium text-gray-600 mb-1">LLM Model</label>
+                        <input type="text" id="llmModel" x-model="formConfig.env.LLM_MODEL" class="w-full p-1 border border-gray-300 rounded text-xs" placeholder="e.g., llama3:latest">
+                    </div>
+                    <div class="mb-3">
+                        <label for="chunkSize" class="block text-xs font-medium text-gray-600 mb-1">Chunk Size</label>
+                        <input type="number" id="chunkSize" x-model.number="formConfig.env.CHUNK_SIZE" class="w-full p-1 border border-gray-300 rounded text-xs">
+                    </div>
+                    <div class="mb-3">
+                        <label for="chunkOverlap" class="block text-xs font-medium text-gray-600 mb-1">Chunk Overlap</label>
+                        <input type="number" id="chunkOverlap" x-model.number="formConfig.env.CHUNK_OVERLAP" class="w-full p-1 border border-gray-300 rounded text-xs">
+                    </div>
+                     <!-- Add other config fields similarly -->
+                    <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded text-xs">Save Config</button>
+                </form>
+
+                <!-- Presets -->
+                <div class="mt-4 pt-4 border-t">
+                    <h3 class="text-sm font-semibold mb-2 text-gray-600">Presets</h3>
+                    <div class="flex flex-wrap gap-1">
+                         <template x-for="(presetData, presetName) in presets" :key="presetName">
+                            <button @click="applyPreset(presetName)" class="bg-gray-200 hover:bg-gray-300 text-gray-700 px-2 py-0.5 rounded text-xs" x-text="presetName"></button>
+                         </template>
+                    </div>
+                    <div class="mt-2 flex items-center gap-2">
+                         <input type="text" x-model="newPresetName" placeholder="New preset name" class="flex-grow p-1 border border-gray-300 rounded text-xs">
+                         <button @click="savePreset" class="bg-green-500 hover:bg-green-600 text-white px-3 py-1 rounded text-xs">Save as Preset</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Cell 2: Files & Ingestion -->
+        <div class="bg-white p-4 rounded-lg shadow-md flex flex-col overflow-hidden relative" :class="{ 'loading-overlay': statusMessage === 'Loading...' }">
+            <h2 class="text-lg font-semibold mb-3 border-b pb-2 text-gray-700">Files & Ingestion</h2>
+            <div class="overflow-y-auto flex-grow pr-2 text-sm">
+                <!-- File Upload -->
+                <div class="mb-3">
+                    <label for="fileUpload" class="block text-xs font-medium text-gray-600 mb-1">Upload Files</label>
+                    <input type="file" id="fileUpload" multiple @change="handleFileSelect($event)" class="block w-full text-xs text-gray-900 border border-gray-300 rounded cursor-pointer bg-gray-50 focus:outline-none">
+                    <button @click="uploadFiles" :disabled="!filesToUpload.length" class="mt-1 bg-purple-500 hover:bg-purple-600 text-white px-3 py-1 rounded text-xs disabled:opacity-50">Upload Selected</button>
+                     <ul class="mt-1 list-disc list-inside text-xs" x-show="filesToUpload.length > 0">
+                        <template x-for="file in filesToUpload" :key="file.name">
+                            <li x-text="file.name"></li>
+                        </template>
+                    </ul>
+                </div>
+
+                 <!-- Ingestion Controls -->
+                <div class="mt-4 pt-4 border-t">
+                     <h3 class="text-sm font-semibold mb-2 text-gray-600">Ingestion</h3>
+                     <div class="space-y-2">
+                         <button @click="startIngestion" class="w-full bg-orange-500 hover:bg-orange-600 text-white px-3 py-1 rounded text-xs">Start Full Ingestion</button>
+                         <button @click="startIncrementalIngestion" class="w-full bg-yellow-500 hover:bg-yellow-600 text-black px-3 py-1 rounded text-xs">Start Incremental Ingestion</button>
+                     </div>
+                </div>
+
+                 <!-- Optional: Draggable Cards Example (if needed) -->
+                 <!--
+                 <div class="mt-4 pt-4 border-t">
+                    <h3 class="text-sm font-semibold mb-2 text-gray-600">Items</h3>
+                    <div class="drop-zone mb-2" data-column="column1" @dragover.prevent @drop="handleDrop('column1')">
+                        <template x-for="item in column1Items" :key="item.id">
+                             <div class="draggable-card" draggable="true" :data-id="item.id" @dragstart="handleDragStart($event, item)">
+                                <span x-text="item.name"></span>
+                             </div>
+                        </template>
+                    </div>
+                    <div class="drop-zone" data-column="column2" @dragover.prevent @drop="handleDrop('column2')">
+                        <template x-for="item in column2Items" :key="item.id">
+                             <div class="draggable-card" draggable="true" :data-id="item.id" @dragstart="handleDragStart($event, item)">
+                                <span x-text="item.name"></span>
+                             </div>
+                        </template>
+                    </div>
+                 </div>
+                 -->
+            </div>
+        </div>
+
+        <!-- Cell 3: Chat -->
+        <div class="bg-white p-4 rounded-lg shadow-md flex flex-col overflow-hidden relative" :class="{ 'loading-overlay': statusMessage === 'Loading...' }">
+            <div class="flex justify-between items-center mb-3 border-b pb-2">
+                 <h2 class="text-lg font-semibold text-gray-700">Chat</h2>
+                 <button @click="clearChat" class="bg-red-500 hover:bg-red-600 text-white px-2 py-0.5 rounded text-xs">Clear Chat</button>
+                 <button @click="saveChat" class="bg-teal-500 hover:bg-teal-600 text-white px-2 py-0.5 rounded text-xs">Save Chat</button>
+            </div>
+            <!-- Chat History Area -->
+            <div class="flex-grow overflow-y-auto space-y-2 mb-3 pr-2 text-sm" x-ref="chatHistoryContainer">
+                <template x-for="(message, index) in chatHistory" :key="index">
+                    <div :class="message.role === 'user' ? 'flex justify-end' : 'flex justify-start'">
+                        <div class="max-w-lg p-2 rounded-lg shadow" :class="message.role === 'user' ? 'bg-blue-500 text-white' : 'bg-gray-200 text-black'">
+                             <!-- Use x-html carefully if messages contain HTML, otherwise x-text -->
+                            <div x-html="message.text"></div>
+                             <!-- <div x-text="message.text"></div> -->
+                        </div>
+                    </div>
+                </template>
+            </div>
+            <!-- Chat Input Area -->
+            <div class="flex items-center border-t pt-3">
+                <input type="text" x-model="userInput" @keydown.enter.prevent="sendMessage" placeholder="Type your message..." class="flex-grow border border-gray-300 rounded-l px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500 text-sm">
+                <button @click="sendMessage" class="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded-r text-sm">Send</button>
+            </div>
+        </div>
+
+        <!-- Cell 4: Weaviate & Saved Chats -->
+        <div class="bg-white p-4 rounded-lg shadow-md flex flex-col overflow-hidden relative" :class="{ 'loading-overlay': statusMessage === 'Loading...' }">
+             <h2 class="text-lg font-semibold mb-3 border-b pb-2 text-gray-700">Weaviate & Saved Chats</h2>
+             <div class="overflow-y-auto flex-grow pr-2 text-sm">
+                <!-- Weaviate Instance Management -->
+                <div class="mb-4">
+                     <h3 class="text-sm font-semibold mb-2 text-gray-600">Weaviate Instances</h3>
+                     <ul class="space-y-1 mb-2">
+                        <template x-for="instance in weaviateInstances" :key="instance.name">
+                             <li class="flex justify-between items-center text-xs p-1 rounded" :class="{ 'bg-green-100 font-semibold': instance.active }">
+                                <span x-text="instance.name"></span>
+                                <div>
+                                    <button x-show="!instance.active" @click="activateRAG(instance.name)" class="bg-green-500 hover:bg-green-600 text-white px-1.5 py-0.5 rounded text-xs mr-1">Activate</button>
+                                    <button @click="removeWeaviateInstance(instance.name)" class="bg-red-500 hover:bg-red-600 text-white px-1.5 py-0.5 rounded text-xs">Remove</button>
+                                </div>
+                             </li>
+                        </template>
+                         <li x-show="!weaviateInstances || weaviateInstances.length === 0" class="text-xs text-gray-500 italic">No instances found.</li>
+                    </ul>
+                     <div class="flex items-center gap-2">
+                         <input type="text" x-model="newInstanceName" placeholder="New instance name" class="flex-grow p-1 border border-gray-300 rounded text-xs">
+                         <button @click="createWeaviateInstance" class="bg-indigo-500 hover:bg-indigo-600 text-white px-3 py-1 rounded text-xs">Create</button>
+                     </div>
+                </div>
+
+                <!-- Saved Chats -->
+                 <div class="mt-4 pt-4 border-t">
+                    <h3 class="text-sm font-semibold mb-2 text-gray-600">Saved Chats</h3>
+                    <ul class="space-y-1">
+                        <template x-for="chat in savedChats" :key="chat.id">
+                             <li class="flex justify-between items-center text-xs p-1 rounded hover:bg-gray-100 cursor-pointer" @click="loadChat(chat.id)">
+                                 <span x-text="chat.name || chat.id"></span>
+                                 <span class="text-gray-500 text-xs" x-text="new Date(chat.timestamp).toLocaleString()"></span>
+                            </li>
+                        </template>
+                         <li x-show="!savedChats || savedChats.length === 0" class="text-xs text-gray-500 italic">No saved chats found.</li>
+                    </ul>
+                 </div>
+             </div>
+        </div>
+
+    </main>
+
+    <!-- Footer: Current Live Settings -->
+    <footer class="bg-gray-200 p-3 text-xs text-gray-700 mt-auto shadow-inner">
+        <h3 class="font-semibold mb-1">Current Live Settings (Read Only)</h3>
+        <div class="bg-white p-2 rounded border border-gray-300 overflow-auto max-h-24"> <!-- Limit height and add scroll -->
+            <pre x-text="JSON.stringify(formConfig, null, 2)" class="text-xs whitespace-pre-wrap break-all"></pre>
+        </div>
+    </footer>
+
+    <!-- Confirmation Modal Placeholder -->
+    <div x-show="confirmationModal.show"
+         class="fixed inset-0 bg-gray-800 bg-opacity-75 flex items-center justify-center z-50 p-4"
+         @click.self="confirmationModal.cancelAction()"
+         style="display: none;"
+         x-transition:enter="ease-out duration-300"
+         x-transition:enter-start="opacity-0"
+         x-transition:enter-end="opacity-100"
+         x-transition:leave="ease-in duration-200"
+         x-transition:leave-start="opacity-100"
+         x-transition:leave-end="opacity-0">
+        <div class="bg-white p-6 rounded-lg shadow-xl max-w-sm w-full"
+             x-transition:enter="ease-out duration-300"
+             x-transition:enter-start="opacity-0 scale-95"
+             x-transition:enter-end="opacity-100 scale-100"
+             x-transition:leave="ease-in duration-200"
+             x-transition:leave-start="opacity-100 scale-100"
+             x-transition:leave-end="opacity-0 scale-95">
+            <h3 class="text-lg font-semibold mb-4" x-text="confirmationModal.title || 'Confirmation'"></h3>
+            <p class="mb-6 text-sm text-gray-700" x-text="confirmationModal.message || 'Are you sure?'"></p>
+            <div class="flex justify-end space-x-3">
+                <button @click="confirmationModal.cancelAction()" class="bg-gray-300 hover:bg-gray-400 text-black px-4 py-1 rounded text-sm">Cancel</button>
+                <button @click="confirmationModal.confirmAction()" class="bg-blue-500 hover:bg-blue-600 text-white px-4 py-1 rounded text-sm">Confirm</button>
+            </div>
+        </div>
+    </div>
+
+
+    <!-- Include your ragapp.js script -->
+    <script src="ragapp.js"></script>
+
+</body>
+</html>

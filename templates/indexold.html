@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RAG Pipeline Control Panel</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+  <style>
+    :root {
+      --primary: #007aff; /* Apple blue */
+      --secondary: #8e8e93;
+      --light: #f2f2f7;
+      --dark: #1c1c1e;
+      --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      --font-size: 0.9rem;
+      --thin-weight: 300;
+    }
+    body {
+      font-family: var(--font-family);
+      font-size: var(--font-size);
+      background-color: var(--light);
+      color: var(--dark);
+    }
+    .card {
+      border-radius: 0.5rem;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      border: none;
+      margin-bottom: 1.5rem;
+    }
+    .card-header {
+      background-color: #fff;
+      border-bottom: 1px solid #e5e5ea;
+      font-weight: var(--thin-weight);
+      color: var(--primary);
+      font-size: 1.1rem;
+    }
+    .form-label {
+      font-weight: var(--thin-weight);
+      color: var(--dark);
+    }
+    .slider-value {
+      font-weight: var(--thin-weight);
+      color: var(--primary);
+      min-width: 2.5rem;
+      text-align: center;
+    }
+    .small-input {
+      max-width: 80px;
+      display: inline-block;
+    }
+    .section-title {
+      font-size: 1rem;
+      font-weight: var(--thin-weight);
+      margin-bottom: 0.5rem;
+      color: var(--secondary);
+    }
+    .group {
+      border: 1px solid #e5e5ea;
+      border-radius: 0.5rem;
+      padding: 1rem;
+      margin-bottom: 1rem;
+      background-color: #fff;
+    }
+    .group h6 {
+      font-weight: var(--thin-weight);
+      margin-bottom: 0.5rem;
+      color: var(--primary);
+    }
+    .preset-btn {
+      margin: 0.25rem;
+      font-size: 0.8rem;
+    }
+  </style>
+</head>
+<body>
+  <div id="alerts-container" class="position-fixed top-0 end-0 p-3" style="z-index:2000; width: 300px;">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="alert alert-{{ category }} alert-dismissible fade show">
+            {{ message }}
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+          </div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+  </div>
+
+<!-- Modal for Updating Auto Domain Keywords -->
+<div class="modal fade" id="updateAutoKeywordsModal" tabindex="-1" aria-labelledby="updateAutoKeywordsModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+       <div class="modal-header">
+           <h5 class="modal-title" id="updateAutoKeywordsModalLabel">Update Auto Domain Keywords</h5>
+           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+       </div>
+       <div class="modal-body">
+           <p>Current Auto Domain Keywords:</p>
+           <p id="modal-current-keywords">{{ config.env.AUTO_DOMAIN_KEYWORDS | join(', ') }}</p>
+           <p>Do you want to override these keywords with newly extracted ones from your documents?</p>
+       </div>
+       <div class="modal-footer">
+           <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+           <button type="button" class="btn btn-primary" onclick="updateAutoKeywords()">Override</button>
+       </div>
+    </div>
+  </div>
+</div>
+
+  <!-- Loading Overlay -->
+  <div id="loading-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.8); z-index: 1050;">
+    <div class="d-flex justify-content-center align-items-center h-100">
+      <div class="spinner-border text-primary" role="status">
+        <span class="visually-hidden">Loading…</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="container py-4">
+    <div class="text-center mb-3">
+      <h1 class="text-primary">Pipeline Control & Query Submission</h1>
+      <p class="text-secondary">LLM-RAG API Augmented System</p>
+    </div>
+    <div class="tab-content">
+      <div class="tab-pane fade show active" id="ask" role="tabpanel" aria-labelledby="ask-tab">
+        <!-- Your existing form and query stuff goes here -->
+      
+    
+      <div class="tab-pane fade" id="ingest" role="tabpanel" aria-labelledby="ingest-tab">
+        
+        <ul class="nav nav-tabs mb-4" id="mainTab" role="tablist">
+          <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="ask-tab" data-bs-toggle="tab" data-bs-target="#ask" type="button" role="tab" aria-controls="ask" aria-selected="true">Ask Question</button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link" id="ingest-tab" data-bs-toggle="tab" data-bs-target="#ingest" type="button" role="tab" aria-controls="ingest" aria-selected="false">Ingest Documents</button>
+          </li>
+        </ul>
+       
+        <div class="card mb-3">
+          <div class="card-header"><i class="bi bi-upload"></i> Upload Files for Ingestion</div>
+          <div class="card-body">
+            <form id="upload-form" enctype="multipart/form-data">
+              <input type="file" name="files" multiple accept=".pdf,.txt,.csv,.docx,.md" class="form-control mb-3">
+              <button type="button" class="btn btn-primary" onclick="uploadFiles()">Upload Files</button>
+            </form>
+            <div id="upload-status" class="mt-3 text-secondary"></div>
+          </div>
+        </div>
+    
+        <div class="card mb-3">
+          <div class="card-header"><i class="bi bi-play-circle"></i> Start Ingestion</div>
+          <div class="card-body">
+            <button class="btn btn-success" onclick="startIngestion()">🚀 Start Ingestion</button>
+            <div id="ingestion-status" class="mt-3 text-secondary"></div>
+          </div>
+        </div>
+    
+        <div class="card mb-3">
+          <div class="card-header"><i class="bi bi-clock-history"></i> Ingestion History</div>
+          <div class="card-body">
+            <ul id="ingestion-history" class="list-group">
+              <!-- Will populate dynamically -->
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- Presets Section -->
+    <div class="card mb-3">
+      <div class="card-header"><i class="bi bi-collection"></i> Configuration Presets</div>
+      <div class="card-body">
+        <div class="d-flex flex-wrap mb-3">
+          {% for preset_name, preset_config in presets.items() %}
+          <button type="button" class="btn btn-outline-primary preset-btn" 
+                  onclick="applyPreset('{{ preset_name }}')"
+                  data-bs-toggle="tooltip" data-bs-html="true"
+                  title="<b>{{ preset_name }}</b><br>{% for k,v in preset_config.items() %}{{ k }}: {{ v }}<br>{% endfor %}">
+            <i class="bi bi-lightning"></i> {{ preset_name }}
+          </button>
+          {% endfor %}
+        </div>
+        <div class="input-group">
+          <input type="text" class="form-control" id="new-preset-name" placeholder="New preset name">
+          <button id="save-preset-btn" class="btn btn-success" type="button" onclick="validateAndSavePreset()">
+            <i class="bi bi-save"></i> Save Current
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <form method="post" action="/" id="config-form">
+      <!-- Query Section -->
+      <div class="card mb-3">
+        <div class="card-header"><i class="bi bi-chat-dots"></i> Ask a Technical Question</div>
+        <div class="card-body">
+          <textarea class="form-control" id="queryInput" name="query" rows="3" placeholder="e.g., What is SCADA?"></textarea>
+        </div>
+      </div>
+
+      <!-- Retrieval Settings -->
+      <div class="card mb-3">
+        <div class="card-header"><i class="bi bi-search"></i> Retrieval Settings</div>
+        <div class="card-body">
+          <div class="row g-3">
+            <div class="col-md-4">
+              <label class="form-label">Lambda Mult <i class="bi bi-info-circle" data-bs-toggle="tooltip" title="Diversity vs relevance (0-1)"></i></label>
+              <input type="range" class="form-range" name="LAMBDA_MULT" min="0" max="10" step="0.05" value="{{ config.retrieval.LAMBDA_MULT }}" oninput="updateSliderValue(this)">
+              <div class="d-flex justify-content-between">
+                <small>0.0</small>
+                <span class="slider-value">{{ "%.2f"|format(config.retrieval.LAMBDA_MULT) }}</span>
+                <small>1.0</small>
+              </div>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">K Value <i class="bi bi-info-circle" data-bs-toggle="tooltip" title="Number of documents to retrieve"></i></label>
+              <input type="range" class="form-range" name="K_VALUE" min="1" max="10" step="1" value="{{ config.retrieval.K_VALUE }}" oninput="updateSliderValue(this)">
+              <div class="d-flex justify-content-between">
+                <small>1</small>
+                <span class="slider-value">{{ config.retrieval.K_VALUE }}</span>
+                <small>10</small>
+              </div>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Score Threshold <i class="bi bi-info-circle" data-bs-toggle="tooltip" title="Minimum relevance score"></i></label>
+              <input type="range" class="form-range" name="SCORE_THRESHOLD" min="0" max="1" step="0.05" value="{{ config.retrieval.SCORE_THRESHOLD }}" oninput="updateSliderValue(this)">
+              <div class="d-flex justify-content-between">
+                <small>0.0</small>
+                <span class="slider-value">{{ "%.2f"|format(config.retrieval.SCORE_THRESHOLD) }}</span>
+                <small>1.0</small>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- LLM Settings -->
+      <div class="card mb-3">
+        <div class="card-header"><i class="bi bi-cpu"></i> LLM Settings</div>
+        <div class="card-body">
+          <div class="row g-3">
+            <div class="col-md-4">
+              <label class="form-label">Temperature <i class="bi bi-info-circle" data-bs-toggle="tooltip" title="Creativity vs predictability"></i></label>
+              <input type="range" class="form-range" name="LLM_TEMPERATURE" min="0" max="2" step="0.1" value="{{ config.model.LLM_TEMPERATURE }}" oninput="updateSliderValue(this)">
+              <div class="d-flex justify-content-between">
+                <small>0.0</small>
+                <span class="slider-value">{{ "%.1f"|format(config.model.LLM_TEMPERATURE) }}</span>
+                <small>2.0</small>
+              </div>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Max Tokens <i class="bi bi-info-circle" data-bs-toggle="tooltip" title="Maximum response length"></i></label>
+              <input type="range" class="form-range" name="MAX_TOKENS" min="128" max="4096" step="1" value="{{ config.model.MAX_TOKENS }}" oninput="updateSliderValue(this)">
+              <div class="d-flex justify-content-between">
+                <small>128</small>
+                <span class="slider-value">{{ config.model.MAX_TOKENS }}</span>
+                <small>4096</small>
+              </div>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Ollama Model <i class="bi bi-info-circle" data-bs-toggle="tooltip" title="LLM model for generation"></i></label>
+              <input type="text" class="form-control" name="OLLAMA_MODEL" value="{{ config.model.OLLAMA_MODEL }}">
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Embedding Model <i class="bi bi-info-circle" data-bs-toggle="tooltip" title="Model for generating embeddings"></i></label>
+              <input type="text" class="form-control" name="EMBEDDING_MODEL" value="{{ config.model.EMBEDDING_MODEL }}">
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Top_p <i class="bi bi-info-circle" data-bs-toggle="tooltip" title="Nucleus sampling (diversity)"></i></label>
+              <input type="range" class="form-range" name="TOP_P" min="0" max="1" step="0.05" value="0.9" oninput="updateSliderValue(this)">
+              <div class="d-flex justify-content-between">
+                <small>0.0</small>
+                <span class="slider-value">0.90</span>
+                <small>1.0</small>
+              </div>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Frequency Penalty <i class="bi bi-info-circle" data-bs-toggle="tooltip" title="Penalize repetition"></i></label>
+              <input type="range" class="form-range" name="FREQUENCY_PENALTY" min="0" max="2" step="0.05" value="0.1" oninput="updateSliderValue(this)">
+              <div class="d-flex justify-content-between">
+                <small>0.0</small>
+                <span class="slider-value">0.10</span>
+                <small>2.0</small>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+<!-- Document Processing -->
+<div class="card mb-3">
+  <div class="card-header"><i class="bi bi-file-earmark-text"></i> Document Processing</div>
+  <div class="card-body">
+    <div class="row g-3">
+      <div class="col-md-4">
+        <label class="form-label">Chunk Size <i class="bi bi-info-circle" data-bs-toggle="tooltip" title="Character length per chunk"></i></label>
+        <input type="range" class="form-range" name="CHUNK_SIZE" min="32" max="2048" step="32" value="{{ config.document.CHUNK_SIZE }}" oninput="updateSliderValue(this)">
+        <div class="d-flex justify-content-between">
+          <small>32</small>
+          <span class="slider-value">{{ config.document.CHUNK_SIZE }}</span>
+          <small>2048</small>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label">Chunk Overlap <i class="bi bi-info-circle" data-bs-toggle="tooltip" title="Overlap between consecutive chunks"></i></label>
+        <input type="range" class="form-range" name="CHUNK_OVERLAP" min="0" max="512" step="8" value="{{ config.document.CHUNK_OVERLAP }}" oninput="updateSliderValue(this)">
+        <div class="d-flex justify-content-between">
+          <small>0</small>
+          <span class="slider-value">{{ config.document.CHUNK_OVERLAP }}</span>
+          <small>512</small>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label">File Types <i class="bi bi-info-circle" data-bs-toggle="tooltip" title="Supported document formats"></i></label>
+        <select class="form-select" name="FILE_TYPES" multiple size="3">
+          {% for ext in ['pdf', 'txt', 'csv', 'docx', 'md'] %}
+          <option value="{{ ext }}" {% if ext in config.document.FILE_TYPES %}selected{% endif %}>{{ ext|upper }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-4">
+        <div class="form-check form-switch pt-4">
+          <input class="form-check-input" type="checkbox" role="switch" name="PARSE_TABLES" {% if config.document.PARSE_TABLES %}checked{% endif %}>
+          <label class="form-check-label">Parse Tables <i class="bi bi-info-circle" data-bs-toggle="tooltip" title="Extract tabular data"></i></label>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="form-check form-switch pt-4">
+          <input class="form-check-input" type="checkbox" name="GENERATE_SUMMARY" {% if config.document.GENERATE_SUMMARY %}checked{% endif %}>
+          <label class="form-check-label">Generate Bullet Summaries <i class="bi bi-info-circle" data-bs-toggle="tooltip" title="Extract key points as bullet summaries"></i></label>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+     <!-- Security Settings -->
+  <div>
+    </div>
+      <div class="card mb-3">
+        <div class="card-header"><i class="bi bi-shield-lock"></i> Security</div>
+        <div class="card-body">
+          <div class="row g-3">
+            <div class="col-md-6">
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" role="switch" name="SANITIZE_INPUT" {% if config.security.SANITIZE_INPUT %}checked{% endif %}>
+                <label class="form-check-label">Input Sanitization <i class="bi bi-info-circle" data-bs-toggle="tooltip" title="Filter harmful input"></i></label>
+              </div>
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" role="switch" name="CACHE_ENABLED" {% if config.security.CACHE_ENABLED %}checked{% endif %}>
+                <label class="form-check-label">Enable Caching <i class="bi bi-info-circle" data-bs-toggle="tooltip" title="Force fresh results even if cached answers are available"></i></label>
+              </div>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Rate Limit (reqs/min) <i class="bi bi-info-circle" data-bs-toggle="tooltip" title="API request limit"></i></label>
+              <input type="number" class="form-control" name="RATE_LIMIT" min="0" max="100" value="{{ config.security.RATE_LIMIT }}">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Advanced Model & Path Settings -->
+      <div class="card mb-3">
+        <div class="card-header"><i class="bi bi-tools"></i> Advanced Configuration</div>
+        <div class="card-body">
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label">RAG DB Path</label>
+              <input type="text" class="form-control" name="RAG_DB_PATH" value="{{ config.paths.RAG_DB_PATH }}">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Document Directory</label>
+              <input type="text" class="form-control" name="DOCUMENT_DIR" value="{{ config.paths.DOCUMENT_DIR }}">
+            </div>
+            <div class="col-md-12">
+              <label class="form-label">Base Domain Keywords:</label>
+              <div style="max-height: 150px; overflow-y: auto;">{{ config.env.DOMAIN_KEYWORDS | join(', ') }}</div>
+            </div>
+            <div class="col-md-12">
+              <label class="form-label">Auto Gen Domain Keywords:</label>
+              <div style="max-height: 150px; overflow-y: auto;">{{ config.env.AUTO_DOMAIN_KEYWORDS | join(', ') }}</div>
+            </div>
+            <div class="col-md-12">
+              <label class="form-label">Your Added Domain Keywords (comma-separated)</label>
+              <input type="text" class="form-control" id="user-keywords" name="USER_KEYWORDS" value="{{ config.env.USER_ADDED_KEYWORDS | join(', ') }}" placeholder="Add your own keywords (comma separated)">
+              <small class="form-text text-secondary">Enter keywords to extend the domain; leave blank to clear.</small>
+            </div>
+            <!-- Auto Domain Keywords Section -->
+            <div class="group mt-3">
+              <h6><i class="bi bi-key"></i> Auto Domain Keywords</h6>
+              <div class="mb-2">
+                <strong>Current Auto Keywords:</strong> 
+                <div class="text-muted">{{ config.env.AUTO_DOMAIN_KEYWORDS | join(', ') }}</div>
+              </div>
+              <div class="mb-2">
+                <strong>New Keywords Detected:</strong> 
+                <div class="text-muted">{{ new_auto_keywords | join(', ') }}</div>
+              </div>
+              <button type="button" class="btn btn-warning btn-sm" onclick="showUpdateAutoKeywordsModal()">
+                <i class="bi bi-arrow-repeat"></i> Update Auto- Generated Keywords
+              </button>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">API Timeout (sec)</label>
+              <input type="number" name="API_TIMEOUT" value="{{ config.security.API_TIMEOUT }}" min="1" class="form-control">
+          </div>
+        </div>
+      </div>
+      <input type="hidden" name="query" value="What is SCADAAAAAAA?"> 
+      <div class="text-center">
+        <button type="submit" class="btn btn-primary btn-lg px-4 me-3" formaction="/">Save Config</button>
+        <button type="button" class="btn btn-success btn-lg px-4" onclick="submitQuery()">Submit Query</button>
+
+      </div>
+    </form>
+
+    <!-- Pipeline Status Output -->
+    <div class="card mt-3">
+      <div class="card-header"><i class="bi bi-terminal"></i> Pipeline Status</div>
+      <div class="card-body">
+        <div id="pipeline-status" class="text-secondary">Idle</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal for Pipeline Output -->
+  <div class="modal fade" id="pipelineModal" tabindex="-1" aria-labelledby="pipelineModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg" style="max-width: 80%; resize: both; overflow: auto;">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="pipelineModalLabel"></h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body" style="white-space: pre-wrap;">
+          <div id="pipelineMetadata" class="fw-semibold text-secondary mb-2"></div>
+          <div id="pipelineOutput"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    function updateSliderValue(slider) {
+      const valueDisplay = slider.parentElement.querySelector('.slider-value');
+      const value = parseFloat(slider.value);
+      valueDisplay.textContent = Number.isInteger(value) ? value.toString() : value.toFixed(2);
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+      document.querySelectorAll('input[type="range"]').forEach(slider => {
+        updateSliderValue(slider);
+        slider.addEventListener('input', function() {
+          updateSliderValue(this);
+        });
+      });
+      const tooltips = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+      tooltips.forEach(t => new bootstrap.Tooltip(t));
+    });
+
+    let isSaving = false;
+    async function validateAndSavePreset() {
+      if (isSaving) return;
+      isSaving = true;
+      const saveBtn = document.getElementById('save-preset-btn');
+      const originalText = saveBtn.innerHTML;
+      try {
+        saveBtn.innerHTML = `<span class="spinner-border spinner-border-sm"></span> Saving...`;
+        saveBtn.disabled = true;
+        const presetName = document.getElementById('new-preset-name').value.trim();
+        if (!presetName) {
+          showAlert("Please enter a preset name", "warning");
+          return;
+        }
+        const formData = new FormData(document.getElementById('config-form'));
+        formData.append('preset_name', presetName);
+        const response = await fetch('/save_preset', { method: 'POST', body: formData });
+        if (!response.ok) throw new Error('Failed to save preset');
+        showAlert("Preset saved successfully!", "success");
+        setTimeout(() => window.location.reload(), 1500);
+      } catch (error) {
+        showAlert(error.message, "danger");
+      } finally {
+        saveBtn.innerHTML = originalText;
+        saveBtn.disabled = false;
+        isSaving = false;
+      }
+    }
+
+    async function applyPreset(presetName) {
+      setLoading(true);
+      try {
+        const response = await fetch(`/apply_preset/${presetName}`, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+        const result = await response.json();
+        if (response.ok) {
+          showAlert(`Applied preset: ${presetName}`, "success");
+          setTimeout(() => window.location.reload(), 2000);
+        } else {
+          throw new Error(result.details?.join('\n') || result.error);
+        }
+      } catch (error) {
+        showAlert(`Failed: ${error.message}`, "danger");
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    function setLoading(show) {
+      document.getElementById('loading-overlay').style.display = show ? 'flex' : 'none';
+    }
+
+    function showAlert(message, type = "warning") {
+      const alertsContainer = document.getElementById('alerts-container');
+      alertsContainer.innerHTML = '';
+      const alertDiv = document.createElement('div');
+      alertDiv.className = `alert alert-${type} alert-dismissible fade show`;
+      alertDiv.innerHTML = `${message}<button type="button" class="btn-close" data-bs-dismiss="alert"></button>`;
+      alertsContainer.appendChild(alertDiv);
+      new bootstrap.Alert(alertDiv);
+      setTimeout(() => {
+        const bsAlert = bootstrap.Alert.getInstance(alertDiv);
+        bsAlert?.close();
+      }, 5000);
+    }
+
+    async function submitQuery() {
+      document.getElementById('loading-overlay').style.display = 'flex';
+      try {
+        const form = document.getElementById('config-form');
+        const formData = new FormData(form);
+        const response = await fetch('/run_pipeline', { method: 'POST', body: formData });
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`Server error ${response.status}: ${errorText}`);
+        }
+        const data = await response.json();
+        document.getElementById('loading-overlay').style.display = 'none';
+        showModal(data.query, data.source, data.response);
+        document.getElementById('pipeline-status').textContent = 'Done';
+      } catch (err) {
+        console.error(err);
+        document.getElementById('loading-overlay').style.display = 'none';
+        alert('Error: ' + err.message);
+      }
+    }
+
+    function showModal(userQuery, source, resultText) {
+      const pipelineModal = new bootstrap.Modal(document.getElementById('pipelineModal'));
+      document.getElementById('pipelineModalLabel').textContent = userQuery;
+      document.getElementById('pipelineMetadata').textContent = "Source: " + source.toUpperCase();
+      document.getElementById('pipelineOutput').textContent = resultText;
+      pipelineModal.show();
+    }
+  </script>
+  <script>
+    function showUpdateAutoKeywordsModal(){
+      var modal = new bootstrap.Modal(document.getElementById('updateAutoKeywordsModal'));
+      modal.show();
+    }
+  
+    async function updateAutoKeywords(){
+      setLoading(true);
+      try {
+        const response = await fetch('/update_auto_keywords', { method: 'POST' });
+        if(!response.ok){
+          throw new Error('Failed to update auto domain keywords');
+        }
+        showAlert("Auto Domain Keywords updated successfully!", "success");
+        setTimeout(() => window.location.reload(), 1500);
+      } catch(err){
+        showAlert(err.message, "danger");
+      } finally {
+        setLoading(false);
+      }
+    }
+  </script>
+  <script>
+    async function uploadFiles() {
+      const form = document.getElementById('upload-form');
+      const formData = new FormData(form);
+      document.getElementById('upload-status').textContent = 'Uploading...';
+      try {
+        const response = await fetch('/upload_files', { method: 'POST', body: formData });
+        const result = await response.json();
+        if (result.success) {
+          document.getElementById('upload-status').textContent = `Uploaded ${result.files.length} file(s) successfully.`;
+        } else {
+          document.getElementById('upload-status').textContent = `Error: ${result.error}`;
+        }
+      } catch (error) {
+        document.getElementById('upload-status').textContent = `Error: ${error.message}`;
+      }
+    }
+    
+    async function startIngestion() {
+      document.getElementById('ingestion-status').textContent = 'Ingestion starting...';
+      try {
+        const response = await fetch('/start_ingestion', { method: 'POST' });
+        const result = await response.json();
+        if (result.success) {
+          document.getElementById('ingestion-status').textContent = `✅ Ingestion finished: ${result.message}`;
+          addToHistory(result.message);
+        } else {
+          document.getElementById('ingestion-status').textContent = `❌ Error: ${result.error}`;
+          addToHistory(`Error: ${result.error}`);
+        }
+      } catch (error) {
+        document.getElementById('ingestion-status').textContent = `❌ Error: ${error.message}`;
+        addToHistory(`Error: ${error.message}`);
+      }
+    }
+    
+    function addToHistory(entry) {
+      const historyList = document.getElementById('ingestion-history');
+      const item = document.createElement('li');
+      item.className = 'list-group-item';
+      item.textContent = `${new Date().toLocaleString()}: ${entry}`;
+      historyList.prepend(item);
+    }
+    </script>
+    
+  
+</body>
+</html>

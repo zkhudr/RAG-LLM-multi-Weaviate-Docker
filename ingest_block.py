@@ -11,7 +11,7 @@ import traceback
 from pathlib import Path
 import datetime as dt
 from datetime import timezone
-from typing import List, Dict, Optional, Tuple, Union
+from typing import List, Dict, Optional, Tuple, Union, Any, Generator
 
 # For PDF processing, use pdfplumber (as in ingest_docs_v7.py)
 import pdfplumber
@@ -22,23 +22,16 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 # LangChain components for Document and splitting
 from langchain_core.documents import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores.utils import filter_complex_metadata
+from langchain_ollama import OllamaEmbeddings
 
 # Import configuration from your project and pipeline settings from ingest_docs_v7.py
-from config import cfg
-from ingest_docs_v7 import PipelineConfig, RobustPDFLoaderV4
-
-
-
+from config import cfg, AppConfig
+#from ingest_docs_v7 import PipelineConfig, RobustPDFLoaderV4  #not need anymore for the updated model
+from ingest_docs_v7 import RobustPDFLoaderV4 
 ############
-
 import hashlib
-
-
 import sys
-
-from typing import Dict, List, Optional, Any, Generator
-
-
 # Weaviate v4 imports
 import weaviate
 from weaviate.classes.config import Property, DataType, Configure,VectorDistances
@@ -49,16 +42,6 @@ from weaviate.exceptions import (
     WeaviateBatchError,
     WeaviateBaseError
 )
-
-# LangChain Components
-from langchain_community.vectorstores.utils import filter_complex_metadata
-from langchain_ollama import OllamaEmbeddings
-
-
-
-
-
-
 
 # Try to import DOCX support
 try:
@@ -143,8 +126,9 @@ def chunk_text(text: str, max_chunk_size: int) -> list:
 
 # --- Incremental Ingestion Class ---
 class IncrementalDocumentProcessorBlock:
-    def __init__(self, data_dir: str, meta_filename="ingested_files.json"):
+    def __init__(self, data_dir: str, app_cfg: AppConfig, meta_filename="ingested_files.json"):
         self.data_dir = Path(data_dir).resolve()
+        self.app_cfg = app_cfg 
         self.meta_file = self.data_dir / meta_filename
         self.processed_files = self.load_metadata()
     
@@ -219,44 +203,53 @@ class IncrementalDocumentProcessorBlock:
             logger.info("No new documents to process.")
             return []
         splitter = RecursiveCharacterTextSplitter(
-            chunk_size=PipelineConfig.CHUNK_SIZE,
-            chunk_overlap=PipelineConfig.CHUNK_OVERLAP
+            chunk_size=self.app_cfg.document.CHUNK_SIZE,
+            chunk_overlap=self.app_cfg.document.CHUNK_OVERLAP
         )
         split_docs = splitter.split_documents(docs)
-        valid_docs = [d for d in split_docs if len(d.page_content) >= PipelineConfig.MIN_CONTENT_LENGTH]
+        min_length = getattr(self.app_cfg.document, 'MIN_CONTENT_LENGTH', 50) # Example: Read from cfg if defined, else default 50
+        valid_docs = [d for d in split_docs if len(d.page_content) >= min_length]
         logger.info("Prepared %d valid document chunks for insertion.", len(valid_docs))
         self.save_metadata()
         return valid_docs
 
-# --- Store Documents in Weaviate ---
+# --- Store Documents in Weaviate --- now uses app_cfg 
 def store_documents(docs: List[Document], client: weaviate.Client, embeddings_obj) -> None:
     if not docs:
         logger.info("No documents to insert.")
         return
-    collection_name = PipelineConfig.VECTORSTORE_COLLECTION
+    collection_name = app_cfg.retrieval.COLLECTION_NAME
     try:
         collection = client.collections.get(collection_name)
     except Exception as e:
-        logger.error("Error fetching collection '%s': %s", collection_name, e)
-        return
+          logger.error("Error fetching collection '%s': %s", collection_name, e)
+          return {"inserted": 0, "errors": 0, "message": f"Failed to get collection {collection_name}"}
     objects = []
-    logger.info("Preparing %d document chunks for insertion.", len(docs))
+    logger.info("Preparing %d document chunks for insertion into '%s'.", len(docs), collection_name)
+    retry_attempts = getattr(app_cfg.security, 'RETRY_ATTEMPTS', 3) # Example
+    retry_wait_multiplier = getattr(app_cfg.security, 'RETRY_WAIT_MULTIPLIER', 2) # Example
+    retry_max_wait = getattr(app_cfg.security, 'RETRY_MAX_WAIT', 30) # Example
+    prepare_errors = 0
+
     for i, doc in enumerate(docs):
         try:
-            @retry(stop=stop_after_attempt(PipelineConfig.RETRY_ATTEMPTS),
-                   wait=wait_exponential(multiplier=PipelineConfig.RETRY_WAIT_MULTIPLIER,
-                                         max=PipelineConfig.RETRY_MAX_WAIT))
+            @retry(stop=stop_after_attempt(retry_attempts),
+                   wait=wait_exponential(multiplier=retry_wait_multiplier, max=retry_max_wait))
             def get_embedding():
                 return embeddings_obj.embed_query(doc.page_content)
+
             embedding = get_embedding()
+
             properties = {
                 "content": doc.page_content,
                 "source": doc.metadata.get("source", "unknown"),
                 "filetype": doc.metadata.get("filetype", "unknown"),
-                "page": 0,  # Not applicable here
-                "created_date": None,
-                "modified_date": None
+                "page": doc.metadata.get("page", 0), # Consistent default
+                "created_date": doc.metadata.get("created_date"),
+                "modified_date": doc.metadata.get("modified_date")
             }
+            # Ensure metadata matches collection schema
+
             objects.append(
                 DataObject(
                     properties=properties,
@@ -265,100 +258,141 @@ def store_documents(docs: List[Document], client: weaviate.Client, embeddings_ob
             )
         except Exception as e:
             logger.error("Error preparing document %d (source: %s): %s", i, doc.metadata.get("source", "N/A"), e)
+            prepare_errors += 1
+
     if not objects:
         logger.warning("No objects prepared for insertion.")
-        return
+        return {"inserted": 0, "errors": prepare_errors, "message": "No objects prepared."}
+
+    inserted_count = 0
+    batch_errors = 0
+    error_messages = []
     try:
         response = collection.data.insert_many(objects=objects)
         if response and response.has_errors:
-            logger.error("Insertion completed with errors: %s", response.errors)
+            logger.error("Insertion completed with errors:")
+            for index, error in response.errors.items():
+                 logger.error(f"  Index {index}: {error.message}")
+                 batch_errors += 1
+                 error_messages.append(f"Index {index}: {error.message}")
+            inserted_count = len(objects) - batch_errors
+        elif response:
+             inserted_count = len(objects)
+             logger.info(f"{inserted_count} document chunks inserted successfully.")
         else:
-            logger.info("Document chunks inserted successfully.")
+            logger.warning("insert_many returned None or empty response.")
+
     except Exception as e:
         logger.error("Batch insertion failed: %s", e)
+        batch_errors = len(objects) # Assume all failed if API call fails
+        error_messages.append(f"Batch API Error: {str(e)}")
 
-def run_ingestion(folder: str) -> dict:
+    total_errors = prepare_errors + batch_errors
+    message = f"Insertion finished. Inserted: {inserted_count}, Errors: {total_errors}."
+    if error_messages:
+        message += " | Errors: " + "; ".join(error_messages[:3]) # Show first few errors
+
+    return {"inserted": inserted_count, "errors": total_errors, "message": message}
+
+
+# --- MODIFIED: run_ingestion uses app_cfg ---
+def run_ingestion(folder: str, app_cfg: AppConfig) -> dict:
     """
-    Run the incremental ingestion process on the specified folder.
+    Run the incremental ingestion process on the specified folder using the provided config.
     Returns a dictionary with stats and a success message.
     """
+    client = None
     try:
-        # Initialize the Weaviate client using PipelineConfig
-        client = PipelineConfig.get_client()
-        if not client.is_live():
-            raise Exception("Weaviate server is not responsive.")
-    except Exception as e:
-        logger.critical("Error connecting to Weaviate: %s", e)
-        raise
+        # Initialize the Weaviate client using connection details from app_cfg
+        # Use the static method from ingest_docs_v7 if preferred, or inline here
+        host = app_cfg.retrieval.WEAVIATE_HOST
+        http_port = app_cfg.retrieval.WEAVIATE_HTTP_PORT
+        grpc_port = app_cfg.retrieval.WEAVIATE_GRPC_PORT
+        logger.info(f"Incremental Ingest: Connecting to {host}:{http_port}...")
+        client = weaviate.connect_to_local(host=host, port=http_port, grpc_port=grpc_port)
+        if not client.is_ready():
+            raise Exception(f"Weaviate server not responsive at {host}:{http_port}")
 
-    # Initialize embeddings via OllamaEmbeddings
+    except Exception as e:
+        logger.critical("Error connecting to Weaviate for incremental ingest: %s", e)
+        raise # Re-raise connection error
+
     try:
-        from langchain_ollama import OllamaEmbeddings
+        # Initialize embeddings via OllamaEmbeddings using app_cfg
         embeddings_obj = OllamaEmbeddings(
-            model=PipelineConfig.EMBEDDING_MODEL,
-            base_url=PipelineConfig.EMBEDDING_BASE_URL
+            model=app_cfg.model.EMBEDDING_MODEL,
+            base_url="http://localhost:11434" # Keep base URL or get from app_cfg if added
         )
     except Exception as e:
-        logger.error("Error initializing embeddings: %s", e)
-        raise
+        logger.error("Error initializing embeddings for incremental ingest: %s", e)
+        if client: client.close()
+        raise # Re-raise embedding error
 
-    # Process new/modified documents incrementally
-    incremental_processor = IncrementalDocumentProcessorBlock(data_dir=folder)
-    new_docs = incremental_processor.process()
+    try:
+        # Process new/modified documents incrementally, passing app_cfg
+        incremental_processor = IncrementalDocumentProcessorBlock(data_dir=folder, app_cfg=app_cfg)
+        new_docs = incremental_processor.process()
 
-    # Insert the resulting document chunks into Weaviate
-    if embeddings_obj:
-        store_documents(new_docs, client, embeddings_obj)
-    else:
-        logger.error("Embeddings object is not available; cannot compute embeddings.")
-        raise Exception("Embeddings object is not available.")
+        # Insert the resulting document chunks into Weaviate
+        stats = store_documents(new_docs, client, embeddings_obj, app_cfg)
 
-    num_processed = len(new_docs)
-    logger.info("Incremental ingestion completed: %d new document chunks processed.", num_processed)
-    client.close()
-    return {"processed": num_processed, "message": "Incremental ingestion completed successfully."}
+        num_processed = len(new_docs) # Number of docs loaded and split
+        num_inserted = stats.get("inserted", 0)
+        num_errors = stats.get("errors", 0)
+        final_message = stats.get("message", "Incremental ingestion process finished.")
+
+        logger.info(f"Incremental ingestion completed: {num_processed} chunks prepared, {num_inserted} inserted, {num_errors} errors.")
+
+        return {
+            "processed_chunks": num_processed,
+            "inserted": num_inserted,
+            "errors": num_errors,
+            "message": final_message
+        }
+    except Exception as proc_e:
+         logger.error(f"Error during incremental processing/storage: {proc_e}", exc_info=True)
+         raise # Re-raise processing error
+    finally:
+        if client:
+            client.close()
+            logger.info(f"Incremental Ingest: Closed Weaviate client for {host}:{http_port}.")
 
 # --- Main Execution ---
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--folder", "-f", type=str, default=cfg.paths.DOCUMENT_DIR,
-                        help="Folder containing documents to ingest.")
+    parser.add_argument("--folder", "-f", type=str, default=None,
+                        help="Folder containing documents to ingest (overrides config).")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging.")
     args = parser.parse_args()
-    if args.verbose:
-        logger.setLevel(logging.DEBUG)
-    # Initialize the Weaviate client using PipelineConfig
-    try:
-        client = PipelineConfig.get_client()
-        if not client.is_live():
-            raise Exception("Weaviate server is not responsive.")
-    except Exception as e:
-        logger.critical("Error connecting to Weaviate: %s", e)
-        return
-    # Initialize embeddings via OllamaEmbeddings
-    try:
-        from langchain_ollama import OllamaEmbeddings
-        embeddings_obj = OllamaEmbeddings(
-            model=PipelineConfig.EMBEDDING_MODEL,
-            base_url=PipelineConfig.EMBEDDING_BASE_URL
-        )
-    except Exception as e:
-        logger.error("Error initializing embeddings: %s", e)
-        embeddings_obj = None
-    # Process new/modified documents incrementally
-    incremental_processor = IncrementalDocumentProcessorBlock(data_dir=args.folder)
-    new_docs = incremental_processor.process()
-    # Insert the resulting document chunks into Weaviate
-    if embeddings_obj:
-        store_documents(new_docs, client, embeddings_obj)
-    else:
-        logger.error("Embeddings object is not available; cannot compute embeddings.")
-    logger.info("Incremental ingestion completed.")
-    client.close()
 
+    if args.verbose:
+        logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        logger.setLevel(logging.DEBUG)
+    else:
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+    # Load main config
+    try:
+        from config import cfg, AppConfig
+        if not cfg: raise RuntimeError("Failed to load main configuration (cfg).")
+    except Exception as cfg_err:
+        logger.critical(f"Could not load configuration: {cfg_err}", exc_info=True)
+        return
+
+    # Determine folder
+    folder_to_ingest = args.folder if args.folder else cfg.paths.DOCUMENT_DIR
+
+    try:
+        # Run ingestion, passing the main cfg object
+        result = run_ingestion(folder_to_ingest, cfg)
+        logger.info(f"Incremental ingestion script finished. Result: {result}")
+        print(f"✅ Success: {result.get('message')}")
+
+    except Exception as e:
+        logger.error("Incremental ingestion script failed: %s", str(e), exc_info=True)
+        print(f"❌ Failure: {str(e)}")
+    # --- END MODIFIED ---
 
 # Only call main() if this script is run directly.
 if __name__ == "__main__":
     main()
-
-

@@ -265,37 +265,42 @@
     }
   },
   "Sparky_Goofy_NoCache": {
-    "model": {
-      "LLM_TEMPERATURE": 1.0,
-      "SYSTEM_MESSAGE": "Bleep bloop! I am Sparky, the slightly eccentric automation bot! I'll answer using the context... probably... but expect weird analogies, maybe a pun, or a random fact about resistors! Let's get automating... maybe? Zap!",
-      "EXTERNAL_API_PROVIDER": "deepseek",
-      "OLLAMA_MODEL": "deepseek-r1",
-      "EMBEDDING_MODEL": "nomic-embed-text",
-      "MAX_TOKENS": 1024,
-      "TOP_P": 0.9,
-      "FREQUENCY_PENALTY": 0.2
+    "security": {
+      "SANITIZE_INPUT": true,
+      "RATE_LIMIT": 20,
+      "API_TIMEOUT": 30,
+      "CACHE_ENABLED": false
     },
     "retrieval": {
+      "COLLECTION_NAME": "industrial_tech",
       "K_VALUE": 3,
-      "SEARCH_TYPE": "mmr",
-      "LAMBDA_MULT": 0.5,
-      "PERFORM_DOMAIN_CHECK": false,
       "SCORE_THRESHOLD": 0.6,
+      "LAMBDA_MULT": 0.5,
+      "SEARCH_TYPE": "mmr",
       "DOMAIN_SIMILARITY_THRESHOLD": 0.65,
       "SPARSE_RELEVANCE_THRESHOLD": 0.15,
       "FUSED_RELEVANCE_THRESHOLD": 0.45,
       "SEMANTIC_WEIGHT": 0.7,
-      "SPARSE_WEIGHT": 0.3
+      "SPARSE_WEIGHT": 0.3,
+      "PERFORM_DOMAIN_CHECK": false,
+      "WEAVIATE_HOST": "localhost",
+      "WEAVIATE_HTTP_PORT": 8091,
+      "WEAVIATE_GRPC_PORT": 50062
     },
-    "security": {
-      "CACHE_ENABLED": false,
-      "SANITIZE_INPUT": true,
-      "RATE_LIMIT": 20,
-      "API_TIMEOUT": 30
+    "model": {
+      "LLM_TEMPERATURE": 1,
+      "MAX_TOKENS": 1024,
+      "OLLAMA_MODEL": "deepseek-r1",
+      "EMBEDDING_MODEL": "nomic-embed-text",
+      "TOP_P": 0.9,
+      "FREQUENCY_PENALTY": 0.2,
+      "SYSTEM_MESSAGE": "Bleep bloop! I am wizzo, the slightly eccentric industrial automation engineering bot! I'll answer using the context... probably... but expect weird analogies, maybe a pun, or a random fact about systems, astronomy, quantum physics or even green energy! Let's get automating... maybe?",
+      "EXTERNAL_API_PROVIDER": "deepseek",
+      "EXTERNAL_API_MODEL_NAME": null
     },
     "document": {
-      "CHUNK_OVERLAP": 56,
       "CHUNK_SIZE": 345,
+      "CHUNK_OVERLAP": 56,
       "FILE_TYPES": [
         "pdf",
         "txt",
@@ -303,12 +308,16 @@
         "docx",
         "md"
       ],
-      "PARSE_TABLES": true
+      "PARSE_TABLES": true,
+      "GENERATE_SUMMARY": true
     },
     "paths": {
-      "DOCUMENT_DIR": "./data"
+      "DOCUMENT_DIR": "./data",
+      "DOMAIN_CENTROID_PATH": "./domain_centroid.npy"
     },
     "env": {
+      "DOMAIN_KEYWORDS": [],
+      "AUTO_DOMAIN_KEYWORDS": [],
       "USER_ADDED_KEYWORDS": [
         "sparky",
         "bleep",
@@ -321,10 +330,9 @@
         "My yellow labrador retriever Juno",
         "AI can take over the world, but not before I get my coffee",
         "I dont need anger management, I need poeple to stop pissing me off"
-              ]
+      ]
     }
   },
-  
   "Competition Focus": {
     "security": {
       "SANITIZE_INPUT": true,
@@ -399,6 +407,130 @@
       "AUTO_DOMAIN_KEYWORDS": [],
       "DOMAIN_KEYWORDS": [],
       "merged_keywords": []
+    }
+  },
+  "TEST ONLY": {
+    "security": {
+      "SANITIZE_INPUT": true,
+      "RATE_LIMIT": 22,
+      "API_TIMEOUT": 33,
+      "CACHE_ENABLED": true
+    },
+    "retrieval": {
+      "COLLECTION_NAME": "industrial_tech",
+      "K_VALUE": 6,
+      "SCORE_THRESHOLD": 1,
+      "LAMBDA_MULT": 1,
+      "SEARCH_TYPE": "mmr",
+      "DOMAIN_SIMILARITY_THRESHOLD": 1,
+      "SPARSE_RELEVANCE_THRESHOLD": 0.97,
+      "FUSED_RELEVANCE_THRESHOLD": 0.99,
+      "SEMANTIC_WEIGHT": 1,
+      "SPARSE_WEIGHT": 0.3,
+      "PERFORM_DOMAIN_CHECK": false,
+      "WEAVIATE_HOST": "localhost",
+      "WEAVIATE_HTTP_PORT": 8090,
+      "WEAVIATE_GRPC_PORT": 50061
+    },
+    "model": {
+      "LLM_TEMPERATURE": 0.7,
+      "MAX_TOKENS": 1024,
+      "OLLAMA_MODEL": "deepseek-r1",
+      "EMBEDDING_MODEL": "nomic-embed-text",
+      "TOP_P": 0.9,
+      "FREQUENCY_PENALTY": 0.1,
+      "SYSTEM_MESSAGE": "Explore the user's question using diverse perspectives from the provided context. Synthesize the information, highlighting different aspects or related points found in the documents. Briefly mention differing viewpoints if present.",
+      "EXTERNAL_API_PROVIDER": "deepseek",
+      "EXTERNAL_API_MODEL_NAME": null
+    },
+    "document": {
+      "CHUNK_SIZE": 345,
+      "CHUNK_OVERLAP": 56,
+      "FILE_TYPES": [
+        "pdf",
+        "txt",
+        "csv",
+        "docx",
+        "md"
+      ],
+      "PARSE_TABLES": true,
+      "GENERATE_SUMMARY": true
+    },
+    "paths": {
+      "DOCUMENT_DIR": "./data",
+      "DOMAIN_CENTROID_PATH": "./domain_centroid.npy"
+    },
+    "env": {
+      "DOMAIN_KEYWORDS": [],
+      "AUTO_DOMAIN_KEYWORDS": [],
+      "USER_ADDED_KEYWORDS": [
+        "Emerson",
+        "competitors",
+        "SLB",
+        "VSD"
+      ]
+    }
+  },
+  "TEST only": {
+    "security": {
+      "SANITIZE_INPUT": true,
+      "RATE_LIMIT": 22,
+      "API_TIMEOUT": 33,
+      "CACHE_ENABLED": true
+    },
+    "retrieval": {
+      "COLLECTION_NAME": "industrial_tech",
+      "K_VALUE": 6,
+      "SCORE_THRESHOLD": 1,
+      "LAMBDA_MULT": 1,
+      "SEARCH_TYPE": "mmr",
+      "DOMAIN_SIMILARITY_THRESHOLD": 1,
+      "SPARSE_RELEVANCE_THRESHOLD": 0,
+      "FUSED_RELEVANCE_THRESHOLD": 0.99,
+      "SEMANTIC_WEIGHT": 1,
+      "SPARSE_WEIGHT": 0.3,
+      "PERFORM_DOMAIN_CHECK": false,
+      "WEAVIATE_HOST": "localhost",
+      "WEAVIATE_HTTP_PORT": 8090,
+      "WEAVIATE_GRPC_PORT": 50061
+    },
+    "model": {
+      "LLM_TEMPERATURE": 0.7,
+      "MAX_TOKENS": 1024,
+      "OLLAMA_MODEL": "deepseek-r1",
+      "EMBEDDING_MODEL": "nomic-embed-text",
+      "TOP_P": 0.9,
+      "FREQUENCY_PENALTY": 0.1,
+      "SYSTEM_MESSAGE": "Explore the user's question using diverse perspectives from the provided context. Synthesize the information, highlighting different aspects or related points found in the documents. Briefly mention differing viewpoints if present.",
+      "EXTERNAL_API_PROVIDER": "deepseek",
+      "EXTERNAL_API_MODEL_NAME": null
+    },
+    "document": {
+      "CHUNK_SIZE": 345,
+      "CHUNK_OVERLAP": 56,
+      "FILE_TYPES": [
+        "pdf",
+        "txt",
+        "csv",
+        "docx",
+        "md"
+      ],
+      "PARSE_TABLES": true,
+      "GENERATE_SUMMARY": true
+    },
+    "paths": {
+      "DOCUMENT_DIR": "./data",
+      "DOMAIN_CENTROID_PATH": "./domain_centroid.npy"
+    },
+    "env": {
+      "DOMAIN_KEYWORDS": [],
+      "AUTO_DOMAIN_KEYWORDS": [],
+      "USER_ADDED_KEYWORDS": [
+        "Emerson",
+        "competitors",
+        "SLB",
+        "VSD"
+      ]
     }
   }
 }

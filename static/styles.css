@@ -1,0 +1,377 @@
+/* === GLOBAL RESETS & BASE === */
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    padding: 0;
+    font-family: 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Inter', system-ui, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background-color: #0EA5E9;
+    color: #111827;
+    line-height: 1.5;
+    font-weight: 400;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+}
+
+/* === CONTAINER === */
+.container {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 0 24px;
+}
+
+/* === SCROLLBAR === */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #8f9cb1;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #0EA5E9;
+    border-radius: 8px;
+    border: 2px solid #0EA5E9;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #0EA5E9;
+}
+
+/* === LOADING OVERLAY === */
+.loading-overlay::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-color: rgba(255, 255, 255, 0.7);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    z-index: 10;
+    display: none;
+    transition: opacity 0.3s ease;
+}
+
+.loading-active.loading-overlay::after {
+    display: block;
+}
+
+/* === SPINNER === */
+@keyframes spin {
+    from {
+        transform: rotate(0deg);
+    }
+
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.spinner {
+    animation: spin 1s cubic-bezier(0.55, 0.055, 0.675, 0.19) infinite;
+    width: 24px;
+    height: 24px;
+    border: 2px solid rgba(0, 0, 0, 0.1);
+    border-left-color: #0369A1;
+    border-radius: 50%;
+}
+
+/* === CODE / PROSE === */
+.prose code::before,
+.prose code::after {
+    content: none;
+}
+
+.prose pre {
+    background-color: #F9FAFB;
+    color: #111827;
+    padding: 16px;
+    border-radius: 12px;
+    overflow-x: auto;
+    font-size: 0.9rem;
+    margin: 20px 0;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.05);
+    border: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.prose code {
+    background-color: #F3F4F6;
+    padding: 0.2em 0.4em;
+    font-size: 85%;
+    border-radius: 4px;
+    font-family: 'SF Mono', SFMono-Regular, ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, 'Liberation Mono', monospace;
+}
+
+.prose pre code {
+    background-color: transparent;
+    padding: 0;
+    margin: 0;
+    font-size: inherit;
+    border-radius: 0;
+}
+
+/* === TOGGLE SWITCH === */
+.toggle-checkbox {
+    appearance: none;
+    display: inline-block;
+    width: 44px;
+    height: 24px;
+    background-color: #E5E7EB;
+    border-radius: 34px;
+    position: relative;
+    transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    cursor: pointer;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.1);
+    border: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.toggle-checkbox::before {
+    content: '';
+    position: absolute;
+    width: 22px;
+    height: 22px;
+    background: linear-gradient(to bottom, #F5F5F5, #DEDEDE);
+    border-radius: 50%;
+    top: 0px;
+    left: 0px;
+    transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+    border: 1px solid #ABABAB;
+}
+
+.toggle-checkbox:checked {
+    background-color: #0EA5E9;
+}
+
+.toggle-checkbox:checked::before {
+    transform: translateX(20px);
+}
+
+.toggle-checkbox:focus-visible {
+    outline: 2px solid #0EA5E9;
+    outline-offset: 2px;
+}
+
+/* === RANGE SLIDER === */
+input[type=range].custom-slider {
+    height: 36px;
+    -webkit-appearance: none;
+    background: transparent;
+    width: 100%;
+    padding: 0;
+    margin: 0;
+}
+
+input[type=range].custom-slider:focus {
+    outline: none;
+}
+
+/* Webkit */
+input[type=range].custom-slider::-webkit-slider-runnable-track {
+    width: 100%;
+    height: 6px;
+    cursor: pointer;
+    background: #CACACA;
+    border-radius: 4px;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.1);
+    border: 1px solid #B6B6B6;
+}
+
+input[type=range].custom-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    height: 22px;
+    width: 22px;
+    background: linear-gradient(to bottom, #F5F5F5, #DEDEDE);
+    border-radius: 50%;
+    cursor: pointer;
+    margin-top: -9px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+    border: 1px solid #ABABAB;
+    transition: background 0.2s ease, transform 0.1s ease;
+}
+
+input[type=range].custom-slider::-webkit-slider-thumb:hover {
+    background: linear-gradient(to bottom, #FFFFFF, #E8E8E8);
+    transform: scale(1.05);
+}
+
+input[type=range].custom-slider:active::-webkit-slider-thumb {
+    background: linear-gradient(to bottom, #E0E0E0, #CCCCCC);
+}
+
+input[type=range].custom-slider:focus::-webkit-slider-thumb {
+    box-shadow: 0 0 0 4px rgba(170, 170, 170, 0.3);
+}
+
+/* Firefox */
+input[type=range].custom-slider::-moz-range-track {
+    width: 100%;
+    height: 6px;
+    cursor: pointer;
+    background: #CACACA;
+    border-radius: 4px;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.1);
+    border: 1px solid #B6B6B6;
+}
+
+input[type=range].custom-slider::-moz-range-thumb {
+    height: 22px;
+    width: 22px;
+    background: linear-gradient(to bottom, #F5F5F5, #DEDEDE);
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+    border: 1px solid #ABABAB;
+    transition: background 0.2s ease, transform 0.1s ease;
+}
+
+input[type=range].custom-slider::-moz-range-thumb:hover {
+    background: linear-gradient(to bottom, #FFFFFF, #E8E8E8);
+    transform: scale(1.05);
+}
+
+input[type=range].custom-slider:active::-moz-range-thumb {
+    background: linear-gradient(to bottom, #E0E0E0, #CCCCCC);
+}
+
+input[type=range].custom-slider:focus::-moz-range-thumb {
+    box-shadow: 0 0 0 4px rgba(170, 170, 170, 0.3);
+}
+
+/* === BUTTONS === */
+.button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-weight: 500;
+    font-size: 14px;
+    transition: all 0.2s ease;
+    cursor: pointer;
+    background-color: #F9FAFB;
+    color: #111827;
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+.button:hover {
+    background-color: #F3F4F6;
+}
+
+.button:active {
+    transform: translateY(1px);
+}
+
+.button-primary,
+.upload-button,
+.create-button {
+    background-color: #0EA5E9;
+    color: white;
+    border: none;
+}
+
+.button-primary:hover,
+.upload-button:hover,
+.create-button:hover {
+    background-color: #0284C7;
+}
+
+.button-primary:hover {
+    background-color: #0284C7;
+}
+
+/* === CARDS === */
+.card {
+    background-color: #0EA5E9;
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.05);
+    padding: 24px;
+    border: 1px solid rgba(0, 0, 0, 0.05);
+    transition: box-shadow 0.3s ease;
+}
+
+.card:hover {
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05), 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+/* === FORM ELEMENTS === */
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="search"],
+textarea,
+select {
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid #D1D5DB;
+    background-color: #FFFFFF;
+    font-size: 14px;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+input[type="text"]:focus,
+input[type="email"]:focus,
+input[type="password"]:focus,
+input[type="search"]:focus,
+textarea:focus,
+select:focus {
+    outline: none;
+    border-color: #0EA5E9;
+    box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.15);
+}
+
+/* === TYPOGRAPHY === */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+    font-weight: 600;
+    line-height: 1.2;
+    margin-top: 0;
+    margin-bottom: 0.5em;
+    color: #111827;
+}
+
+h1 {
+    font-size: 2.25rem;
+    letter-spacing: -0.025em;
+}
+
+h2 {
+    font-size: 1.875rem;
+    letter-spacing: -0.025em;
+}
+
+h3 {
+    font-size: 1.5rem;
+}
+
+h4 {
+    font-size: 1.25rem;
+}
+
+p {
+    margin-top: 0;
+    margin-bottom: 1em;
+}
+
+a {
+    color: #0EA5E9;
+    text-decoration: none;
+    transition: color 0.2s ease;
+}
+
+a:hover {
+    color: #0284C7;
+}

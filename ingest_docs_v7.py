@@ -39,6 +39,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 # Local Configuration
 from config import cfg
+from config import AppConfig
 
 # ========== LOGGING CONFIGURATION ==========
 logger = logging.getLogger(__name__)
@@ -66,21 +67,22 @@ def setup_logging(verbose: bool = False) -> None:
 
 # ========== PIPELINE CONFIGURATION ==========
 class PipelineConfig:
-    """Centralized pipeline configuration for Weaviate v4"""
+    """Centralized pipeline configuration for Weaviate v4 Modified for dynamic connection"""
     # Document processing
     MIN_CONTENT_LENGTH = 50
-    VECTORSTORE_COLLECTION = "industrial_tech"
+    #VECTORSTORE_COLLECTION = "industrial_tech"
+    # COLLECTION_NAME is now read from cfg.retrieval.COLLECTION_NAME where needed
     
-    # Weaviate connection
-    WEAVIATE_HOST = "localhost"
-    WEAVIATE_HTTP_PORT = 8080
-    WEAVIATE_GRPC_PORT = 50051
-    WEAVIATE_TIMEOUT = (30, 300)
+    # removed- Weaviate connection- use main cfg
+    #WEAVIATE_HOST = "localhost"
+    #WEAVIATE_HTTP_PORT = 8080
+    #WEAVIATE_GRPC_PORT = 50051
+    #WEAVIATE_TIMEOUT = (30, 300)
     
-    # Embedding configuration
-    EMBEDDING_MODEL = getattr(cfg.model, 'EMBEDDING_MODEL', 'llama2')
+    # Embedding configuration (can still keep defaults or read from cfg)
+    EMBEDDING_MODEL = getattr(cfg.model, 'EMBEDDING_MODEL', 'nomic-embed-text') # Read from main cfg
     EMBEDDING_TIMEOUT = 30
-    EMBEDDING_BASE_URL = "http://localhost:11434"
+    EMBEDDING_BASE_URL = "http://localhost:11434" # Keep or make configurable via cfg
     
     # Document processing
     PDF_TABLE_EXTRACTION = getattr(cfg.document, 'PARSE_TABLES', True)
@@ -92,30 +94,29 @@ class PipelineConfig:
     RETRY_WAIT_MULTIPLIER = 2
     RETRY_MAX_WAIT = 30
     
-    # Client management
     # In class PipelineConfig:
-    @classmethod
-    def get_client(cls):
-        logger.info(f"Attempting connection via connect_to_local to {cls.WEAVIATE_HOST}:{cls.WEAVIATE_HTTP_PORT} / gRPC:{cls.WEAVIATE_GRPC_PORT}")
+    @staticmethod # Make it static as it doesn't depend on class state anymore
+    def get_client(app_cfg): # Pass the main cfg object
+        """Connects to Weaviate using details from the provided AppConfig object."""
+        host = app_cfg.retrieval.WEAVIATE_HOST
+        http_port = app_cfg.retrieval.WEAVIATE_HTTP_PORT
+        grpc_port = app_cfg.retrieval.WEAVIATE_GRPC_PORT
+
+        logger.info(f"Attempting connection via connect_to_local to {host}:{http_port} / gRPC:{grpc_port}")
         try:
             client = weaviate.connect_to_local(
-                host=cls.WEAVIATE_HOST,
-                port=cls.WEAVIATE_HTTP_PORT,
-                grpc_port=cls.WEAVIATE_GRPC_PORT
-                # timeout_config argument removed
+                host=host,
+                port=http_port,
+                grpc_port=grpc_port
             )
-            # connect_to_local connects automatically, check readiness
             logger.info("connect_to_local finished. Checking readiness...")
             if not client.is_ready():
-                 raise WeaviateConnectionError("client.is_ready() check failed after connect_to_local.")
-            logger.info("Client connection successful and ready (connect_to_local).")
+                raise WeaviateConnectionError(f"client.is_ready() check failed for {host}:{http_port}.")
+            logger.info(f"Client connection successful and ready ({host}:{http_port}).")
             return client
         except Exception as e:
-            logger.error(f"Failed during connect_to_local or readiness check: {e}", exc_info=True)
+            logger.error(f"Failed during connect_to_local or readiness check for {host}:{http_port}: {e}", exc_info=True)
             raise
-
-
-
 
 # ========== CORE COMPONENTS ==========
 class RobustPDFLoaderV4:
@@ -334,9 +335,10 @@ class RobustPDFLoaderV4:
 class DocumentProcessor:
     """Weaviate v4 compatible document processing pipeline"""
     
-    def __init__(self, data_dir: str, client: weaviate.Client):
+    def __init__(self, data_dir: str, client: weaviate.Client, app_cfg: AppConfig):
         self.data_dir = Path(data_dir).resolve()
         self.weaviate_client = client
+        self.app_cfg = app_cfg # Store the main config
         self.embeddings = OllamaEmbeddings(
             model=PipelineConfig.EMBEDDING_MODEL,
             base_url=PipelineConfig.EMBEDDING_BASE_URL
@@ -345,7 +347,8 @@ class DocumentProcessor:
 
     def _init_collection(self):
         """Initialize Weaviate collection with v4 settings"""
-        collection_name = PipelineConfig.VECTORSTORE_COLLECTION
+        # --- MODIFIED: Get collection name from app_cfg ---
+        collection_name = self.app_cfg.retrieval.COLLECTION_NAME
         if not self.weaviate_client.collections.exists(collection_name):
             logger.info(f"Collection '{collection_name}' does not exist. Creating...")
             try:
@@ -392,16 +395,42 @@ class DocumentProcessor:
                 loader = RobustPDFLoaderV4(str(pdf_path), self.weaviate_client)
                 documents.extend(loader.load())
             except Exception as e:
-                logger.error(f"PDF load error {pdf_path}: {e}")
+                logger.error(f"PDF load error {pdf_path}: {e}", exc_info=True)
         
         # Add TXT and CSV processing here...
-        
+        # Example for TXT below
+        for txt_path in self.data_dir.glob("**/*.txt"):
+            try:
+                content = txt_path.read_text(encoding='utf-8')
+                if content.strip():
+                    stat = txt_path.stat()
+                    # Basic metadata similar to PDF loader's base
+                    metadata = {
+                         "source": str(txt_path),
+                         "filetype": "txt",
+                         "created_date": dt.datetime.fromtimestamp(stat.st_birthtime, tz=timezone.utc).isoformat().replace('+00:00', 'Z'),
+                         "modified_date": dt.datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat().replace('+00:00', 'Z'),
+                         "page": 0 # Not applicable for TXT
+                    }
+                    # You might need a metadata cleaning step here too
+                    documents.append(Document(page_content=content, metadata=metadata))
+            except Exception as e:
+                 logger.error(f"TXT load error {txt_path}: {e}", exc_info=True)
+
+
+
+####  ================>     Add similar loops for .csv, .docx, .md based on FILE_TYPES in cfg
+
+
+
+        logger.info(f"Loaded {len(documents)} initial documents from various types.")
         return documents
+        
 
     def _split_documents(self, documents: List[Document]) -> List[Document]:
         splitter = RecursiveCharacterTextSplitter(
-            chunk_size=PipelineConfig.CHUNK_SIZE,
-            chunk_overlap=PipelineConfig.CHUNK_OVERLAP
+            chunk_size=self.app_cfg.document.CHUNK_SIZE,
+            chunk_overlap=self.app_cfg.document.CHUNK_OVERLAP
         )
         return splitter.split_documents(documents)
 
@@ -413,12 +442,12 @@ class DocumentProcessor:
 
     def _store_results(self, documents: List[Document]) -> None:
         """Weaviate v4 batch insertion with embeddings"""
-        collection = self.weaviate_client.collections.get(
-            PipelineConfig.VECTORSTORE_COLLECTION
-        )
-
+        collection_name = self.app_cfg.retrieval.COLLECTION_NAME
+        collection = self.weaviate_client.collections.get(collection_name)
+        
         objects = []
-        logger.info(f"Preparing {len(documents)} documents for insertion...")
+        logger.info(f"Preparing {len(documents)} documents for insertion into '{collection_name}'...")
+       
         for i, doc in enumerate(documents):
             try:
                 # Add retry mechanism for embedding generation
@@ -479,7 +508,9 @@ class DocumentProcessor:
             # response remains None if API call itself fails
             raise e
 
-
+    def get_stats(self) -> Dict: # Example function to return stats
+            # You might track stats during processing
+            return {"processed": len(getattr(self, '_processed_docs', []))}
 
     def __del__(self):
         if self.weaviate_client.is_connected():
@@ -487,37 +518,47 @@ class DocumentProcessor:
 
 # ========== MAIN EXECUTION ==========
 if __name__ == "__main__":
+    # --- MODIFIED: Pass main cfg to get_client and DocumentProcessor ---
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--folder", "-f", type=str, default=None, help="Override document folder from config")
+    parser.add_argument("--verbose", "-v", action="store_true")
+    args = parser.parse_args()
+
+    setup_logging(args.verbose)
+
+    client = None # Define client outside try block for finally
     try:
-        # Initialize components
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--folder", "-f", type=str)
-        parser.add_argument("--verbose", "-v", action="store_true")
-        args = parser.parse_args()
-        
-        setup_logging(args.verbose)
-        client = PipelineConfig.get_client()
-        
-        # Validate connection
+        # Load main config first
+        from config import cfg, AppConfig # Ensure AppConfig is imported if needed by type hints
+        if not cfg:
+            raise RuntimeError("Main configuration (cfg) failed to load.")
+
+        # Get client using the main cfg
+        client = PipelineConfig.get_client(cfg) # Pass cfg object
+
         if not client.is_live():
             raise WeaviateConnectionError("Weaviate server not responsive")
-        
-        # Process documents, passing the CORRECT v4 client
+
+        # Determine data directory
+        data_dir = args.folder or cfg.paths.DOCUMENT_DIR
+
+        # Process documents, passing the client and cfg
         processor = DocumentProcessor(
-            data_dir=args.folder or cfg.paths.DOCUMENT_DIR,
-            client=client  # Pass the v4 client created above
+            data_dir=data_dir,
+            client=client,
+            app_cfg=cfg # Pass the main config object
         )
         processor.execute()
-        
         logger.info("Processing completed successfully")
         print("✅ Success!")
-        
+
     except Exception as e:
-        logger.critical(f"Fatal error: {str(e)}",exc_info=True)
+        logger.critical(f"Fatal error: {str(e)}", exc_info=True)
         print(f"❌ Failure: {str(e)}")
         if args.verbose:
             traceback.print_exc()
         sys.exit(1)
-        
     finally:
-        if 'client' in locals() and client.is_connected():
+        if client and client.is_connected(): # Check if client was successfully created
             client.close()
+            logger.info("Closed Weaviate client connection.")

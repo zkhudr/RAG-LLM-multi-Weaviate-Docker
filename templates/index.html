@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAG-LLM - Control Center</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='styles.css') }}">
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
+</head>
+
+<body x-data="ragApp()" id="rootAppComponent" class="bg-white font-sans flex flex-col min-h-screen relative text-sm">
+
+    <!-- Header -->
+    <header
+        class="bg-slate-100 text-slate-800 p-3 sm:p-4 flex justify-between items-center shadow-sm sticky top-0 z-30 border-b border-slate-200">
+        <h1 class="text-lg sm:text-xl font-semibold truncate pr-2">RAG-LLM - Control Center</h1>
+        <div class="flex items-center space-x-3 flex-shrink-0">
+            <!-- Toast Area -->
+            <div x-show="toast.show" class="fixed top-5 right-5 text-xs sm:text-sm p-3 rounded shadow-lg z-50"
+                :class="{'bg-green-600 text-white': toast.type === 'success', 'bg-red-600 text-white': toast.type === 'error', 'bg-blue-600 text-white': toast.type === 'info' || !toast.type }"
+                x-text="toast.message" x-transition style="display: none;"></div>
+
+            <!-- API Key Status -->
+            <!-- IMPORTANT: Add apiKeyStatus object to ragapp.js data and logic to update it -->
+            <div class="flex items-center space-x-2 text-xs border-l border-slate-300 pl-3 ml-3">
+                <span class="font-medium">API Keys:</span>
+                <span :class="apiKeyStatus.deepseek ? 'text-green-600' : 'text-red-600'"
+                    :title="apiKeyStatus.deepseek ? 'DeepSeek OK' : 'DeepSeek N/A'">DS: <span
+                        x-text="apiKeyStatus.deepseek ? 'OK' : 'N/A'"></span></span>
+                <span :class="apiKeyStatus.openai ? 'text-green-600' : 'text-red-600'"
+                    :title="apiKeyStatus.openai ? 'OpenAI OK' : 'OpenAI N/A'">OA: <span
+                        x-text="apiKeyStatus.openai ? 'OK' : 'N/A'"></span></span>
+                <span :class="apiKeyStatus.anthropic ? 'text-green-600' : 'text-red-600'"
+                    :title="apiKeyStatus.anthropic ? 'Anthropic OK' : 'Anthropic N/A'">AN: <span
+                        x-text="apiKeyStatus.anthropic ? 'OK' : 'N/A'"></span></span>
+                <span :class="apiKeyStatus.cohere ? 'text-green-600' : 'text-red-600'"
+                    :title="apiKeyStatus.cohere ? 'Cohere OK' : 'Cohere N/A'">CO: <span
+                        x-text="apiKeyStatus.cohere ? 'OK' : 'N/A'"></span></span>
+            </div>
+
+            <!-- Main Status Indicator -->
+            <span class="text-xs sm:text-sm text-slate-600 border-l border-slate-300 pl-3">Status:
+                <span class="font-semibold text-slate-800" x-text="statusMessage">Idle</span>
+                <svg x-show="isLoading()" class="spinner h-4 w-4 text-slate-600 inline-block ml-1"
+                    xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z">
+                    </path>
+                </svg>
+            </span>
+        </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="flex-grow p-4 grid grid-cols-1 md:grid-cols-2 gap-4 md:grid-rows-[minmax(0,_2fr)_minmax(0,_1fr)]">
+
+        <!-- Cell 1: Configuration & Presets - Top Left -->
+        <div class="bg-slate-50 p-4 rounded-lg shadow-md flex flex-col overflow-hidden relative border border-slate-200 md:order-1"
+            :class="{ 'loading-active loading-overlay': isLoading() }">
+            <h2 class="text-base font-semibold mb-3 border-b border-slate-300 pb-2 text-sky-500">Configuration &
+                Presets</h2>
+            <div class="overflow-y-auto flex-grow pr-1 text-xs">
+                <!-- Presets Section -->
+                <div class="mb-4 pb-4 border-b border-slate-300">
+                    <h3 class="text-sm font-semibold mb-2 text-sky-500">Presets</h3>
+                    <div class="flex items-center gap-2 mb-2">
+                        <label for="presetSelect" class="text-xs font-medium text-slate-600 flex-shrink-0">Apply
+                            Preset:</label>
+                        <select id="presetSelect" x-model="selectedPresetName"
+                            @change="applyPreset($event.target.value)"
+                            class="flex-grow p-1.5 border border-slate-300 rounded text-xs focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white">
+                            <option value="">-- Select Preset --</option>
+                            <template x-for="(presetData, presetName) in presets" :key="presetName">
+                                <option :value="presetName" x-text="presetName"></option>
+                            </template>
+                        </select>
+                        <button @click="deletePresetWithConfirmation(selectedPresetName)" :disabled="!selectedPresetName || isLoading()"
+                            class="bg-red-600 hover:bg-red-700 text-white px-2 py-1 rounded text-xs transition-colors duration-150 flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
+                            title="Delete selected preset">
+                            <!-- Optional: Add an icon later -->
+                            Delete
+                        </button>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <input type="text" x-model="newPresetName" placeholder="Save current as new preset name"
+                            class="flex-grow p-1.5 border border-slate-300 rounded text-xs focus:ring-1 focus:ring-blue-500 focus:border-blue-500">
+                        <button @click="savePreset" :disabled="!newPresetName.trim()"
+                            class="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded text-xs transition-colors duration-150 flex-shrink-0 disabled:opacity-50">Save
+                            Preset</button>
+                    </div>
+                    <span x-show="!presets || Object.keys(presets).length === 0"
+                        class="text-slate-500 italic text-xs mt-1 block">No presets saved.</span>
+                </div>
+
+                <!-- Configuration Form -->
+                <form @submit.prevent="saveConfig" class="space-y-4">
+                    <!-- Security Settings -->
+                    <div>
+                        <h3 class="text-sm font-semibold mb-2 text-sky-500">Security</h3>
+                        <div class="space-y-2 pl-2">
+                            <div class="flex items-center justify-between">
+                                <label for="secSanitize" class="font-medium text-slate-600">Sanitize Input</label>
+                                <input type="checkbox" id="secSanitize" x-model="formConfig.security.SANITIZE_INPUT"
+                                    class="toggle-checkbox">
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <label for="secRateLimit" class="font-medium text-slate-600">Rate Limit</label>
+                                <input type="number" id="secRateLimit" x-model.number="formConfig.security.RATE_LIMIT"
+                                    class="w-20 p-1 border border-slate-300 rounded text-xs text-right">
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <label for="secApiTimeout" class="font-medium text-slate-600">API Timeout (s)</label>
+                                <input type="number" id="secApiTimeout" x-model.number="formConfig.security.API_TIMEOUT"
+                                    class="w-20 p-1 border border-slate-300 rounded text-xs text-right">
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <label for="secCacheEnabled" class="font-medium text-slate-600">Cache Enabled</label>
+                                <input type="checkbox" id="secCacheEnabled" x-model="formConfig.security.CACHE_ENABLED"
+                                    class="toggle-checkbox">
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Retrieval Settings -->
+                    <div>
+                        <h3 class="text-sm font-semibold mb-2 text-sky-500">Retrieval</h3>
+                        <div class="space-y-2 pl-2">
+                            <div class="grid grid-cols-3 items-center gap-x-2">
+                                <label for="retCollection" class="col-span-1 font-medium text-slate-600">Collection
+                                    Name</label>
+                                <input type="text" id="retCollection" x-model="formConfig.retrieval.COLLECTION_NAME"
+                                    class="col-span-2 p-1 border border-slate-300 rounded text-xs">
+                            </div>
+                            <div class="grid grid-cols-3 items-center gap-x-2">
+                                <label for="retKValue" class="col-span-1 font-medium text-slate-600">K Value</label>
+                                <input type="number" id="retKValue" x-model.number="formConfig.retrieval.K_VALUE"
+                                    class="col-span-2 p-1 border border-slate-300 rounded text-xs">
+                            </div>
+                            <div class="grid grid-cols-3 items-center gap-x-2">
+                                <label for="retSearchType" class="col-span-1 font-medium text-slate-600">Search
+                                    Type</label>
+                                <select id="retSearchType" x-model="formConfig.retrieval.SEARCH_TYPE"
+                                    class="col-span-2 p-1 border border-slate-300 rounded text-xs bg-white">
+                                    <option value="mmr">MMR</option>
+                                    <option value="similarity">Similarity</option>
+                                    <option value="similarity_score_threshold">Similarity Score Threshold</option>
+                                    <option value="hybrid">Hybrid</option>
+                                </select>
+                            </div>
+                            <!-- Sliders using custom class -->
+                            <div class="grid grid-cols-3 items-center gap-x-2">
+                                <label for="retScoreThresh" class="col-span-1 font-medium text-slate-600"
+                                    title="Similarity Score Threshold">Score Threshold</label>
+                                <input type="range" id="retScoreThresh"
+                                    x-model.number="formConfig.retrieval.SCORE_THRESHOLD" min="0" max="1" step="0.01"
+                                    class="custom-slider col-span-1">
+                                <span class="col-span-1 text-right tabular-nums"
+                                    x-text="formConfig.retrieval.SCORE_THRESHOLD.toFixed(2)"></span>
+                            </div>
+                            <div class="grid grid-cols-3 items-center gap-x-2">
+                                <label for="retLambdaMult" class="col-span-1 font-medium text-slate-600"
+                                    title="MMR Lambda Multiplier">Lambda Mult</label>
+                                <input type="range" id="retLambdaMult" x-model.number="formConfig.retrieval.LAMBDA_MULT"
+                                    min="0" max="1" step="0.01" class="custom-slider col-span-1">
+                                <span class="col-span-1 text-right tabular-nums"
+                                    x-text="formConfig.retrieval.LAMBDA_MULT.toFixed(2)"></span>
+                            </div>
+                            <div class="grid grid-cols-3 items-center gap-x-2">
+                                <label for="retDomainThresh" class="col-span-1 font-medium text-slate-600"
+                                    title="Domain Similarity Threshold">Domain Threshold</label>
+                                <input type="range" id="retDomainThresh"
+                                    x-model.number="formConfig.retrieval.DOMAIN_SIMILARITY_THRESHOLD" min="0" max="1"
+                                    step="0.01" class="custom-slider col-span-1">
+                                <span class="col-span-1 text-right tabular-nums"
+                                    x-text="formConfig.retrieval.DOMAIN_SIMILARITY_THRESHOLD.toFixed(2)"></span>
+                            </div>
+                            <div class="grid grid-cols-3 items-center gap-x-2">
+                                <label for="retSparseThresh" class="col-span-1 font-medium text-slate-600"
+                                    title="Sparse Relevance Threshold (Hybrid)">Sparse Threshold</label>
+                                <input type="range" id="retSparseThresh"
+                                    x-model.number="formConfig.retrieval.SPARSE_RELEVANCE_THRESHOLD" min="0" max="1"
+                                    step="0.01" class="custom-slider col-span-1">
+                                <span class="col-span-1 text-right tabular-nums"
+                                    x-text="formConfig.retrieval.SPARSE_RELEVANCE_THRESHOLD.toFixed(2)"></span>
+                            </div>
+                            <div class="grid grid-cols-3 items-center gap-x-2">
+                                <label for="retFusedThresh" class="col-span-1 font-medium text-slate-600"
+                                    title="Fused Relevance Threshold (Hybrid)">Fused Threshold</label>
+                                <input type="range" id="retFusedThresh"
+                                    x-model.number="formConfig.retrieval.FUSED_RELEVANCE_THRESHOLD" min="0" max="1"
+                                    step="0.01" class="custom-slider col-span-1">
+                                <span class="col-span-1 text-right tabular-nums"
+                                    x-text="formConfig.retrieval.FUSED_RELEVANCE_THRESHOLD.toFixed(2)"></span>
+                            </div>
+                            <div class="grid grid-cols-3 items-center gap-x-2">
+                                <label for="retSemanticWeight" class="col-span-1 font-medium text-slate-600"
+                                    title="Semantic Weight (Hybrid)">Semantic Weight</label>
+                                <input type="range" id="retSemanticWeight"
+                                    x-model.number="formConfig.retrieval.SEMANTIC_WEIGHT" min="0" max="1" step="0.01"
+                                    class="custom-slider col-span-1">
+                                <span class="col-span-1 text-right tabular-nums"
+                                    x-text="formConfig.retrieval.SEMANTIC_WEIGHT.toFixed(2)"></span>
+                            </div>
+                            <div class="grid grid-cols-3 items-center gap-x-2">
+                                <label for="retSparseWeight" class="col-span-1 font-medium text-slate-600"
+                                    title="Sparse Weight (Hybrid)">Sparse Weight</label>
+                                <input type="range" id="retSparseWeight"
+                                    x-model.number="formConfig.retrieval.SPARSE_WEIGHT" min="0" max="1" step="0.01"
+                                    class="custom-slider col-span-1">
+                                <span class="col-span-1 text-right tabular-nums"
+                                    x-text="formConfig.retrieval.SPARSE_WEIGHT.toFixed(2)"></span>
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <label for="retDomainCheck" class="font-medium text-slate-600">Perform Domain
+                                    Check</label>
+                                <input type="checkbox" id="retDomainCheck"
+                                    x-model="formConfig.retrieval.PERFORM_DOMAIN_CHECK" class="toggle-checkbox">
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Model Settings -->
+                    <div>
+                        <h3 class="text-sm font-semibold mb-2 text-sky-500">Model</h3>
+                        <div class="space-y-2 pl-2">
+                            <div class="grid grid-cols-3 items-center gap-x-2">
+                                <label for="modLlmTemp" class="col-span-1 font-medium text-slate-600">LLM
+                                    Temperature</label>
+                                <input type="range" id="modLlmTemp" x-model.number="formConfig.model.LLM_TEMPERATURE"
+                                    min="0" max="2" step="0.01" class="custom-slider col-span-1">
+                                <span class="col-span-1 text-right tabular-nums"
+                                    x-text="formConfig.model.LLM_TEMPERATURE.toFixed(2)"></span>
+                            </div>
+                            <div class="grid grid-cols-3 items-center gap-x-2">
+                                <label for="modMaxTokens" class="col-span-1 font-medium text-slate-600">Max
+                                    Tokens</label>
+                                <input type="number" id="modMaxTokens" x-model.number="formConfig.model.MAX_TOKENS"
+                                    min="1" step="1" class="col-span-2 p-1 border border-slate-300 rounded text-xs">
+                            </div>
+                            <div class="grid grid-cols-3 items-center gap-x-2">
+                                <label for="modOllamaModel" class="col-span-1 font-medium text-slate-600">Ollama
+                                    Model</label>
+                                <input type="text" id="modOllamaModel" x-model="formConfig.model.OLLAMA_MODEL"
+                                    class="col-span-2 p-1 border border-slate-300 rounded text-xs">
+                            </div>
+                            <div class="grid grid-cols-3 items-center gap-x-2">
+                                <label for="modEmbeddingModel" class="col-span-1 font-medium text-slate-600">Embedding
+                                    Model</label>
+                                <input type="text" id="modEmbeddingModel" x-model="formConfig.model.EMBEDDING_MODEL"
+                                    class="col-span-2 p-1 border border-slate-300 rounded text-xs">
+                            </div>
+                            <div class="grid grid-cols-3 items-center gap-x-2">
+                                <label for="modTopP" class="col-span-1 font-medium text-slate-600">Top P</label>
+                                <input type="range" id="modTopP" x-model.number="formConfig.model.TOP_P" min="0" max="1"
+                                    step="0.01" class="custom-slider col-span-1">
+                                <span class="col-span-1 text-right tabular-nums"
+                                    x-text="formConfig.model.TOP_P.toFixed(2)"></span>
+                            </div>
+                            <div class="grid grid-cols-3 items-center gap-x-2">
+                                <label for="modFreqPenalty" class="col-span-1 font-medium text-slate-600">Frequency
+                                    Penalty</label>
+                                <input type="range" id="modFreqPenalty"
+                                    x-model.number="formConfig.model.FREQUENCY_PENALTY" min="0" max="2" step="0.01"
+                                    class="custom-slider col-span-1">
+                                <span class="col-span-1 text-right tabular-nums"
+                                    x-text="formConfig.model.FREQUENCY_PENALTY.toFixed(2)"></span>
+                            </div>
+                            <div class="grid grid-cols-3 items-center gap-x-2">
+                                <label for="modExtProvider" class="col-span-1 font-medium text-slate-600">External
+                                    Provider</label>
+                                <input type="text" id="modExtProvider" x-model="formConfig.model.EXTERNAL_API_PROVIDER"
+                                    placeholder="e.g., deepseek, openai"
+                                    class="col-span-2 p-1 border border-slate-300 rounded text-xs">
+                            </div>
+                            <div class="grid grid-cols-3 items-center gap-x-2">
+                                <label for="modExtModel" class="col-span-1 font-medium text-slate-600">External
+                                    Model</label>
+                                <input type="text" id="modExtModel" x-model="formConfig.model.EXTERNAL_API_MODEL_NAME"
+                                    placeholder="Optional override"
+                                    class="col-span-2 p-1 border border-slate-300 rounded text-xs">
+                            </div>
+                            <div>
+                                <label for="modSystemMsg" class="block mb-1 font-medium text-slate-600">System
+                                    Message</label>
+                                <textarea id="modSystemMsg" x-model="formConfig.model.SYSTEM_MESSAGE" rows="4"
+                                    class="w-full p-1 border border-slate-300 rounded text-xs"></textarea>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Document Settings -->
+                    <div>
+                        <h3 class="text-sm font-semibold mb-2 text-sky-500">Document Processing</h3>
+                        <div class="space-y-2 pl-2">
+                            <div class="grid grid-cols-3 items-center gap-x-2">
+                                <label for="docChunkSize" class="col-span-1 font-medium text-slate-600">Chunk
+                                    Size</label>
+                                <input type="number" id="docChunkSize" x-model.number="formConfig.document.CHUNK_SIZE"
+                                    min="1" step="1" class="col-span-2 p-1 border border-slate-300 rounded text-xs">
+                            </div>
+                            <div class="grid grid-cols-3 items-center gap-x-2">
+                                <label for="docChunkOverlap" class="col-span-1 font-medium text-slate-600">Chunk
+                                    Overlap</label>
+                                <input type="number" id="docChunkOverlap"
+                                    x-model.number="formConfig.document.CHUNK_OVERLAP" min="0" step="1"
+                                    class="col-span-2 p-1 border border-slate-300 rounded text-xs">
+                            </div>
+                            <div>
+                                <label for="docFileTypes" class="block mb-1 font-medium text-slate-600">File Types
+                                    (comma-separated)</label>
+                                <input type="text" id="docFileTypes" :value="formConfig.document.FILE_TYPES.join(', ')"
+                                    @input="formConfig.document.FILE_TYPES = $event.target.value.split(',').map(s => s.trim()).filter(Boolean)"
+                                    class="w-full p-1 border border-slate-300 rounded text-xs">
+                                <p class="text-xs text-slate-500 mt-0.5">e.g., pdf,txt,csv,docx,md</p>
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <label for="docParseTables" class="font-medium text-slate-600">Parse Tables</label>
+                                <input type="checkbox" id="docParseTables" x-model="formConfig.document.PARSE_TABLES"
+                                    class="toggle-checkbox">
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <label for="docGenSummary" class="font-medium text-slate-600">Generate Summary</label>
+                                <input type="checkbox" id="docGenSummary" x-model="formConfig.document.GENERATE_SUMMARY"
+                                    class="toggle-checkbox">
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Paths Settings -->
+                    <div>
+                        <h3 class="text-sm font-semibold mb-2 text-sky-500">Paths</h3>
+                        <div class="space-y-2 pl-2">
+                            <div class="grid grid-cols-3 items-center gap-x-2">
+                                <label for="pathDocDir" class="col-span-1 font-medium text-slate-600">Document
+                                    Directory</label>
+                                <input type="text" id="pathDocDir" x-model="formConfig.paths.DOCUMENT_DIR"
+                                    class="col-span-2 p-1 border border-slate-300 rounded text-xs">
+                            </div>
+                            <div class="grid grid-cols-3 items-center gap-x-2">
+                                <label for="pathCentroid" class="col-span-1 font-medium text-slate-600">Domain Centroid
+                                    Path</label>
+                                <input type="text" id="pathCentroid" x-model="formConfig.paths.DOMAIN_CENTROID_PATH"
+                                    class="col-span-2 p-1 border border-slate-300 rounded text-xs">
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Env Settings (Keywords) -->
+                    <div>
+                        <h3 class="text-sm font-semibold mb-2 text-sky-500">Environment Keywords</h3>
+                        <div class="space-y-2 pl-2">
+                            <div>
+                                <label for="envDomainKeywords" class="block mb-1 font-medium text-slate-600">Domain
+                                    Keywords (comma-separated)</label>
+                                <input type="text" id="envDomainKeywords"
+                                    :value="formConfig.env.DOMAIN_KEYWORDS.join(', ')"
+                                    @input="formConfig.env.DOMAIN_KEYWORDS = $event.target.value.split(',').map(s => s.trim()).filter(Boolean)"
+                                    class="w-full p-1 border border-slate-300 rounded text-xs">
+                            </div>
+                            <div>
+                                <label for="envAutoKeywords" class="block mb-1 font-medium text-slate-600">Auto Domain
+                                    Keywords (comma-separated)</label>
+                                <input type="text" id="envAutoKeywords"
+                                    :value="formConfig.env.AUTO_DOMAIN_KEYWORDS.join(', ')"
+                                    @input="formConfig.env.AUTO_DOMAIN_KEYWORDS = $event.target.value.split(',').map(s => s.trim()).filter(Boolean)"
+                                    class="w-full p-1 border border-slate-300 rounded text-xs">
+                            </div>
+                            <div>
+                                <label for="envUserKeywords" class="block mb-1 font-medium text-slate-600">User Added
+                                    Keywords (comma-separated)</label>
+                                <input type="text" id="envUserKeywords"
+                                    :value="formConfig.env.USER_ADDED_KEYWORDS.join(', ')"
+                                    @input="formConfig.env.USER_ADDED_KEYWORDS = $event.target.value.split(',').map(s => s.trim()).filter(Boolean)"
+                                    class="w-full p-1 border border-slate-300 rounded text-xs">
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Save Button -->
+                    <div class="pt-4 border-t border-slate-300">
+                        <button type="submit"
+                            class="w-full bg-gray-700 hover:bg-gray-800 text-white px-3 py-1.5 rounded text-xs transition-colors duration-150">Save
+                            Configuration</button>
+                    </div>
+                </form>
+            </div> <!-- End Config Scrollable Area -->
+        </div> <!-- End Config Cell -->
+
+        <!-- Cell 2: Chat & Saved Chats - Top Right -->
+        <div class="bg-slate-50 p-4 rounded-lg shadow-md flex flex-col overflow-hidden relative border border-slate-200 md:order-2"
+            :class="{ 'loading-active loading-overlay': isLoadingChat() }">
+            <!-- Chat Area -->
+            <div class="flex-grow flex flex-col overflow-hidden">
+                <div class="flex justify-between items-center mb-3 border-b border-slate-300 pb-2">
+                    <h2 class="text-base font-semibold text-sky-500">Chat</h2>
+                    <button @click="clearChatWithConfirmation"
+                        class="bg-red-600 hover:bg-red-700 text-white px-2 py-0.5 rounded text-xs transition-colors duration-150">Clear
+                        Chat</button>
+                </div>
+                <!-- Chat History -->
+                <!-- <div class="h-64 overflow-y-auto space-y-3 mb-3 pr-2 text-sm" x-ref="chatHistoryContainer"> -->
+                    
+                 <div class="flex-grow max-h-[60vh] overflow-y-auto space-y-3 mb-3 pr-2 text-sm" x-ref="chatHistoryContainer"> 
+                     <template x-for="(message, index) in chatHistory" :key="index"> 
+                        <div :class="message.role === 'user' ? 'flex justify-end' : 'flex justify-start'">
+                            <div class="max-w-xl p-2.5 rounded-lg shadow-sm"
+                                :class="message.role === 'user' ? 'bg-blue-500 text-white' : 'bg-slate-200 text-slate-900'">
+                                <div x-html="renderMarkdown(message.text)" class="prose prose-sm max-w-none"></div>
+                            </div>
+                        </div>
+                    </template>
+                    <div x-show="isStreaming" class="flex justify-start">
+                        <div class="max-w-xl p-2.5 rounded-lg shadow-sm bg-slate-200 text-slate-900"><span
+                                class="italic text-slate-500">Typing...</span></div>
+                    </div>
+                </div>
+                <!-- Chat Input -->
+                <div class="flex items-start border-t border-slate-300 pt-3 flex-shrink-0">
+                    <textarea x-model="userInput" placeholder="Type your message... (Shift+Enter for newline)"
+                        @keydown.enter="handleChatInputKeydown($event)"
+                        class="flex-grow border border-slate-300 rounded-l px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 text-sm resize-none"
+                        rows="1" style="min-height: 38px; max-height: 150px;"
+                        x-init="$el.addEventListener('input', () => { $el.style.height = 'auto'; $el.style.height = $el.scrollHeight + 'px'; })"></textarea>
+                    <button @click="sendMessage" :disabled="isStreaming || !userInput.trim()"
+                        class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded-r text-sm disabled:opacity-50 transition-colors duration-150 self-stretch">Send</button>
+                </div>
+            </div>
+            <!-- Saved Chats Area -->
+            <div class="mt-4 pt-4 border-t border-slate-300 flex-shrink-0 max-h-48 overflow-y-auto">
+                <div class="flex justify-between items-center mb-2">
+                    <h3 class="text-sm font-semibold text-slate-600">Saved Chats</h3>
+                    <button @click="saveChat"
+                        class="bg-teal-600 hover:bg-teal-700 text-white px-2 py-0.5 rounded text-xs transition-colors duration-150">Save
+                        Current Chat</button>
+                </div>
+                <ul class="space-y-1">
+                    <template x-for="chat in savedChats" :key="chat.id">
+                        <li class="flex justify-between items-center text-xs p-1 rounded hover:bg-slate-200 cursor-pointer group"
+                            @click="loadChatWithConfirmation(chat.id)">
+                            <span class="truncate pr-2" x-text="chat.name || chat.id"
+                                :title="chat.name || chat.id"></span>
+                            <div class="flex items-center flex-shrink-0">
+                                <span class="text-slate-500 text-xs mr-2"
+                                    x-text="formatTimestamp(chat.timestamp)"></span>
+                                <button @click.stop="deleteChatWithConfirmation(chat.id)"
+                                    class="text-red-500 hover:text-red-700 opacity-0 group-hover:opacity-100 transition-opacity text-xs">Delete</button>
+                            </div>
+                        </li>
+                    </template>
+                    <li x-show="!savedChats || savedChats.length === 0" class="text-xs text-slate-500 italic">No saved
+                        chats found.</li>
+                </ul>
+            </div>
+        </div> <!-- End Chat Cell -->
+
+        <!-- Cell 3: Files & Ingestion - Bottom Left -->
+        <div class="bg-slate-50 p-4 rounded-lg shadow-md flex flex-col overflow-hidden relative border border-slate-200 md:order-3"
+            :class="{ 'loading-active loading-overlay': isLoading() }">
+            <h2 class="text-base font-semibold mb-3 border-b border-slate-300 pb-2 text-sky-500">Files & Ingestion
+            </h2>
+            <div class="overflow-y-auto flex-grow pr-1 text-xs">
+                <div class="mb-4"> <!-- File Upload Section -->
+                    <h3 class="text-sm font-semibold mb-2 text-slate-600">Upload Files</h3>
+                    <label for="fileUpload" class="block font-medium text-slate-600 mb-1">Select files to upload</label>
+                    <input type="file" id="fileUpload" multiple @change="handleFileSelect($event)"
+                        class="block w-full text-xs text-slate-900 border border-slate-300 rounded cursor-pointer bg-slate-100 focus:outline-none file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:text-xs file:bg-slate-200 file:text-slate-700 hover:file:bg-slate-300">
+                    <button @click="uploadFiles" :disabled="!filesToUpload.length"
+                        class="mt-2 bg-gray-700 hover:bg-gray-800 text-white px-3 py-1 rounded text-xs disabled:opacity-50 transition-colors duration-150">Upload
+                        Selected</button>
+                    <ul class="mt-2 list-disc list-inside text-xs text-slate-600" x-show="filesToUpload.length > 0">
+                        <template x-for="file in filesToUpload" :key="file.name">
+                            <li x-text="file.name" class="truncate"></li>
+                        </template>
+                    </ul>
+                </div>
+                <div class="mb-4 pt-4 border-t border-slate-300"> <!-- Ingestion Controls Section -->
+                    <h3 class="text-sm font-semibold mb-2 text-slate-600">Ingestion Control</h3>
+                    <div class="space-y-2">
+                        <button @click="startIngestion"
+                            class="w-full bg-gray-700 hover:bg-gray-800 text-white px-3 py-1.5 rounded text-xs transition-colors duration-150">Start
+                            Full Ingestion</button>
+                        <button @click="startIncrementalIngestion"
+                           class="w-full bg-gray-700 hover:bg-gray-800 text-white px-3 py-1.5 rounded text-xs transition-colors duration-150">Start
+                            Incremental Ingestion</button>
+                    </div>
+                </div>
+            </div>
+        </div> <!-- End Files Cell -->
+
+        <!-- Cell 4: Weaviate Management - Bottom Right -->
+        <div class="bg-slate-50 p-4 rounded-lg shadow-md flex flex-col overflow-hidden relative border border-slate-200 md:order-4"
+            :class="{ 'loading-active loading-overlay': isLoading() }">
+            <h2 class="text-base font-semibold mb-3 border-b border-slate-300 pb-2 text-sky-500">Weaviate Instance
+                Management</h2>
+            <div class="overflow-y-auto flex-grow pr-1 text-xs">
+                <!-- Create New Instance -->
+                <div class="mb-4">
+                    <h3 class="text-sm font-semibold mb-2 text-slate-600">Create New Instance</h3>
+                    <div class="flex items-center gap-2">
+                        <input type="text" x-model="newInstanceName" placeholder="New Weaviate instance name"
+                            class="flex-grow p-1.5 border border-slate-300 rounded text-xs focus:ring-1 focus:ring-blue-500 focus:border-blue-500">
+                        <button @click="createWeaviateInstance" :disabled="!newInstanceName.trim()"
+                            class="bg-gray-700 hover:bg-gray-800 text-white px-3 py-1 rounded text-xs transition-colors duration-150 flex-shrink-0 disabled:opacity-50">Create</button>
+                    </div>
+                </div>
+                <!-- Available Instances List -->
+                <div class="pt-4 border-t border-slate-300">
+                    <h3 class="text-sm font-semibold mb-2 text-slate-600">Available Instances</h3>
+                    <ul class="space-y-1 mb-3">
+                        <template x-for="instance in weaviateInstances" :key="instance.name">
+                            <!-- List Item: Make background slightly diff when active -->
+                            <li class="flex justify-between items-center text-xs p-1.5 rounded border" :class="{
+                                     'bg-green-100 border-green-300': instance.active,
+                                     'bg-white border-slate-200': !instance.active
+                                 }">
+                                <span class="font-medium truncate pr-2"
+                                    :class="{ 'text-green-800': instance.active, 'text-slate-700': !instance.active }"
+                                    x-text="instance.name"></span>
+                                <!-- Action Buttons -->
+                                <div class="flex space-x-1 flex-shrink-0">
+                                    <button x-show="!instance.active" @click="activateRAG(instance.name)"
+                                        class="bg-green-600 hover:bg-green-700 text-white px-2 py-0.5 rounded text-xs transition-colors duration-150">Activate</button>
+                                    <!-- THE REMOVE BUTTON -->
+                                    <button @click="removeWeaviateInstanceWithConfirmation(instance.name)"
+                                        class="bg-red-600 hover:bg-red-700 text-white px-2 py-0.5 rounded text-xs transition-colors duration-150">Remove</button>
+                                </div>
+                            </li>
+                        </template>
+                        <!-- Message shown if loop is empty -->
+                        <li x-show="!weaviateInstances || weaviateInstances.length === 0"
+                            class="text-xs text-slate-500 italic p-1">
+                            No instances found or failed to load. Check JS console & network tab for errors fetching
+                            '/weaviate/list'.
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div> <!-- End Weaviate Cell -->
+
+    </main>
+
+    <!-- Footer -->
+    <footer
+        class="bg-slate-100 p-3 text-xs text-slate-700 mt-auto shadow-inner border-t border-slate-200 flex-shrink-0">
+        <h3 class="font-semibold mb-1 text-sm text-slate-800">Current Live Settings (Read Only)</h3>
+        <div class="bg-white p-2 rounded border border-slate-300 h-96 overflow-auto">
+            <pre x-text="JSON.stringify(formConfig, null, 2)" class="text-xs whitespace-pre-wrap break-all"></pre>
+        </div>
+    </footer>
+
+    <!-- Confirmation Modal -->
+    <div x-show="confirmationModal.show"
+        class="fixed inset-0 bg-gray-800 bg-opacity-75 flex items-center justify-center z-50 p-4"
+        @click.self="cancelAction()" x-transition style="display: none;">
+        <div class="bg-white p-6 rounded-lg shadow-xl max-w-sm w-full" x-transition>
+            <h3 class="text-lg font-semibold mb-4 text-slate-800" x-text="confirmationModal.title || 'Confirmation'">
+            </h3>
+            <p class="mb-6 text-sm text-slate-700" x-text="confirmationModal.message || 'Are you sure?'"></p>
+            <div class="flex justify-end space-x-3">
+                <button @click="cancelAction()"
+                    class="bg-gray-200 hover:bg-gray-300 text-gray-800 px-4 py-1.5 rounded text-sm transition-colors duration-150">Cancel</button>
+                <button @click="confirmAction()"
+                    :class="confirmationModal.confirmButtonClass || 'bg-blue-600 hover:bg-blue-700'"
+                    class="text-white px-4 py-1.5 rounded text-sm transition-colors duration-150">Confirm</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- App Script -->
+    <script src="{{ url_for('static', filename='ragapp.js') }}"></script>
+
+</body>
+
+</html>

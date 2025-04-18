@@ -92,10 +92,14 @@ class RetrievalConfig(BaseModel):
     SEMANTIC_WEIGHT: float = 0.7
     SPARSE_WEIGHT: float = 0.3
     PERFORM_DOMAIN_CHECK: bool = True
+    # --- NEW: Add fields for active Weaviate connection ---
+    WEAVIATE_HOST: str = "localhost"  # Default host
+    WEAVIATE_HTTP_PORT: int = 8080    # Default HTTP port
+    WEAVIATE_GRPC_PORT: int = 50051   # Default gRPC port
 
     @field_validator('SEARCH_TYPE')
     def validate_search_type(cls, value):
-        allowed = {'mmr', 'similarity', 'similarity_score_threshold'}
+        allowed = {'mmr', 'similarity', 'similarity_score_threshold','hybrid'}
         val_lower = value.lower()
         if val_lower not in allowed:
             raise ValueError(f"SEARCH_TYPE must be one of {allowed}, got '{value}'")

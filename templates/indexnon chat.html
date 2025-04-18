@@ -1,0 +1,915 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAG Control Center</title>
+    <!-- Tailwind CSS via CDN -->
+    <script src="https://cdn.tailwindcss.com?plugins=forms"></script>
+    <!-- Alpine.js via CDN -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <!-- Custom Styles for Apple-like feel -->
+    <style>
+        /* Apply a system font stack prioritizing Apple's fonts */
+        body {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background-color: #929292; /* Cooler background: slate-100 */
+            color: #000000; /* Default text: slate-700 */
+            -webkit-font-smoothing: antialiased; /* Smoother fonts on WebKit */
+            -moz-osx-font-smoothing: grayscale;
+        }
+        /* Style for collapsible sections */
+        [x-cloak] { display: none !important; }
+        /* Toast Notification Styling (Subtle) */
+        .toast {
+            position: fixed;
+            bottom: 1.5rem;
+            right: 1.5rem;
+            background-color: rgba(221, 170, 170, 0.9); /* slate-700 with alpha */
+            color: #928d42; /* slate-50 */
+            padding: 0.75rem 1.25rem;
+            border-radius: 0.5rem; /* rounded-lg */
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+            z-index: 50;
+            opacity: 0;
+            transform: translateY(10px);
+            transition: opacity 0.3s ease-out, transform 0.3s ease-out;
+        }
+        .toast.show {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        /* Slightly softer focus rings */
+        *:focus-visible {
+             outline: 2px solid #60a5fa; /* blue-400 */
+             outline-offset: 2px;
+        }
+        /* Custom scrollbar styling (optional, subtle) */
+        ::-webkit-scrollbar { width: 5px; height: 5px;}
+        ::-webkit-scrollbar-track { background: #505050; /* slate-200 */ border-radius: 3px; }
+        ::-webkit-scrollbar-thumb { background: #94a3b8; /* slate-400 */ border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #64748b; /* slate-500 */ }
+    </style>
+</head>
+<body x-data="ragApp()">
+
+    <!-- Main Container -->
+    <div class="container mx-auto p-4 md:p-6 lg:p-8 max-w-7xl">
+
+        <!-- Header -->
+        <header class="mb-6 md:mb-8 flex justify-between items-center">
+            <h1 class="text-xl md:text-2xl font-semibold text-slate-800">RAG Control Center</h1>
+            <div class="flex items-center space-x-3">
+                 <!-- Status Indicator -->
+                 <span x-text="statusMessage" class="text-xs font-medium px-3 py-1 rounded-full transition-colors duration-200"
+                       :class="{
+                            'bg-slate-200 text-slate-600': status === 'idle',
+                            'bg-yellow-100 text-yellow-700 animate-pulse': status === 'loading',
+                            'bg-green-100 text-green-700': status === 'success',
+                            'bg-red-100 text-red-700': status === 'error'
+                       }">
+                       Idle
+                 </span>
+                 <!-- API Key Status Indicator -->
+                 <span class="text-xs font-medium px-3 py-1 rounded-full {{ 'bg-green-100 text-green-700' if config.security.DEEPSEEK_API_KEY else 'bg-red-100 text-red-700' }}">
+                    API Key: {{ 'Loaded' if config.security.DEEPSEEK_API_KEY else 'Missing!' }}
+                 </span>
+            </div>
+        </header>
+
+        <!-- Main Grid Layout -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 md:gap-8">
+
+            <!-- Left Column (Main Interaction - takes 2/3 width on large screens) -->
+            <div class="lg:col-span-2 space-y-6 md:space-y-8">
+
+                <!-- Query Card -->
+                <div class="bg-white p-5 md:p-6 rounded-xl shadow-sm border border-slate-200">
+                    <h2 class="text-lg font-semibold mb-4 text-slate-800">Run Query</h2>
+                    <form @submit.prevent="runQuery">
+                        <div class="mb-4">
+                            <label for="query-input" class="block text-sm font-medium text-slate-600 mb-1.5">Your Question:</label>
+                            <textarea id="query-input" name="query" rows="4"
+                                      class="block w-full rounded-lg border-slate-300 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-200 focus:ring-opacity-50 sm:text-base placeholder-slate-400"
+                                      placeholder="e.g., Explain SCADA architecture in Experion PKS..."
+                                      x-model="currentQuery"
+                                      required></textarea>
+                        </div>
+                         <!-- Cache Toggle & Run Button -->
+                        <div class="flex items-center justify-between mt-5">
+                            <div class="flex items-center">
+                                <input id="query_cache_enabled" name="CACHE_ENABLED" type="checkbox"
+                                       class="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 focus:ring-offset-0"
+                                       x-model="formConfig.security.CACHE_ENABLED">
+                                <label for="query_cache_enabled" class="ml-2 block text-sm text-slate-700">
+                                    Use Cache for this Query
+                                </label>
+                            </div>
+                            <button type="submit" :disabled="status === 'loading'"
+                                    class="inline-flex items-center px-6 py-2 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-60 disabled:cursor-not-allowed transition-opacity">
+                                <svg x-show="status === 'loading'" class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                                <span x-text="status === 'loading' ? 'Running...' : 'Run Query'">Run Query</span>
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- Response Card -->
+                <div class="bg-white p-5 md:p-6 rounded-xl shadow-sm border border-slate-200" x-show="lastResponse.response || lastResponse.error">
+                     <h2 class="text-lg font-semibold mb-4 text-slate-800">Response</h2>
+                     <div x-show="lastResponse.error" class="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm" x-text="lastResponse.error"></div>
+                     <div x-show="lastResponse.response && !lastResponse.error">
+                         <pre class="bg-slate-50 p-4 rounded-lg text-sm text-slate-700 whitespace-pre-wrap overflow-x-auto border border-slate-200" x-text="lastResponse.response"></pre>
+                         <p class="text-xs text-slate-500 mt-3">Source: <span x-text="lastResponse.source || 'N/A'"></span> | Model: <span x-text="lastResponse.model || 'N/A'"></span> | Timestamp: <span x-text="formatTimestamp(lastResponse.timestamp)"></span></p>
+
+                         <!-- Collapsible Context Section -->
+                         <div x-data="{ open: false }" class="mt-4 border-t border-slate-200 pt-4">
+                            <button @click="open = !open" class="text-sm font-medium text-blue-600 hover:text-blue-800 flex items-center transition-colors">
+                                Context Used
+                                <svg :class="{ 'rotate-180': open }" class="ml-1.5 h-4 w-4 transform transition-transform duration-200" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
+                                </svg>
+                            </button>
+                            <div x-show="open" x-cloak x-transition:enter="transition ease-out duration-100" x-transition:enter-start="opacity-0 transform -translate-y-2" x-transition:enter-end="opacity-100 transform translate-y-0" x-transition:leave="transition ease-in duration-75" x-transition:leave-start="opacity-100 transform translate-y-0" x-transition:leave-end="opacity-0 transform -translate-y-2" class="mt-3">
+                                 <pre class="bg-slate-100 p-3 rounded-lg text-xs text-slate-600 whitespace-pre-wrap overflow-x-auto max-h-60 border border-slate-200" x-text="lastResponse.context || 'No context provided or available.'"></pre>
+                            </div>
+                         </div>
+                    </div>
+                </div>
+
+                <!-- File Management Card -->
+                <div class="bg-white p-5 md:p-6 rounded-xl shadow-sm border border-slate-200">
+                     <h2 class="text-lg font-semibold mb-4 text-slate-800">Document Management</h2>
+                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                         <!-- File Upload -->
+                         <div>
+                            <form @submit.prevent="uploadFiles">
+                                <label for="file-upload" class="block text-sm font-medium text-slate-600 mb-1.5">Upload Documents:</label>
+                                <input id="file-upload" name="files" type="file" multiple
+                                       class="block w-full text-sm text-slate-500 file:mr-4 file:py-1.5 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer"
+                                       @change="selectedFileNames = Array.from($event.target.files).map(f => f.name)">
+                                <div class="text-xs text-slate-500 mt-1.5 min-h-[1em]" x-show="selectedFileNames.length > 0"> <!-- Min height to prevent layout shift -->
+                                    Selected: <span x-text="selectedFileNames.join(', ')"></span>
+                                </div>
+                                <button type="submit" :disabled="!selectedFileNames.length || status === 'loading'"
+                                        class="mt-2 inline-flex items-center px-3 py-1.5 border border-slate-300 text-sm font-medium rounded-lg shadow-sm text-slate-700 bg-white hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-60 disabled:cursor-not-allowed transition-opacity">
+                                    Upload
+                                </button>
+                            </form>
+                         </div>
+                         <!-- Ingestion Trigger -->
+                         <div>
+                            <label class="block text-sm font-medium text-slate-600 mb-1.5">Process Uploaded Documents:</label>
+                             <button @click="startIngestion" :disabled="status === 'loading'"
+                                     class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-60 disabled:cursor-not-allowed transition-opacity">
+                                 Start Ingestion
+                             </button>
+                             <p class="text-xs text-slate-500 mt-1.5">Processes files in: <code class="text-xs bg-slate-100 px-1 py-0.5 rounded" x-text="formConfig.paths.DOCUMENT_DIR || 'Not Set'">{{ config.paths.DOCUMENT_DIR }}</code></p>
+                         </div>
+                     </div>
+                     <p class="text-xs text-slate-500 mt-4 pt-4 border-t border-slate-200">Supported ingest types: <span class="font-medium">{{ config.document.FILE_TYPES | join(', ') }}</span></p>
+                 </div>
+
+                <!-- Current Settings Display Card (CORRECTED - Nested template for x-if) -->
+                <div class="bg-white p-5 md:p-6 rounded-xl shadow-sm border border-slate-200"> <!-- Original location in left column -->
+                    <h2 class="text-lg font-semibold mb-4 text-slate-800">Current Live Settings</h2>
+                    <div class="space-y-3 text-xs max-h-[70vh] overflow-y-auto pr-2"> <!-- Scrollable area -->
+                        <!-- Iterate through config sections -->
+                        <template x-for="(sectionData, sectionName) in formConfig" :key="sectionName">
+                            <div class="border-t border-slate-200 pt-3">
+                                <h4 class="text-sm font-semibold uppercase text-slate-500 mb-2" x-text="sectionName"></h4>
+                                <div class="space-y-1 pl-2">
+                                    <!-- Outer template for the loop -->
+                                    <template x-for="([key, value]) in Object.entries(sectionData)" :key="key">
+                                         <!-- Inner template for the conditional check -->
+                                         <template x-if="key !== 'DOMAIN_KEYWORDS' & key !== 'DEEPSEEK_API_KEY'">
+                                    
+                                             <div class="flex justify-between items-start gap-2">
+                                                 <span class="font-medium text-slate-600 whitespace-nowrap" x-text="key"></span>
+                                                 <!-- Display value dynamically based on type -->
+                                                 <span class="text-right text-slate-700 break-words text-ellipsis overflow-hidden"
+                                                       x-text="
+                                                            Array.isArray(value)
+                                                                ? (value.length > 0 ? value.join(', ') : '[]')
+                                                            : (typeof value === 'boolean')
+                                                                ? String(value)
+                                                            : (typeof value === 'number' && !Number.isInteger(value))
+                                                                ? value.toFixed(2) // Format floats
+                                                            : (value === null || value === undefined)
+                                                                ? 'null'
+                                                            : String(value)
+                                                       "
+                                                       :title="String(value)" <!-- Show full value on hover -->
+                                                 ></span>
+                                             </div>
+                                         </template> <!-- End of inner x-if template -->
+                                    </template> <!-- End of outer x-for template -->
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+                <!-- End Current Settings Display Card -->
+
+
+
+
+            </div> <!-- End Left Column -->
+
+            <!-- Right Column (Configuration & Management) -->
+            <div class="lg:col-span-1 space-y-6 md:space-y-8">
+
+                <!-- Presets Card -->
+                 <div class="bg-white p-5 md:p-6 rounded-xl shadow-sm border border-slate-200">
+                    <h2 class="text-lg font-semibold mb-4 text-slate-800">Configuration Presets</h2>
+                    <div class="flex items-center space-x-2 mb-3">
+                         <select id="preset-select" x-model="selectedPreset" class="block w-full rounded-lg border-slate-300 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-200 focus:ring-opacity-50 sm:text-sm">
+                             <option value="">Select a Preset...</option>
+                             {% for name in presets %}
+                             <option value="{{ name }}">{{ name }}</option>
+                             {% endfor %}
+                         </select>
+                         <button @click="applyPreset" :disabled="!selectedPreset || status === 'loading'"
+                                 class="px-3 py-2 border border-slate-300 text-sm font-medium rounded-lg shadow-sm text-slate-700 bg-white hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed whitespace-nowrap transition-opacity">
+                             Apply
+                         </button>
+                    </div>
+                     <div class="flex items-center space-x-2">
+                         <input type="text" x-model="newPresetName" placeholder="New preset name..."
+                                class="block w-full rounded-lg border-slate-300 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-200 focus:ring-opacity-50 sm:text-sm placeholder-slate-400">
+                         <button @click="savePreset" :disabled="!newPresetName.trim() || status === 'loading'"
+                                 class="px-3 py-2 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-60 disabled:cursor-not-allowed whitespace-nowrap transition-opacity">
+                             Save Current
+                         </button>
+                     </div>
+                 </div>
+
+                <!-- Configuration Card -->
+                <div class="bg-white p-5 md:p-6 rounded-xl shadow-sm border border-slate-200">
+                     <div class="flex justify-between items-center mb-5">
+                        <h2 class="text-lg font-semibold text-slate-800">System Configuration</h2>
+                        <button @click="saveConfig" :disabled="status === 'loading'"
+                                class="px-4 py-1.5 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-60 disabled:cursor-not-allowed transition-opacity">
+                             Save Config
+                         </button>
+                     </div>
+
+                    <!-- Form wrapping all config sections -->
+                    <form id="config-form" @submit.prevent="saveConfig" class="space-y-6">
+
+                        <!-- Define shared input styles -->
+                        {% set input_class = "block w-full rounded-lg border-slate-300 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-200 focus:ring-opacity-50 sm:text-sm placeholder-slate-400 text-slate-700" %}
+                        {% set label_class = "block text-sm font-medium text-slate-600 mb-1" %}
+                        {% set checkbox_class = "h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 focus:ring-offset-0" %}
+                        {% set checkbox_label_class = "ml-2 block text-sm text-slate-700" %}
+                        {% set range_class = "mt-1 block w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-300" %}
+                        {% set range_label_class = "block text-xs font-medium text-slate-600" %}
+
+                        <!-- Security Section -->
+                        <div x-data="{ open: false }" class="border-t border-slate-200 pt-4">
+                             <button type="button" @click="open = !open" class="flex justify-between items-center w-full text-left">
+                                 <span class="text-base font-semibold text-slate-700">Security</span>
+                                 <svg :class="{ 'rotate-180': open }" class="h-5 w-5 text-slate-500 transform transition-transform" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" /></svg>
+                             </button>
+                             <div x-show="open" x-cloak x-transition class="mt-4 space-y-4 pl-1">
+                                 <div class="flex items-center">
+                                     <input id="sec_sanitize" name="SANITIZE_INPUT" type="checkbox" x-model="formConfig.security.SANITIZE_INPUT" class="{{ checkbox_class }}">
+                                     <label for="sec_sanitize" class="{{ checkbox_label_class }}">Sanitize Input</label>
+                                 </div>
+                                 <div class="flex items-center">
+                                     <input id="sec_cache_enabled" name="CACHE_ENABLED" type="checkbox" x-model="formConfig.security.CACHE_ENABLED" class="{{ checkbox_class }}">
+                                     <label for="sec_cache_enabled" class="{{ checkbox_label_class }}">Enable Caching</label>
+                                 </div>
+                                 <div>
+                                     <label for="sec_rate_limit" class="{{ label_class }}">Rate Limit (reqs/period)</label>
+                                     <input type="number" id="sec_rate_limit" name="RATE_LIMIT" x-model.number="formConfig.security.RATE_LIMIT" min="1" class="{{ input_class }}">
+                                 </div>
+                                 <div>
+                                     <label for="sec_api_timeout" class="{{ label_class }}">API Timeout (seconds)</label>
+                                     <input type="number" id="sec_api_timeout" name="API_TIMEOUT" x-model.number="formConfig.security.API_TIMEOUT" min="1" class="{{ input_class }}">
+                                 </div>
+                             </div>
+                        </div>
+
+                         <!-- Retrieval Section -->
+                         <div x-data="{ open: false }" class="border-t border-slate-200 pt-4">
+                             <button type="button" @click="open = !open" class="flex justify-between items-center w-full text-left">
+                                 <span class="text-base font-semibold text-slate-700">Retrieval</span>
+                                 <svg :class="{ 'rotate-180': open }" class="h-5 w-5 text-slate-500 transform transition-transform" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" /></svg>
+                             </button>
+                              <div x-show="open" x-cloak x-transition class="mt-4 space-y-4 pl-1">
+                                 <div>
+                                     <label for="ret_coll_name" class="{{ label_class }}">Collection Name</label>
+                                     <input type="text" id="ret_coll_name" name="COLLECTION_NAME" x-model="formConfig.retrieval.COLLECTION_NAME" class="{{ input_class }} bg-slate-100" readonly>
+                                 </div>
+                                 <div>
+                                     <label for="ret_k_value" class="{{ label_class }}">K Value (Chunks)</label>
+                                     <input type="number" id="ret_k_value" name="K_VALUE" x-model.number="formConfig.retrieval.K_VALUE" min="1" class="{{ input_class }}">
+                                 </div>
+                                 <div>
+                                     <label for="ret_search_type" class="{{ label_class }}">Search Type</label>
+                                     <select id="ret_search_type" name="SEARCH_TYPE" x-model="formConfig.retrieval.SEARCH_TYPE" class="{{ input_class }}">
+                                         <option value="mmr">MMR (Maximal Marginal Relevance)</option>
+                                         <option value="similarity">Similarity</option>
+                                         <option value="similarity_score_threshold">Similarity + Threshold</option>
+                                     </select>
+                                 </div>
+                                 <div x-show="formConfig.retrieval.SEARCH_TYPE !== 'mmr'">
+                                     <label for="ret_score_thresh" class="{{ label_class }}">Score Threshold (<span class="font-medium text-slate-700" x-text="formConfig.retrieval.SCORE_THRESHOLD.toFixed(2)"></span>)</label>
+                                     <input type="range" id="ret_score_thresh" name="SCORE_THRESHOLD" x-model.number="formConfig.retrieval.SCORE_THRESHOLD" min="0" max="1" step="0.01" class="{{ range_class }}">
+                                 </div>
+                                 <div x-show="formConfig.retrieval.SEARCH_TYPE === 'mmr'">
+                                     <label for="ret_lambda_mult" class="{{ label_class }}">MMR Diversity (Lambda) (<span class="font-medium text-slate-700" x-text="formConfig.retrieval.LAMBDA_MULT.toFixed(2)"></span>)</label>
+                                     <input type="range" id="ret_lambda_mult" name="LAMBDA_MULT" x-model.number="formConfig.retrieval.LAMBDA_MULT" min="0" max="1" step="0.01" class="{{ range_class }}">
+                                 </div>
+                                 <hr class="my-4 border-slate-200">
+                                 <div class="flex items-center">
+                                     <input id="ret_domain_check" name="PERFORM_DOMAIN_CHECK" type="checkbox" x-model="formConfig.retrieval.PERFORM_DOMAIN_CHECK" class="{{ checkbox_class }}">
+                                     <label for="ret_domain_check" class="{{ checkbox_label_class }}">Perform Hybrid Domain Check</label>
+                                 </div>
+                                 <div x-show="formConfig.retrieval.PERFORM_DOMAIN_CHECK" class="space-y-3 pl-4 border-l-2 border-slate-200 ml-2">
+                                    <div>
+                                        <label for="ret_domain_sim_thresh" class="{{ range_label_class }}">Semantic Threshold (<span class="font-semibold" x-text="formConfig.retrieval.DOMAIN_SIMILARITY_THRESHOLD.toFixed(2)"></span>)</label>
+                                        <input type="range" id="ret_domain_sim_thresh" name="DOMAIN_SIMILARITY_THRESHOLD" x-model.number="formConfig.retrieval.DOMAIN_SIMILARITY_THRESHOLD" min="0" max="1" step="0.01" class="{{ range_class }}">
+                                    </div>
+                                     <div>
+                                        <label for="ret_sparse_thresh" class="{{ range_label_class }}">Sparse Threshold (<span class="font-semibold" x-text="formConfig.retrieval.SPARSE_RELEVANCE_THRESHOLD.toFixed(2)"></span>)</label>
+                                        <input type="range" id="ret_sparse_thresh" name="SPARSE_RELEVANCE_THRESHOLD" x-model.number="formConfig.retrieval.SPARSE_RELEVANCE_THRESHOLD" min="0" max="1" step="0.01" class="{{ range_class }}">
+                                    </div>
+                                    <div>
+                                        <label for="ret_fused_thresh" class="{{ range_label_class }}">Fused Threshold (<span class="font-semibold" x-text="formConfig.retrieval.FUSED_RELEVANCE_THRESHOLD.toFixed(2)"></span>)</label>
+                                        <input type="range" id="ret_fused_thresh" name="FUSED_RELEVANCE_THRESHOLD" x-model.number="formConfig.retrieval.FUSED_RELEVANCE_THRESHOLD" min="0" max="1" step="0.01" class="{{ range_class }}">
+                                    </div>
+                                    <div class="grid grid-cols-2 gap-3">
+                                        <div>
+                                            <label for="ret_semantic_weight" class="{{ range_label_class }}">Semantic Weight (<span class="font-semibold" x-text="formConfig.retrieval.SEMANTIC_WEIGHT.toFixed(2)"></span>)</label>
+                                            <input type="range" id="ret_semantic_weight" name="SEMANTIC_WEIGHT" x-model.number="formConfig.retrieval.SEMANTIC_WEIGHT" min="0" max="1" step="0.01" class="{{ range_class }}">
+                                        </div>
+                                        <div>
+                                            <label for="ret_sparse_weight" class="{{ range_label_class }}">Sparse Weight (<span class="font-semibold" x-text="formConfig.retrieval.SPARSE_WEIGHT.toFixed(2)"></span>)</label>
+                                            <input type="range" id="ret_sparse_weight" name="SPARSE_WEIGHT" x-model.number="formConfig.retrieval.SPARSE_WEIGHT" min="0" max="1" step="0.01" class="{{ range_class }}">
+                                        </div>
+                                     </div>
+                                 </div>
+                             </div>
+                         </div>
+
+                        <!-- Model Section -->
+                        <div x-data="{ open: false }" class="border-t border-slate-200 pt-4">
+                            <button type="button" @click="open = !open" class="flex justify-between items-center w-full text-left">
+                                <span class="text-base font-semibold text-slate-700">Model Parameters</span>
+                                <svg :class="{ 'rotate-180': open }" class="h-5 w-5 text-slate-500 transform transition-transform" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" /></svg>
+                            </button>
+                             <div x-show="open" x-cloak x-transition class="mt-4 space-y-4 pl-1">
+                                 <div>
+                                     <label for="mod_ollama" class="{{ label_class }}">Ollama LLM Model</label>
+                                     <input type="text" id="mod_ollama" name="OLLAMA_MODEL" x-model="formConfig.model.OLLAMA_MODEL" class="{{ input_class }}">
+                                 </div>
+                                 <div>
+                                     <label for="mod_embed" class="{{ label_class }}">Embedding Model</label>
+                                     <input type="text" id="mod_embed" name="EMBEDDING_MODEL" x-model="formConfig.model.EMBEDDING_MODEL" class="{{ input_class }}">
+                                 </div>
+                                 <div>
+                                     <label for="mod_temp" class="{{ label_class }}">LLM Temperature (<span class="font-medium text-slate-700" x-text="formConfig.model.LLM_TEMPERATURE.toFixed(2)"></span>)</label>
+                                     <input type="range" id="mod_temp" name="LLM_TEMPERATURE" x-model.number="formConfig.model.LLM_TEMPERATURE" min="0" max="2" step="0.01" class="{{ range_class }}">
+                                 </div>
+                                 <div>
+                                     <label for="mod_tokens" class="{{ label_class }}">Max Tokens</label>
+                                     <input type="number" id="mod_tokens" name="MAX_TOKENS" x-model.number="formConfig.model.MAX_TOKENS" min="1" class="{{ input_class }}">
+                                 </div>
+                                 <div>
+                                     <label for="mod_top_p" class="{{ label_class }}">Top P (<span class="font-medium text-slate-700" x-text="formConfig.model.TOP_P.toFixed(2)"></span>)</label>
+                                     <input type="range" id="mod_top_p" name="TOP_P" x-model.number="formConfig.model.TOP_P" min="0" max="1" step="0.01" class="{{ range_class }}">
+                                 </div>
+                                 <div>
+                                     <label for="mod_freq_penalty" class="{{ label_class }}">Frequency Penalty (<span class="font-medium text-slate-700" x-text="formConfig.model.FREQUENCY_PENALTY.toFixed(2)"></span>)</label>
+                                     <input type="range" id="mod_freq_penalty" name="FREQUENCY_PENALTY" x-model.number="formConfig.model.FREQUENCY_PENALTY" min="0" max="1" step="0.01" class="{{ range_class }}">
+                                 </div>
+                                 <div>
+                                     <label for="mod_system_msg" class="{{ label_class }}">System Message</label>
+                                     <textarea id="mod_system_msg" name="SYSTEM_MESSAGE" rows="3" x-model="formConfig.model.SYSTEM_MESSAGE" class="{{ input_class }}"></textarea>
+                                 </div>
+                             </div>
+                        </div>
+
+                         <!-- Document Section -->
+                         <div x-data="{ open: false }" class="border-t border-slate-200 pt-4">
+                             <button type="button" @click="open = !open" class="flex justify-between items-center w-full text-left">
+                                 <span class="text-base font-semibold text-slate-700">Document Processing</span>
+                                 <svg :class="{ 'rotate-180': open }" class="h-5 w-5 text-slate-500 transform transition-transform" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" /></svg>
+                             </button>
+                             <div x-show="open" x-cloak x-transition class="mt-4 space-y-4 pl-1">
+                                 <div>
+                                     <label for="doc_chunk_size" class="{{ label_class }}">Chunk Size</label>
+                                     <input type="number" id="doc_chunk_size" name="CHUNK_SIZE" x-model.number="formConfig.document.CHUNK_SIZE" min="50" class="{{ input_class }}">
+                                 </div>
+                                 <div>
+                                     <label for="doc_chunk_overlap" class="{{ label_class }}">Chunk Overlap</label>
+                                     <input type="number" id="doc_chunk_overlap" name="CHUNK_OVERLAP" x-model.number="formConfig.document.CHUNK_OVERLAP" min="0" class="{{ input_class }}">
+                                 </div>
+                                 <div class="flex items-center">
+                                     <input id="doc_parse_tables" name="PARSE_TABLES" type="checkbox" x-model="formConfig.document.PARSE_TABLES" class="{{ checkbox_class }}">
+                                     <label for="doc_parse_tables" class="{{ checkbox_label_class }}">Parse Tables (PDF)</label>
+                                 </div>
+                                 <div>
+                                     <span class="{{ label_class }} mb-1.5">Ingest File Types</span>
+                                     <div class="flex flex-wrap gap-x-4 gap-y-2">
+                                         {% for file_type in ['pdf', 'txt', 'csv', 'docx', 'md'] %}
+                                         <div class="flex items-center">
+                                             <input id="ft_{{ file_type }}" name="FILE_TYPES" type="checkbox" value="{{ file_type }}"
+                                                    :checked="formConfig.document.FILE_TYPES.includes('{{ file_type }}')"
+                                                    @change="toggleFileType('{{ file_type }}')"
+                                                    class="{{ checkbox_class }}">
+                                             <label for="ft_{{ file_type }}" class="ml-1.5 block text-sm text-slate-600">.{{ file_type }}</label>
+                                         </div>
+                                         {% endfor %}
+                                     </div>
+                                 </div>
+                             </div>
+                         </div>
+
+                         <!-- Paths Section -->
+                         <div x-data="{ open: false }" class="border-t border-slate-200 pt-4">
+                             <button type="button" @click="open = !open" class="flex justify-between items-center w-full text-left">
+                                 <span class="text-base font-semibold text-slate-700">Paths</span>
+                                 <svg :class="{ 'rotate-180': open }" class="h-5 w-5 text-slate-500 transform transition-transform" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" /></svg>
+                             </button>
+                             <div x-show="open" x-cloak x-transition class="mt-4 space-y-4 pl-1">
+                                <div>
+                                    <label for="path_doc_dir" class="{{ label_class }}">Document Directory</label>
+                                    <input type="text" id="path_doc_dir" name="DOCUMENT_DIR" x-model="formConfig.paths.DOCUMENT_DIR" class="{{ input_class }}">
+                                </div>
+                                <div>
+                                    <label for="path_centroid" class="{{ label_class }}">Domain Centroid Path</label>
+                                    <input type="text" id="path_centroid" name="DOMAIN_CENTROID_PATH" x-model="formConfig.paths.DOMAIN_CENTROID_PATH" class="{{ input_class }} bg-slate-100" readonly>
+                                </div>
+                             </div>
+                         </div>
+
+                         <!-- Keywords Section -->
+                         <div x-data="{ open: false }" class="border-t border-slate-200 pt-4">
+                            <button type="button" @click="open = !open" class="flex justify-between items-center w-full text-left">
+                                <span class="text-base font-semibold text-slate-700">Keywords</span>
+                                <svg :class="{ 'rotate-180': open }" class="h-5 w-5 text-slate-500 transform transition-transform" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" /></svg>
+                            </button>
+                            <div x-show="open" x-cloak x-transition class="mt-4 space-y-4 pl-1">
+                                <div>
+                                    <label for="env_user_keywords" class="{{ label_class }}">User Added Keywords <span class="text-slate-400">(comma-separated)</span></label>
+                                    <textarea id="env_user_keywords" name="USER_KEYWORDS" rows="3" x-model="userKeywordsInput" class="{{ input_class }}"></textarea>
+                                </div>
+                                <div class="border border-slate-200 rounded-lg p-3 bg-slate-50 space-y-2">
+                                    <label class="block text-sm font-medium text-slate-600">Auto Domain Keywords</label>
+                                    <p class="text-xs text-slate-500 break-words max-h-24 overflow-y-auto p-2 bg-white rounded border border-slate-200">
+                                        {{ config.env.AUTO_DOMAIN_KEYWORDS | join(', ') if config.env.AUTO_DOMAIN_KEYWORDS else 'None - Update via file.' }}
+                                    </p>
+                                    <button type="button" @click="updateAutoKeywords" :disabled="status === 'loading'"
+                                            class="px-3 py-1 border border-slate-300 text-xs font-medium rounded-md shadow-sm text-slate-700 bg-white hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed transition-opacity">
+                                        Update from `new_auto_keywords.txt`
+                                    </button>
+                                </div>
+                                <div class="border border-slate-200 rounded-lg p-3 bg-slate-50 space-y-2 opacity-80">
+                                    <label class="block text-sm font-medium text-slate-600">System Domain Keywords</label>
+                                     <p class="text-xs text-slate-500 break-words max-h-24 overflow-y-auto p-2 bg-white rounded border border-slate-200">
+                                        ({{ config.env.DOMAIN_KEYWORDS | length }} keywords) <span x-text="(formConfig.env.DOMAIN_KEYWORDS || []).join(', ').substring(0, 150) + '...'"></span>
+                                    </p>
+                                    <p class="text-xs text-slate-400 italic">(Managed in config file)</p>
+                                </div>
+                            </div>
+                         </div>
+
+                    </form> <!-- End config form -->
+                </div> <!-- End Configuration Card -->
+            </div> <!-- End Right Column -->
+
+        </div> <!-- End Grid -->
+
+    </div> <!-- End Container -->
+
+    <!-- Toast Notification Placeholder -->
+    <div x-show="toast.visible" x-text="toast.message" class="toast" :class="{ 'show': toast.visible }" x-cloak></div>
+
+<!-- Alpine.js Logic (Keep the previous script block, no changes needed there) -->
+<script>
+    // PASTE THE PREVIOUSLY PROVIDED ragApp() SCRIPT HERE
+    // ... (function ragApp() { ... }) ...
+    function ragApp() {
+        return {
+            // === State ===
+            status: 'idle', // 'idle', 'loading', 'success', 'error'
+            statusMessage: 'Idle',
+            currentQuery: '',
+            lastResponse: { query: '', response: null, context: null, source: null, model: null, timestamp: null, error: null },
+            // Holds the *current* state of the config form, initialized from Flask
+            formConfig: {{ config | tojson | safe }},
+            userKeywordsInput: '{{ config.env.USER_ADDED_KEYWORDS | join(", ") }}', // Separate model for textarea
+            presets: {{ presets | tojson | safe }},
+            selectedPreset: '',
+            newPresetName: '',
+            selectedFileNames: [],
+            toast: { visible: false, message: '', type: 'info' }, // For notifications
+
+            // === Computed / Helpers ===
+            formatTimestamp(isoString) {
+                if (!isoString) return 'N/A';
+                try {
+                    return new Date(isoString).toLocaleString();
+                } catch (e) {
+                    return isoString; // Fallback
+                }
+            },
+            showToast(message, type = 'info', duration = 3000) {
+                this.toast.message = message;
+                this.toast.type = type; // (Could use this for styling later)
+                this.toast.visible = true;
+                // Clear any existing timer
+                if (this.toast.timer) clearTimeout(this.toast.timer);
+                this.toast.timer = setTimeout(() => { this.toast.visible = false; }, duration);
+            },
+            // Helper to update FILE_TYPES array model based on checkbox changes
+            toggleFileType(type) {
+                const index = this.formConfig.document.FILE_TYPES.indexOf(type);
+                if (index === -1) {
+                    this.formConfig.document.FILE_TYPES.push(type);
+                } else {
+                    this.formConfig.document.FILE_TYPES.splice(index, 1);
+                }
+            },
+            // Prepare form data for submission (handles nested structure and keywords)
+             prepareConfigFormData() {
+                const formData = new FormData(document.getElementById('config-form'));
+
+                // Manually add checkbox values if they weren't checked (browsers don't send unchecked)
+                // Security
+                if (!formData.has('SANITIZE_INPUT')) formData.set('SANITIZE_INPUT', 'false'); // Use string 'false'
+                if (!formData.has('CACHE_ENABLED')) formData.set('CACHE_ENABLED', 'false');
+                // Retrieval
+                if (!formData.has('PERFORM_DOMAIN_CHECK')) formData.set('PERFORM_DOMAIN_CHECK', 'false');
+                 // Document
+                if (!formData.has('PARSE_TABLES')) formData.set('PARSE_TABLES', 'false');
+
+                // Add file types (collect all checked values)
+                const fileTypeCheckboxes = document.querySelectorAll('input[name="FILE_TYPES"]:checked');
+                // Clear any existing FILE_TYPES from FormData (important if none are checked)
+                formData.delete('FILE_TYPES');
+                fileTypeCheckboxes.forEach(checkbox => {
+                    formData.append('FILE_TYPES', checkbox.value);
+                });
+                 // If no file types are checked, ensure an empty list is intended/handled backend
+                if (fileTypeCheckboxes.length === 0) {
+                    // Depending on backend: either send nothing, or an explicit empty marker if needed
+                    // formData.append('FILE_TYPES', ''); // Example empty marker if backend expects it
+                }
+
+
+                // Add keywords from the specific textarea model
+                formData.set('USER_KEYWORDS', this.userKeywordsInput);
+
+                return formData;
+            },
+
+            // === Actions / API Calls ===
+            async runQuery() {
+                if (this.status === 'loading' || !this.currentQuery.trim()) return;
+                this.status = 'loading';
+                this.statusMessage = 'Running Query...';
+                this.lastResponse = { query: this.currentQuery, response: 'Processing...', context: null, source: null, model: null, timestamp: null, error: null }; // Show processing message
+
+                const formData = new FormData();
+                formData.append('query', this.currentQuery);
+                // Include cache setting specific to this query run from the form's current state
+                formData.append('CACHE_ENABLED', this.formConfig.security.CACHE_ENABLED ? 'true' : 'false');
+
+
+                try {
+                    const response = await fetch('/run_pipeline', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    const result = await response.json();
+
+                    if (!response.ok) {
+                        throw new Error(result.error || `HTTP error! Status: ${response.status}`);
+                    }
+
+                    this.lastResponse = {
+                        query: result.query || this.currentQuery, // Use query from result or original
+                        response: result.response,
+                        context: result.context,
+                        source: result.source,
+                        model: result.model,
+                        timestamp: result.timestamp,
+                        error: null
+                    };
+                    this.status = 'success';
+                    this.statusMessage = 'Query Complete';
+                    this.showToast('Query successful!');
+
+                } catch (error) {
+                    console.error('Pipeline Error:', error);
+                    this.lastResponse.response = null; // Clear processing message
+                    this.lastResponse.error = `Failed to run query: ${error.message}`;
+                    this.status = 'error';
+                    this.statusMessage = 'Query Error';
+                    this.showToast(`Error: ${error.message}`, 'error', 5000); // Longer error toast
+                } finally {
+                     // Reset status to idle after a delay, unless another action started
+                     setTimeout(() => { if (this.status !== 'loading') { this.status = 'idle'; this.statusMessage = 'Idle'; }}, 2000);
+                }
+            },
+
+             async saveConfig() {
+                 if (this.status === 'loading') return;
+                this.status = 'loading';
+                this.statusMessage = 'Saving Config...';
+
+                const formData = this.prepareConfigFormData();
+
+                try {
+                    // Using '/' endpoint based on your app.py, expecting POST
+                    const response = await fetch('/', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    // Assuming Flask redirects on success AND error after flashing message
+                    if (response.redirected) {
+                         // Check if the URL changed - implies success/error handled by Flask flash
+                         if (response.url !== window.location.href) {
+                             // Message flashed by Flask, reload to show it
+                             window.location.reload();
+                             // Keep status loading until reload completes...
+                             return; // Prevent further JS processing
+                         } else {
+                            // Redirected back to same page, maybe no changes or error flashed
+                            this.showToast("Configuration updated (or no changes).", "info");
+                            this.status = 'idle'; this.statusMessage = 'Idle'; // Assume done
+                         }
+                    } else if (response.ok) {
+                         // OK but not redirected? Maybe an AJAX success response? (Adapt if backend changes)
+                         const result = await response.json(); // Try parsing JSON
+                         this.showToast(result.message || "Configuration saved (AJAX).", "success");
+                         this.status = 'success';
+                         this.statusMessage = 'Config Saved';
+                          setTimeout(() => { this.status = 'idle'; this.statusMessage = 'Idle'; }, 2000);
+                    } else {
+                        // Handle non-OK, non-redirected responses (likely errors)
+                        let errorMsg = `Save failed: HTTP ${response.status}`;
+                        try {
+                             const errorJson = await response.json();
+                             errorMsg = errorJson.error || errorJson.message || errorMsg;
+                        } catch (e) { /* Ignore if not JSON */ }
+                        throw new Error(errorMsg);
+                    }
+                } catch (error) {
+                    console.error('Config Save Error:', error);
+                    this.status = 'error';
+                    this.statusMessage = 'Save Error';
+                    this.showToast(`Error saving config: ${error.message}`, 'error', 5000);
+                     setTimeout(() => { this.status = 'idle'; this.statusMessage = 'Idle'; }, 3000);
+                }
+            },
+
+             async applyPreset() {
+                if (!this.selectedPreset || this.status === 'loading') return;
+                this.status = 'loading';
+                this.statusMessage = 'Applying Preset...';
+
+                try {
+                     // Assuming POST to /apply_preset/ with name in JSON body is correct
+                     // Note: Trailing slash might matter depending on Flask route definition
+                    const response = await fetch(`/apply_preset/${this.selectedPreset}`, { // Using URL param based on app.py
+                        method: 'POST',
+                        // headers: { 'Content-Type': 'application/json' }, // Not needed if name is in URL
+                        // body: JSON.stringify({ preset_name: this.selectedPreset })
+                    });
+
+                    // Expecting JSON response based on app.py's jsonify()
+                    const result = await response.json();
+
+                    if (!response.ok) {
+                        throw new Error(result.error || result.details || `HTTP error! Status: ${response.status}`);
+                    }
+
+                    this.status = 'success';
+                    this.statusMessage = 'Preset Applied';
+                    this.showToast(`Preset '${this.selectedPreset}' applied successfully! Reloading...`, 'success');
+                    // Force reload to get updated config reflected in the form
+                     setTimeout(() => window.location.reload(), 1500);
+
+
+                } catch (error) {
+                    console.error('Apply Preset Error:', error);
+                    this.status = 'error';
+                    this.statusMessage = 'Preset Error';
+                    this.showToast(`Error applying preset: ${error.message}`, 'error', 5000);
+                    setTimeout(() => { this.status = 'idle'; this.statusMessage = 'Idle'; }, 3000);
+                }
+            },
+
+             async savePreset() {
+                if (!this.newPresetName.trim() || this.status === 'loading') return;
+                this.status = 'loading';
+                this.statusMessage = 'Saving Preset...';
+
+                const formData = this.prepareConfigFormData(); // Get current form state
+                formData.append('preset_name', this.newPresetName.trim()); // Add the new preset name
+
+                try {
+                    const response = await fetch('/save_preset', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    // Assuming Flask redirects on success/error after flashing message
+                    if (response.redirected) {
+                         if (response.url !== window.location.href) {
+                            window.location.reload();
+                            return;
+                         } else {
+                            this.showToast(`Preset '${this.newPresetName.trim()}' saved.`, "info");
+                            this.newPresetName = ''; // Clear input
+                            this.status = 'idle'; this.statusMessage = 'Idle';
+                         }
+                    } else if (response.ok) {
+                         const result = await response.json(); // Or handle as needed
+                         this.showToast(result.message || `Preset '${this.newPresetName.trim()}' saved (AJAX).`, "success");
+                         this.newPresetName = '';
+                         this.status = 'success';
+                         this.statusMessage = 'Preset Saved';
+                         setTimeout(() => { this.status = 'idle'; this.statusMessage = 'Idle'; }, 2000);
+                         // Optional: Add preset to dropdown dynamically without reload
+                         this.presets[this.newPresetName.trim()] = {}; // Placeholder
+                    }
+                    else {
+                        let errorMsg = `Save failed: HTTP ${response.status}`;
+                        try {
+                             const errorJson = await response.json();
+                             errorMsg = errorJson.error || errorJson.message || errorMsg;
+                        } catch (e) { /* Ignore */ }
+                        throw new Error(errorMsg);
+                    }
+                } catch (error) {
+                    console.error('Save Preset Error:', error);
+                    this.status = 'error';
+                    this.statusMessage = 'Preset Error';
+                    this.showToast(`Error saving preset: ${error.message}`, 'error', 5000);
+                    setTimeout(() => { this.status = 'idle'; this.statusMessage = 'Idle'; }, 3000);
+                }
+            },
+
+            async updateAutoKeywords() {
+                if (this.status === 'loading') return;
+                this.status = 'loading';
+                this.statusMessage = 'Updating Keywords...';
+
+                try {
+                    const response = await fetch('/update_auto_keywords', { method: 'POST' });
+                    const result = await response.json();
+
+                    if (!response.ok) {
+                        throw new Error(result.error || `HTTP error! Status: ${response.status}`);
+                    }
+
+                    this.status = 'success';
+                    this.statusMessage = 'Keywords Updated';
+                    this.showToast(result.message || 'Auto keywords updated! Reloading...', 'success');
+                     // Reload to see the updated keywords displayed
+                    setTimeout(() => window.location.reload(), 1500);
+
+                } catch (error) {
+                    console.error('Update Keywords Error:', error);
+                    this.status = 'error';
+                    this.statusMessage = 'Keyword Error';
+                    this.showToast(`Error updating keywords: ${error.message}`, 'error', 5000);
+                     setTimeout(() => { this.status = 'idle'; this.statusMessage = 'Idle'; }, 3000);
+                }
+            },
+
+            async uploadFiles() {
+                const fileInput = document.getElementById('file-upload');
+                if (!fileInput.files.length || this.status === 'loading') return;
+                this.status = 'loading';
+                this.statusMessage = 'Uploading Files...';
+
+                const formData = new FormData();
+                for (const file of fileInput.files) {
+                    formData.append('files', file);
+                }
+
+                try {
+                    const response = await fetch('/upload_files', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    const result = await response.json();
+
+                    if (!response.ok || !result.success) {
+                        throw new Error(result.error || `HTTP error! Status: ${response.status}`);
+                    }
+
+                    this.status = 'success';
+                    this.statusMessage = 'Upload Complete';
+                    this.showToast(`Files uploaded: ${result.files.join(', ')}`, 'success');
+                    fileInput.value = ''; // Clear file input
+                    this.selectedFileNames = [];
+
+                } catch (error) {
+                    console.error('Upload Error:', error);
+                    this.status = 'error';
+                    this.statusMessage = 'Upload Error';
+                    this.showToast(`Upload failed: ${error.message}`, 'error', 5000);
+                } finally {
+                     setTimeout(() => { if (this.status !== 'loading') { this.status = 'idle'; this.statusMessage = 'Idle'; }}, 2000);
+                }
+            },
+
+             async startIngestion() {
+                if (this.status === 'loading') return;
+                this.status = 'loading';
+                this.statusMessage = 'Starting Ingestion...';
+
+                try {
+                    // Pass the current DOCUMENT_DIR from the form config just in case
+                    const formData = new FormData();
+                    formData.append('document_dir', this.formConfig.paths.DOCUMENT_DIR);
+
+                    const response = await fetch('/start_ingestion', {
+                        method: 'POST',
+                        body: formData // Sending dir in form data
+                    });
+                    const result = await response.json();
+
+                    if (!response.ok || !result.success) {
+                         // Try to extract a more specific error message
+                        let errorDetail = result.error || `HTTP error! Status: ${response.status}`;
+                        if (result.traceback) { // Include traceback if backend provided it
+                            console.error("Ingestion Traceback:\n", result.traceback);
+                            errorDetail += " (See console for details)";
+                        }
+                        throw new Error(errorDetail);
+                    }
+
+                    this.status = 'success';
+                    this.statusMessage = 'Ingestion Finished'; // More accurate?
+                    let successMsg = result.message || 'Ingestion finished successfully!';
+                    if (result.stats) { // Append stats if available
+                        successMsg += ` (Processed: ${result.stats.processed || 'N/A'}, Errors: ${result.stats.errors || 0})`;
+                    }
+                    this.showToast(successMsg, 'success', 6000); // Longer toast for ingestion
+
+                } catch (error) {
+                    console.error('Ingestion Error:', error);
+                    this.status = 'error';
+                    this.statusMessage = 'Ingestion Error';
+                    this.showToast(`Ingestion failed: ${error.message}`, 'error', 10000); // Long toast for errors
+                } finally {
+                     // Keep status until user dismisses or timeout, maybe longer timeout here?
+                     setTimeout(() => { if (this.status !== 'loading') { this.status = 'idle'; this.statusMessage = 'Idle'; }}, 4000);
+                }
+            },
+
+            // Initialize component state from Flask data
+            init() {
+                console.log("RAG App Initialized with Style Update");
+                // Ensure formConfig reflects initial state correctly, especially lists/arrays
+                 this.formConfig.document.FILE_TYPES = this.formConfig.document.FILE_TYPES || [];
+                 this.formConfig.env.USER_ADDED_KEYWORDS = this.formConfig.env.USER_ADDED_KEYWORDS || [];
+                 this.userKeywordsInput = this.formConfig.env.USER_ADDED_KEYWORDS.join(', ');
+                 this.formConfig.env.AUTO_DOMAIN_KEYWORDS = this.formConfig.env.AUTO_DOMAIN_KEYWORDS || [];
+                 this.formConfig.env.DOMAIN_KEYWORDS = this.formConfig.env.DOMAIN_KEYWORDS || [];
+
+                 // Convert numbers just in case they come as strings from JSON dump
+                 const numericPaths = [
+                     'security.RATE_LIMIT', 'security.API_TIMEOUT',
+                     'retrieval.K_VALUE', 'retrieval.SCORE_THRESHOLD', 'retrieval.LAMBDA_MULT',
+                     'retrieval.DOMAIN_SIMILARITY_THRESHOLD', 'retrieval.SPARSE_RELEVANCE_THRESHOLD', 'retrieval.FUSED_RELEVANCE_THRESHOLD',
+                     'retrieval.SEMANTIC_WEIGHT', 'retrieval.SPARSE_WEIGHT',
+                     'model.LLM_TEMPERATURE', 'model.MAX_TOKENS', 'model.TOP_P', 'model.FREQUENCY_PENALTY',
+                     'document.CHUNK_SIZE', 'document.CHUNK_OVERLAP'
+                 ];
+                 numericPaths.forEach(path => {
+                     const keys = path.split('.');
+                     let obj = this.formConfig;
+                     for (let i = 0; i < keys.length - 1; i++) {
+                         obj = obj[keys[i]];
+                         if (obj === undefined) return; // Path doesn't exist
+                     }
+                     const finalKey = keys[keys.length - 1];
+                     if (obj[finalKey] !== undefined && obj[finalKey] !== null) {
+                         obj[finalKey] = Number(obj[finalKey]);
+                     }
+                 });
+
+                 // Load presets list
+                 this.presets = {{ presets | tojson | safe }};
+
+            }
+        }
+    }
+</script>
+
+</body>
+</html>

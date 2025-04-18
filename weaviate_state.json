@@ -1,0 +1,11 @@
+{
+  "1db": {
+    "status": "starting",
+    "host": "localhost",
+    "http_port": 8090,
+    "grpc_port": 50061,
+    "container_id": "06724c31eead10037a5bee64aa9f5a5be2d88c7db55efaa9d6a3b770fb3e8f55",
+    "container_name": "rag_weaviate_1db",
+    "created_at": "2025-04-18T05:33:53.421759"
+  }
+}
