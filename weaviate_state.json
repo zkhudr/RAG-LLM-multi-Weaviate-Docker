@@ -1,0 +1,22 @@
+{
+  "Main": {
+    "status": "starting",
+    "host": "localhost",
+    "http_port": 8091,
+    "grpc_port": 51002,
+    "container_id": "f59749f810ffca13597521169836699425198be86bece8e858c71b09367e0849",
+    "container_name": "rag_weaviate_Main",
+    "volume_name": "weaviate_data_Main",
+    "created_at": "2025-04-27T17:26:41.229278"
+  },
+  "secondary": {
+    "status": "starting",
+    "host": "localhost",
+    "http_port": 8092,
+    "grpc_port": 51003,
+    "container_id": "f434b1bb6d1d12ea07468b05c12a52399356b200921e06fa6851eae349fbab71",
+    "container_name": "rag_weaviate_secondary",
+    "volume_name": "weaviate_data_secondary",
+    "created_at": "2025-04-28T01:32:08.617423"
+  }
+}

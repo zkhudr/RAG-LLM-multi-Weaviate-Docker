@@ -1,0 +1,1428 @@
+// --- START static/ragapp.js ---
+
+// Use alpine:init to ensure ragApp is defined before Alpine scans
+
+let domContentLoadedFired = false; // <-- Add this flag outside listeners
+document.addEventListener('alpine:init', () => {
+    console.log('[Alpine Event] alpine:init fired. Defining ragApp component...');
+
+    Alpine.data('ragApp', () => {
+        console.log("[Alpine Data] Executing ragApp() definition..."); // Called once per component type definition
+
+        return {
+            // === STATE VARIABLES ===
+            initCalled: false,
+            statusMessage: 'Waiting for init...', // Initial state before explicit init
+            userInput: '',
+            chatHistory: [],
+            filesToUpload: [],
+            selectedFileNames: [],
+            isStreaming: false,
+
+            // --- Config State ---
+            formConfig: { // Default structure, values loaded via API
+                security: { SANITIZE_INPUT: true, RATE_LIMIT: 100, API_TIMEOUT: 30, CACHE_ENABLED: true },
+                retrieval: { COLLECTION_NAME: '', K_VALUE: 5, SCORE_THRESHOLD: 0.5, LAMBDA_MULT: 0.5, SEARCH_TYPE: 'mmr', DOMAIN_SIMILARITY_THRESHOLD: 0.6, SPARSE_RELEVANCE_THRESHOLD: 0.1, FUSED_RELEVANCE_THRESHOLD: 0.4, SEMANTIC_WEIGHT: 0.6, SPARSE_WEIGHT: 0.4, PERFORM_DOMAIN_CHECK: true, WEAVIATE_HOST: '', WEAVIATE_HTTP_PORT: 0, WEAVIATE_GRPC_PORT: 0 },
+                model: { LLM_TEMPERATURE: 0.7, MAX_TOKENS: 1024, OLLAMA_MODEL: '', EMBEDDING_MODEL: '', TOP_P: 1.0, FREQUENCY_PENALTY: 0.0, SYSTEM_MESSAGE: '', EXTERNAL_API_PROVIDER: 'none', EXTERNAL_API_MODEL_NAME: null },
+                document: { CHUNK_SIZE: 1000, CHUNK_OVERLAP: 100, FILE_TYPES: [], PARSE_TABLES: true, GENERATE_SUMMARY: false },
+                paths: { DOCUMENT_DIR: '', DOMAIN_CENTROID_PATH: '' },
+                env: { DOMAIN_KEYWORDS: [], AUTO_DOMAIN_KEYWORDS: [], USER_ADDED_KEYWORDS: [] },
+                domain_keyword_extraction: {
+                    keybert_model: "all-MiniLM-L6-v2",
+                    top_n_per_doc: 10,
+                    final_top_n: 100,
+                    min_doc_freq: 2,
+                    diversity: 0.7,
+                    no_pos_filter: false
+            }
+            },
+
+            // --- Presets State ---
+            presets: {}, // Loaded via API
+            selectedPresetName: '',
+            newPresetName: '',
+
+            // --- Weaviate State ---
+            weaviateInstances: [], // Loaded via API
+            newInstanceName: '',
+
+            // --- API Key Status ---
+            apiKeyStatus: { deepseek: false, openai: false, anthropic: false, cohere: false }, // Loaded via API
+
+            // --- Saved Chats State ---
+            savedChats: [], // Loaded via API
+
+            // --- UI State ---
+            toast: { show: false, message: '', type: 'info', timeout: null },
+            confirmationModal: { show: false, title: '', message: '', onConfirm: () => {}, onCancel: () => {}, confirmButtonClass: '' },
+
+            savedConfig: null, // Add this to store the last saved/loaded config state
+            configDirtyExplicitlySet: false, // Flag to manually mark dirty if needed (optional)
+
+            init() {
+                console.log("[Alpine Magic init()] Called by Alpine.");
+                // Call your data loading logic ONCE using the flag
+                if (!this.initCalled) {
+                    this.loadInitialData(); // Call the renamed async function
+                } else {
+                    console.warn("[Alpine Magic init()] Skipping loadInitialData as initCalled is true.");
+                }
+            },
+
+            // === INITIALIZATION METHOD (Called manually below) ===
+            async loadInitialData() {
+                if (this.initCalled) { console.warn("[Init Method] init() called again, skipping."); return; }
+                this.initCalled = true;
+                console.log("[Init Method] init() explicitly called (First Run).");
+                this.statusMessage = 'Loading UI data...';
+                try {
+                    console.log("[Init Method] Starting API calls in Promise.all...");
+                    // Fetch initial data using Promise.all
+                    await Promise.all([
+                        (async () => { console.log("[Init API] Starting loadInitialConfig..."); try { await this.loadInitialConfig(); console.log("[Init API] Finished loadInitialConfig."); } catch(e){console.error("[Init API] loadInitialConfig FAILED:", e); throw e;} })(), // Re-throw critical errors
+                        (async () => { console.log("[Init API] Starting checkApiKeys..."); try { await this.checkApiKeys(); console.log("[Init API] Finished checkApiKeys."); } catch(e){console.error("[Init API] checkApiKeys FAILED:", e); /* Non-critical? */ } })(),
+                        (async () => { console.log("[Init API] Starting fetchPresets..."); try { await this.fetchPresets(); console.log("[Init API] Finished fetchPresets."); } catch(e){console.error("[Init API] fetchPresets FAILED:", e); /* Non-critical? */ } })(),
+                        (async () => { console.log("[Init API] Starting fetchWeaviateInstances..."); try { await this.fetchWeaviateInstances(); console.log("[Init API] Finished fetchWeaviateInstances."); } catch(e){console.error("[Init API] fetchWeaviateInstances FAILED:", e); /* Non-critical? */ } })(),
+                        (async () => { console.log("[Init API] Starting fetchSavedChats..."); try { await this.fetchSavedChats(); console.log("[Init API] Finished fetchSavedChats."); } catch(e){console.error("[Init API] fetchSavedChats FAILED:", e); /* Non-critical? */ } })()
+                    ]);
+                    console.log("[Init Method] Promise.all finished.");
+
+                    // Add welcome message
+                    if (this.chatHistory.length === 0) {
+                         console.log("[Init Method] Adding welcome message.");
+                        this.chatHistory.push({ role: 'assistant', text: 'Hello! Ask me anything.', timestamp: new Date().toISOString() });
+                    } else {
+                         console.log("[Init Method] Skipping welcome message (history already present).");
+                    }
+
+                    this.statusMessage = 'Idle';
+                    console.log("[Init Method] init() finished successfully.");
+                    this.scrollToBottom();
+                    // Focus input after UI updates
+                    this.$nextTick(() => {
+                        console.log("[Init Method] Focusing input area.");
+                        this.$refs.inputArea?.focus();
+                    });
+
+                } catch (error) {
+                    // This catches errors specifically re-thrown from critical API calls (like loadInitialConfig)
+                    console.error("[Init Method] CRITICAL Error during init:", error);
+                    this.statusMessage = 'Initialization Error!';
+                    this.showToast(`Initialization failed: ${error.message}. Check console & backend.`, 'error', 10000);
+                }
+            }, // End of loadInitialData() method
+                
+            // === HELPER FUNCTIONS ===
+
+            // ADD THIS METHOD: Called by the button click in index.html
+            async runKeywordBuilderWithCheck() {
+                console.log('[Button Click] Extract Domain Keywords clicked. Checking for unsaved changes...');
+                // Use the confirmation helper to check for unsaved changes before proceeding
+                // It will call _performRunKeywordBuilder only if config is clean or after successful save
+                this._confirmUnsavedChanges('Extract Domain Keywords', this._performRunKeywordBuilder.bind(this));
+            },
+
+            // ADD THIS METHOD: Contains the original keyword builder logic
+            async _performRunKeywordBuilder() {
+                // Check loading state *inside* the core logic as well
+                if (this.isLoading()) {
+                    console.warn('[Button Click - Core] Keyword Builder ignored, already loading:', this.statusMessage);
+                    return;
+                }
+
+                console.log("[Keyword Builder] Running core logic...");
+                this.statusMessage = 'Extracting keywords...'; // Set loading status
+
+                // Get references to UI elements (consider using x-ref in HTML for cleaner Alpine integration later)
+                const keywordResultsDiv = document.getElementById('keywordResults');
+                const keywordListDiv = document.getElementById('keywordList');
+                const formElement = document.getElementById('keywordBuilderForm'); // Assuming form has this ID
+
+                if (!formElement || !keywordResultsDiv || !keywordListDiv) {
+                    console.error("[Keyword Builder] Required DOM elements (form, results area) not found.");
+                    this.statusMessage = 'UI Error';
+                    if (this.showToast) this.showToast("Keyword builder UI elements missing.", "error");
+                    setTimeout(() => { if (this.statusMessage === 'UI Error') this.statusMessage = 'Idle'; }, 3000);
+                    return;
+                }
+
+                // Hide previous results
+                keywordResultsDiv.style.display = 'none';
+                keywordListDiv.innerHTML = ''; // Clear previous list
+
+                // Prepare data from the form
+                const formData = new FormData(formElement);
+                const jsonData = {};
+                try {
+                    for (const [key, value] of formData.entries()) {
+                        if (key === 'no_pos_filter') {
+                            jsonData[key] = true; // Checkbox value
+                        } else if (key === 'diversity') {
+                            jsonData[key] = parseFloat(value);
+                        } else if (['top_n_per_doc', 'final_top_n', 'min_doc_freq'].includes(key)) {
+                            // Ensure conversion to number, handle potential NaN
+                            const numValue = parseInt(value, 10);
+                            jsonData[key] = isNaN(numValue) ? null : numValue; // Send null if not a number? Or default?
+                            if (isNaN(numValue)) console.warn(`[Keyword Builder] Invalid number for ${key}: ${value}`);
+                        } else {
+                            jsonData[key] = value;
+                        }
+                    }
+                    // Manually add Weaviate port from config if needed by script
+                    // jsonData['weaviate_http_port'] = this.formConfig.retrieval.WEAVIATE_HTTP_PORT;
+                    // jsonData['collection'] = this.formConfig.retrieval.COLLECTION_NAME;
+                    // Note: The backend route seems to get these from cfg now, so maybe not needed here. Verify backend logic.
+                } catch (formError) {
+                    console.error('[Keyword Builder] Error processing form data:', formError);
+                    this.statusMessage = 'Form Error';
+                    if (this.showToast) this.showToast("Error reading keyword settings.", "error");
+                    setTimeout(() => { if (this.statusMessage === 'Form Error') this.statusMessage = 'Idle'; }, 3000);
+                    return;
+                }
+
+
+                console.log("[API Call] Sending request to /run_keyword_builder with data:", jsonData);
+
+                try {
+                    // Call the backend endpoint
+                    const response = await fetch('/run_keyword_builder', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(jsonData)
+                    });
+
+                    const data = await response.json(); // Always try to parse
+
+                    // Check for HTTP errors or backend reported failure
+                    if (!response.ok || !data.success) {
+                        // Extract detailed error message
+                        let errorDetail = data.error || `HTTP error! Status: ${response.status}`;
+                        if (data.details) errorDetail += ` Details: ${data.details}`;
+                        if (data.full_error) console.error("Full Keyword Builder Error:\n", data.full_error);
+                        throw new Error(errorDetail); // Throw to be caught by catch block
+                    }
+
+                    // --- Success Path ---
+                    console.log("[API Resp] Keyword builder success:", data);
+                    keywordResultsDiv.style.display = 'block'; // Show results area
+
+                    if (data.keywords && data.keywords.length > 0) {
+                        // Format and display keywords
+                        const keywordsHtml = data.keywords.map(kw =>
+                            `<li class="text-xs">${kw.term}: ${kw.score.toFixed(4)}</li>` // Use list items
+                        ).join('');
+                        keywordListDiv.innerHTML = `<ul class="list-disc list-inside">${keywordsHtml}</ul>`; // Wrap in UL
+
+                        // Add "Update Config" button dynamically
+                        const updateConfigBtn = document.createElement('button');
+                        updateConfigBtn.className = 'btn btn-success mt-3 text-xs py-1 px-2'; // Use btn classes
+                        updateConfigBtn.textContent = 'Update Config with These Keywords';
+                        // IMPORTANT: Ensure updateConfigWithKeywords is accessible globally or via Alpine component instance
+                        // If global:
+                        updateConfigBtn.onclick = () => updateConfigWithKeywords(data.keywords.map(kw => kw.term));
+                        // If inside Alpine component (preferred):
+                        // updateConfigBtn.onclick = () => Alpine.$data(document.getElementById('rootAppComponent')).updateConfigWithKeywords(data.keywords.map(kw => kw.term));
+
+                        keywordListDiv.appendChild(updateConfigBtn);
+
+                        if (this.showToast) this.showToast(`Extracted ${data.keywords.length} keywords.`, "success");
+                        this.statusMessage = 'Keywords Extracted'; // Set completion status
+
+                    } else {
+                        // Success response but no keywords found
+                        keywordListDiv.innerHTML = `<p class="text-xs text-slate-600">${data.message || 'No keywords extracted based on current settings.'}</p>`;
+                        if (this.showToast) this.showToast(data.message || 'No keywords extracted.', 'info');
+                        this.statusMessage = 'No Keywords Found'; // Set completion status
+                    }
+
+                } catch (error) {
+                    // --- Error Path ---
+                    console.error('[API Error] Run Keyword Builder FAILED:', error);
+                    this.statusMessage = 'Keyword Error'; // Set error status
+                    // Display error in the results area
+                    keywordListDiv.innerHTML = `<p class="text-xs text-red-600">Error: ${error.message}</p>`;
+                    keywordResultsDiv.style.display = 'block';
+                    // Show error toast
+                    if (this.showToast) this.showToast(`Keyword extraction failed: ${error.message}`, 'error', 10000);
+
+                } finally {
+                    // --- Finally Block ---
+                    // Reset status after a delay, unless another operation started
+                    setTimeout(() => {
+                        // Check against all possible completion/error statuses for this action
+                        const relevantStatuses = ['Extracting keywords...', 'Keywords Extracted', 'No Keywords Found', 'Keyword Error', 'Form Error', 'UI Error'];
+                        if (relevantStatuses.includes(this.statusMessage)) {
+                            this.statusMessage = 'Idle';
+                        }
+                    }, 4000); // 4-second delay
+                    // --- END Finally Block ---
+                }
+            }, // End of _performRunKeywordBuilder
+
+            configIsDirty() {
+                if (!this.savedConfig) {
+                    // If savedConfig hasn't been loaded yet, assume not dirty (or handle as needed)
+                    console.log("[Dirty Check] savedConfig not ready, assuming clean.");
+                    return false;
+                }
+                try {
+                    const currentString = JSON.stringify(this.formConfig);
+                    const savedString = JSON.stringify(this.savedConfig);
+                    const isDirty = currentString !== savedString;
+                    if (isDirty) console.log("[Dirty Check] Config IS dirty.");
+                    // else console.log("[Dirty Check] Config is clean."); // Optional: uncomment for debugging
+                    return isDirty || this.configDirtyExplicitlySet; // Combine deep compare with explicit flag
+                } catch (e) {
+                    console.error("[Dirty Check] Error comparing config states:", e);
+                    return true; // Assume dirty if comparison fails
+                }
+            },
+
+               
+
+            // Helper to reset dirty state (called after successful save/load)
+            _markConfigClean() {
+                try {
+                    this.savedConfig = JSON.parse(JSON.stringify(this.formConfig)); // Deep copy current state
+                    this.configDirtyExplicitlySet = false; // Reset explicit flag
+                    console.log("[Dirty State] Marked config as clean.");
+                } catch (e) {
+                    console.error("[Dirty State] Error marking config clean:", e);
+                    // savedConfig might be invalid now, maybe reload?
+                    this.savedConfig = null;
+                }
+            },
+
+            // Helper for actions requiring config save confirmation
+            _confirmUnsavedChanges(actionName, actionFunction) {
+                console.log(`[Confirm Action Check] Action: ${actionName}, Config Dirty: ${this.configIsDirty()}`);
+                if (this.configIsDirty()) {
+                    this.requireConfirmation({
+                        title: 'Unsaved Configuration',
+                        message: `You have unsaved configuration changes. Save them before starting '${actionName}'?`,
+                        confirmButtonClass: 'bg-green-600 hover:bg-green-700', // Green for Save & Proceed
+                        onConfirm: async () => {
+                            console.log(`[Confirm Action] User chose Save & Proceed for ${actionName}.`);
+                            this.statusMessage = 'Saving config first...';
+                            try {
+                                // Attempt to save the configuration first
+                                const saveSuccess = await this.saveConfig(); // Assume saveConfig returns true on success, false otherwise
+
+                                if (saveSuccess) {
+                                    console.log(`[Confirm Action] Config saved. Proceeding with ${actionName}...`);
+                                    // Now that config is saved (and savedConfig updated), execute the original action
+                                    actionFunction(); // Call the actual function passed in
+                                } else {
+                                    // Save failed (e.g., validation error), already handled by saveConfig's toast
+                                    console.warn(`[Confirm Action] Config save failed. Aborting ${actionName}.`);
+                                    this.statusMessage = 'Save Failed'; // Keep error status briefly
+                                    setTimeout(() => { if (this.statusMessage === 'Save Failed') this.statusMessage = 'Idle'; }, 2000);
+                                }
+                            } catch (error) {
+                                console.error(`[Confirm Action] Error during save-before-action for ${actionName}:`, error);
+                                // Toast is likely shown by saveConfig, just ensure status resets
+                                if (this.statusMessage.includes('Saving')) this.statusMessage = 'Save Error';
+                                setTimeout(() => { if (this.statusMessage === 'Save Error') this.statusMessage = 'Idle'; }, 2000);
+                            }
+                        },
+                        onCancel: () => {
+                            console.log(`[Confirm Action] User cancelled ${actionName} due to unsaved changes.`);
+                            if (this.showToast) this.showToast(`Action '${actionName}' cancelled.`, 'info');
+                            // Ensure status resets if modal was shown during loading state
+                            if (this.isLoading() && !this.isLoadingChat()) this.statusMessage = 'Idle';
+                        }
+                    });
+                } else {
+                    // Config is not dirty, proceed directly
+                    console.log(`[Confirm Action Check] Config clean. Proceeding directly with ${actionName}.`);
+                    actionFunction();
+                }
+            },
+            isLoading() {
+                const msg = this.statusMessage.toLowerCase();
+                return msg.includes('loading') || msg.includes('saving') || msg.includes('creating') ||
+                       msg.includes('removing') || msg.includes('activating') || msg.includes('ingesting') ||
+                       msg.includes('uploading') || msg.includes('sending') || msg.includes('replying') ||
+                       msg.includes('applying'); // Add applying preset
+            },
+            isLoadingChat() { return this.isStreaming || this.statusMessage === 'Sending...' || this.statusMessage === 'Assistant is replying...'; },
+            formatTimestamp(isoString) { if (!isoString) return ''; try { return new Date(isoString).toLocaleString(); } catch (e) { return isoString; } },
+            scrollToBottom() { this.$nextTick(() => { const el = this.$refs.chatHistoryContainer; if (el) el.scrollTop = el.scrollHeight; }); },
+            adjustTextareaHeight(el) { if (!el) el = this.$refs.inputArea; if (!el) return; const maxH = 150; el.style.height = 'auto'; el.style.height = `${Math.min(el.scrollHeight, maxH)}px`; },
+            renderMarkdown(text) {
+                if (!text) return '';
+                // Basic: escape HTML, convert newlines to <br>, basic bold/italic
+                let safeText = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                safeText = safeText.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>'); // Bold
+                safeText = safeText.replace(/\*(.*?)\*/g, '<em>$1</em>');     // Italic
+                safeText = safeText.replace(/`([^`]+)`/g, '<code>$1</code>'); // Inline code
+                safeText = safeText.replace(/\n/g, '<br>');                     // Newlines
+                // Add <pre><code> for blocks if needed, requires more complex regex or library
+                return safeText;
+            }, // Make sure comma is present if other methods follow
+
+            showToast(message, type = 'info', duration = 3000) { console.log(`[Toast (${type})] ${message}`); this.toast.message = message; this.toast.type = type; this.toast.show = true; clearTimeout(this.toast.timeout); this.toast.timeout = setTimeout(() => { this.toast.show = false; }, duration); },
+            requireConfirmation(options) {
+                console.log(`[Confirm Req] Title: ${options.title || 'Confirmation'}, Message: ${options.message || 'Are you sure?'}`);
+                // Ensure modal state exists (should be defined in initial state)
+                if (!this.confirmationModal || typeof this.confirmationModal !== 'object') {
+                    console.error("[requireConfirmation] ERROR: confirmationModal state object is missing!");
+                    // Optionally show a generic toast if available
+                    if (this.showToast) this.showToast("Cannot display confirmation dialog.", "error");
+                    return; // Prevent further execution
+                }
+                // Assign properties
+                this.confirmationModal.title = options.title || 'Confirmation';
+                this.confirmationModal.message = options.message || 'Are you sure?';
+                // Store the functions to be called later, ensuring they are functions
+                this.confirmationModal.onConfirm = (typeof options.onConfirm === 'function') ? options.onConfirm : () => { console.warn("No valid onConfirm action provided for modal.") };
+                this.confirmationModal.onCancel = (typeof options.onCancel === 'function') ? options.onCancel : () => { /* Default no-op is fine */ };
+                this.confirmationModal.confirmButtonClass = options.confirmButtonClass || 'bg-blue-600 hover:bg-blue-700'; // Default style
+                // Show the modal
+                this.confirmationModal.show = true;
+            },
+
+            confirmAction() {
+                console.log("[Modal Action] Confirm button clicked.");
+                // Check if modal state and callback exist
+                if (!this.confirmationModal || typeof this.confirmationModal.onConfirm !== 'function') {
+                    console.error("[confirmAction] ERROR: Cannot execute confirmation, modal state or onConfirm callback is invalid.");
+                    if (this.showToast) this.showToast("Confirmation action failed (internal error).", "error");
+                    // Still hide the modal if possible
+                    if (this.confirmationModal) this.confirmationModal.show = false;
+                    return;
+                }
+                try {
+                    // Execute the callback function stored when requireConfirmation was called
+                    this.confirmationModal.onConfirm(); // Call the stored confirm logic
+                } catch (error) {
+                    console.error("Error executing confirmation action callback:", error);
+                    // Use showToast if it exists
+                    if (this.showToast) this.showToast(`Operation failed during confirmation: ${error.message}`, 'error');
+                } finally {
+                    // Always hide the modal after attempting the action
+                    this.confirmationModal.show = false;
+                    // Optional: Reset callbacks to prevent accidental reuse if needed
+                    // this.confirmationModal.onConfirm = () => {};
+                    // this.confirmationModal.onCancel = () => {};
+                }
+            },
+
+            cancelAction() {
+                console.log("[Modal Action] Cancel button clicked (or modal background clicked).");
+                // Check if modal state and callback exist
+                if (!this.confirmationModal) {
+                    console.error("[cancelAction] ERROR: Cannot execute cancel, modal state is invalid.");
+                    // Don't usually need a toast for cancel failure, just hide if possible
+                    return;
+                }
+                try {
+                    // Execute the callback function stored when requireConfirmation was called
+                    if (typeof this.confirmationModal.onCancel === 'function') {
+                        this.confirmationModal.onCancel(); // Call the stored cancel logic
+                    }
+                } catch (error) {
+                    console.error("Error executing cancel action callback:", error);
+                    // Rarely need user notification for cancel error
+                } finally {
+                    // Always hide the modal
+                    this.confirmationModal.show = false;
+                    // Optional: Reset callbacks
+                    // this.confirmationModal.onConfirm = () => {};
+                    // this.confirmationModal.onCancel = () => {};
+                }
+            },
+            handleChatInputKeydown(event) { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); this.sendMessage(); } this.$nextTick(() => this.adjustTextareaHeight(event.target)); },
+            handleFileSelect(event) { this.filesToUpload = Array.from(event.target.files || []); this.selectedFileNames = this.filesToUpload.map(f => f.name); },
+
+            // === ASYNC ACTIONS (Backend Interaction - Implementations unchanged, ensure endpoints exist) ===
+            // --- API Keys ---
+            async checkApiKeys() {
+                console.log("[API Call] Checking API keys via /api/key_status...");
+                try {
+                    const response = await fetch('/api/key_status'); // Ensure Flask has this GET endpoint
+                    if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    const status = await response.json();
+                    // Ensure structure matches default before assigning
+                    this.apiKeyStatus.deepseek = status.deepseek || false;
+                    this.apiKeyStatus.openai = status.openai || false;
+                    this.apiKeyStatus.anthropic = status.anthropic || false;
+                    this.apiKeyStatus.cohere = status.cohere || false;
+                    console.log("[API Resp] API Key status loaded:", this.apiKeyStatus);
+                } catch (error) {
+                    console.error("[API Error] checkApiKeys FAILED:", error);
+                    // Keep defaults (all false) on error
+                    this.apiKeyStatus = { deepseek: false, openai: false, anthropic: false, cohere: false };
+                    if (this.showToast) this.showToast('Could not check API key status.', 'error');
+                }
+            },
+
+            // --- Weaviate Instance Management ---
+            async fetchWeaviateInstances() {
+                console.log("[API Call] Fetching Weaviate instances from /list_weaviate_instances...");
+                this.statusMessage = 'Loading Weaviate instances...'; // Show loading status
+                try {
+                    const response = await fetch('/list_weaviate_instances'); // Ensure Flask has this GET endpoint
+                    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                    const data = await response.json();
+                    console.log("[API Resp] Received Weaviate data:", data);
+                    if (!Array.isArray(data)) throw new Error("Received invalid data format for instances.");
+
+                    // Use the received list directly (active flag is set by backend)
+                    this.weaviateInstances = data;
+
+                    console.log("[API Logic] Processed Weaviate instances:", this.weaviateInstances);
+                    // Only set status to Idle if this specific fetch succeeded
+                    if (this.statusMessage === 'Loading Weaviate instances...') {
+                        this.statusMessage = 'Idle';
+                    }
+                } catch (error) {
+                    console.error("[API Error] fetchWeaviateInstances FAILED:", error);
+                    if (this.showToast) this.showToast(`Error loading Weaviate instances: ${error.message}`, 'error');
+                    this.weaviateInstances = []; // Clear list on error
+                    this.statusMessage = 'Error loading instances'; // Keep error status
+                }
+            },
+
+            async createWeaviateInstance() {
+                // Added console log from previous step for debugging click
+                console.log('[Button Click] Create button clicked. isLoading:', this.isLoading(), 'Instance Name:', this.newInstanceName);
+                const instanceName = this.newInstanceName.trim();
+                if (!instanceName) {
+                    if (this.showToast) this.showToast("Please enter a name for the new instance.", "info");
+                    return;
+                }
+                if (this.isLoading()) {
+                    console.warn('[Button Click] Create ignored, already loading:', this.statusMessage);
+                    return; // Prevent action if already busy
+                }
+
+                console.log(`[API Call] Creating Weaviate instance: ${instanceName}`);
+                this.statusMessage = `Creating ${instanceName}...`;
+                try {
+                    const response = await fetch('/create_weaviate_instance', { // Ensure Flask POST endpoint exists
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ instance_name: instanceName })
+                    });
+                    const result = await response.json();
+                    if (!response.ok) throw new Error(result.error || `HTTP error! Status: ${response.status}`);
+
+                    if (this.showToast) this.showToast(result.message || `Instance '${instanceName}' creating...`, 'success');
+                    this.newInstanceName = ''; // Clear input
+                    await this.fetchWeaviateInstances(); // Refresh list after creation attempt
+
+                } catch (error) {
+                    console.error('[API Error] Create Instance FAILED:', error);
+                    this.statusMessage = 'Create Error';
+                    if (this.showToast) this.showToast(`Error creating instance: ${error.message}`, 'error');
+                } finally {
+                    // Reset status only if it wasn't changed by another operation in the meantime
+                    if (this.statusMessage === `Creating ${instanceName}...`) {
+                        setTimeout(() => { this.statusMessage = 'Idle'; }, 1000);
+                    }
+                }
+            },
+
+            // Uses confirmation modal
+            removeWeaviateInstanceWithConfirmation(instanceName) {
+                if (!instanceName || instanceName === "Default (from config)") {
+                    if (this.showToast) this.showToast("Cannot remove the default configuration entry.", "info");
+                    return;
+                }
+                if (this.isLoading()) {
+                    console.warn('[Button Click] Remove ignored, already loading:', this.statusMessage);
+                    return; // Prevent action if already busy
+                }
+
+                this.requireConfirmation({
+                    title: 'Remove Weaviate Instance',
+                    message: `Are you sure you want to remove instance "${instanceName}"? This will stop and delete its container and data volume.`,
+                    confirmButtonClass: 'bg-red-600 hover:bg-red-700', // Red confirm button
+                    onConfirm: async () => { // The actual async logic
+                        console.log(`[Confirm Action] Removing Weaviate instance: ${instanceName}`);
+                        this.statusMessage = `Removing ${instanceName}...`;
+                        try {
+                            const response = await fetch('/remove_weaviate_instance', { // Ensure Flask POST endpoint exists
+                                method: 'POST', // Or DELETE if app.py uses DELETE
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ instance_name: instanceName })
+                            });
+                            const result = await response.json();
+                            if (!response.ok) throw new Error(result.error || `HTTP error ${response.status}`);
+
+                            if (this.showToast) this.showToast(result.message || `Instance '${instanceName}' removed.`, 'success');
+                            // Refresh instances and potentially config after removal
+                            await this.fetchWeaviateInstances();
+                            await this.loadInitialConfig(); // Re-fetch config in case active instance changed
+
+                        } catch (error) {
+                            console.error('[API Error] Remove Instance FAILED:', error);
+                            this.statusMessage = 'Remove Error';
+                            if (this.showToast) this.showToast(`Error removing instance: ${error.message}`, 'error');
+                        } finally {
+                            if (this.statusMessage === `Removing ${instanceName}...`) {
+                                setTimeout(() => { this.statusMessage = 'Idle'; }, 1000);
+                            }
+                        }
+                    },
+                    onCancel: () => { console.log(`[Confirm Action] Cancelled removal for: ${instanceName}`); }
+                });
+            },
+
+            // Called by the 'Activate' button
+            async activateRAG(instanceName) {
+                if (!instanceName || this.isLoading()) {
+                    if (!instanceName) console.warn('[Button Click] Activate ignored, no instance name.');
+                    else console.warn('[Button Click] Activate ignored, already loading:', this.statusMessage);
+                    return;
+                }
+                console.log(`[API Call] Activating instance: ${instanceName}`);
+                this.statusMessage = `Activating ${instanceName}...`;
+                try {
+                    const response = await fetch('/select_weaviate_instance', { // Ensure Flask POST endpoint exists
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ instance_name: instanceName })
+                    });
+                    const result = await response.json();
+                    if (!response.ok) throw new Error(result.error || `HTTP error! Status: ${response.status}`);
+
+                    if (this.showToast) this.showToast(result.message || `Instance '${instanceName}' activated. Pipeline re-initializing...`, 'success');
+
+                    // Refresh config (to get new host/port) and instance list (to show new active state)
+                    await this.loadInitialConfig();
+                    await this.fetchWeaviateInstances();
+
+                    this.statusMessage = 'Idle'; // Set AFTER successful refresh
+
+                } catch (error) {
+                    console.error('[API Error] Activate Instance FAILED:', error);
+                    this.statusMessage = 'Activation Error';
+                    if (this.showToast) this.showToast(`Error activating instance: ${error.message}`, 'error');
+                    setTimeout(() => { if (this.statusMessage === `Activating ${instanceName}...` || this.statusMessage === 'Activation Error') this.statusMessage = 'Idle'; }, 3000);
+                }
+            },
+
+            // --- Chat Functionality ---
+
+            async sendMessage() {
+                // Use the confirmation helper to check for unsaved changes before proceeding
+                // It will call _performSendMessage only if config is clean or after successful save
+                this._confirmUnsavedChanges('Send Message', this._performSendMessage.bind(this));
+            },
+
+            async _performSendMessage() { // Contains the original message sending logic
+                const queryToSend = this.userInput.trim();
+                if (!queryToSend) {
+                    // Use showToast if available (assuming it's defined elsewhere in your component)
+                    if (this.showToast) this.showToast("Please enter a message.", "info", 2000);
+                    return; // Don't proceed if input is empty
+                }
+
+                // Prevent sending if already processing a chat response
+                if (this.isLoadingChat()) {
+                    console.warn('[Chat Action] Send ignored, already processing:', this.statusMessage);
+                    // Optionally notify the user
+                    if (this.showToast) this.showToast("Please wait for the current response.", "info");
+                    return;
+                }
+
+                // --- Proceed with sending ---
+                // Add user message immediately to the UI
+                this.chatHistory.push({
+                    role: 'user',
+                    text: queryToSend,
+                    timestamp: new Date().toISOString()
+                });
+
+                this.userInput = ''; // Clear input field
+                this.adjustTextareaHeight(); // Adjust height after clearing
+                this.scrollToBottom(); // Scroll down to show the new message
+
+                // Set loading/streaming state
+                this.isStreaming = true;
+                this.statusMessage = 'Assistant is replying...';
+
+                console.log(`[API Call] Sending query to /run_pipeline: ${queryToSend.substring(0, 50)}...`);
+
+                try {
+                    // Call the backend pipeline endpoint
+                    const response = await fetch('/run_pipeline', { // Ensure Flask POST endpoint accepts JSON
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ query: queryToSend }) // Send query in JSON body
+                    });
+
+                    // Check for HTTP errors
+                    if (!response.ok) {
+                        let errorText = `Error: ${response.statusText} (Code: ${response.status})`;
+                        try {
+                            // Try to get a more specific error message from the JSON response body
+                            const errorJson = await response.json();
+                            errorText = errorJson.error || errorJson.text || errorText; // Use backend error/text if available
+                        } catch (e) {
+                            // Ignore if response body isn't valid JSON
+                            console.warn("Could not parse error response as JSON:", e);
+                        }
+                        throw new Error(errorText); // Throw error to be caught by catch block
+                    }
+
+                    // Parse successful JSON response
+                    const result = await response.json(); // Expect { role: 'assistant', text: '...', sources: [...], error: false, timestamp: '...' }
+                    console.log("[API Resp] Received from /run_pipeline:", result);
+
+                    // Add assistant response (or error reported *by* the backend) to chat history
+                    this.chatHistory.push({
+                        role: 'assistant',
+                        text: result.text || result.response || "[No response content]", // Handle potential key variations
+                        sources: result.sources, // Attach sources if backend provides them
+                        timestamp: result.timestamp || new Date().toISOString(), // Use backend timestamp if provided
+                        error: result.error || false // Include error flag from backend response
+                    });
+
+                } catch (error) {
+                    // Handle fetch errors or errors thrown from !response.ok check
+                    console.error('[API Error] Send Message FAILED:', error);
+
+                    // Add a clear error message to the chat history for the user
+                    this.chatHistory.push({
+                        role: 'assistant',
+                        text: `Sorry, an error occurred: ${error.message}`,
+                        timestamp: new Date().toISOString(),
+                        error: true // Mark this message as an error
+                    });
+
+                    // Optionally show a toast notification for the error
+                    if (this.showToast) this.showToast(`Error: ${error.message}`, 'error', 5000);
+
+                } finally {
+                    // Always executed after try/catch
+                    this.isStreaming = false; // End streaming/loading state
+                    this.statusMessage = 'Idle'; // Reset status
+                    this.scrollToBottom(); // Scroll down to show the final response/error
+
+                    // Re-focus the input area for the next message
+                    // Use $nextTick to ensure DOM is updated before focusing
+                    this.$nextTick(() => {
+                        this.$refs.inputArea?.focus();
+                    });
+                }
+            }, // End of _performSendMessage
+
+            // --- Saved Chats ---
+            async fetchSavedChats() {
+                console.log("[API Call] Fetching saved chats from /list_chats...");
+                try {
+                    const response = await fetch('/list_chats'); // Ensure Flask GET endpoint exists
+                    if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    const loadedChats = await response.json();
+                    this.savedChats = Array.isArray(loadedChats) ? loadedChats : []; // Ensure it's an array
+                    console.log("[API Resp] Saved chats loaded:", this.savedChats.length);
+                } catch (error) {
+                    console.error("[API Error] fetchSavedChats FAILED:", error);
+                    this.savedChats = []; // Ensure array on error
+                    if (this.showToast) this.showToast(`Error loading saved chat list: ${error.message}`, 'error');
+                }
+            },
+
+            async saveChat() {
+                if (this.isLoading() || !Array.isArray(this.chatHistory) || this.chatHistory.length === 0) {
+                    if (this.showToast) this.showToast("Nothing to save in current chat.", "info");
+                    return;
+                }
+                // Use prompt for simplicity, could be replaced with a modal input
+                const chatName = prompt("Enter a name for this chat:", `Chat ${new Date().toLocaleDateString()}`);
+                if (!chatName) return; // User cancelled
+
+                console.log(`[API Call] Saving current chat as: ${chatName}`);
+                this.statusMessage = 'Saving chat...';
+                try {
+                    const response = await fetch('/save_chat', { // Ensure Flask POST endpoint accepts JSON
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        // Send name and the current history state
+                        body: JSON.stringify({ name: chatName, history: this.chatHistory })
+                    });
+                    const result = await response.json();
+                    if (!response.ok || !result.success) throw new Error(result.error || `HTTP error! Status: ${response.status}`);
+
+                    if (this.showToast) this.showToast(result.message || `Chat '${chatName}' saved.`, 'success');
+                    await this.fetchSavedChats(); // Refresh list
+
+                } catch (error) {
+                    console.error('[API Error] Save Chat FAILED:', error);
+                    this.statusMessage = 'Save Error';
+                    if (this.showToast) this.showToast(`Error saving chat: ${error.message}`, 'error');
+                } finally {
+                    if (this.statusMessage === 'Saving chat...') {
+                        setTimeout(() => { this.statusMessage = 'Idle'; }, 1000);
+                    }
+                }
+            },
+
+            // Uses confirmation modal
+            loadChatWithConfirmation(chatId) {
+                if (!chatId || this.isLoading()) return;
+                const chatToLoad = this.savedChats.find(c => c.id === chatId);
+                if (!chatToLoad) { console.error("Chat ID not found in loaded list:", chatId); return; }
+
+                this.requireConfirmation({
+                    title: 'Load Chat',
+                    message: `Load chat "${chatToLoad.name || chatId}"? This will replace the current chat history.`,
+                    onConfirm: async () => {
+                        console.log(`[Confirm Action] Loading chat: ${chatId}`);
+                        this.statusMessage = 'Loading chat...';
+                        try {
+                            const response = await fetch(`/load_chat/${chatId}`); // Ensure Flask GET endpoint exists
+                            if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                            const loadedChat = await response.json(); // Expect { id: ..., name: ..., history: [...] }
+
+                            if (!Array.isArray(loadedChat.history)) throw new Error("Loaded chat history is not valid.");
+
+                            this.chatHistory = loadedChat.history; // Replace current history
+                            if (this.showToast) this.showToast(`Chat "${loadedChat.name || chatId}" loaded.`, 'success');
+                            this.scrollToBottom();
+
+                        } catch (error) {
+                            console.error('[API Error] Load Chat FAILED:', error);
+                            this.statusMessage = 'Load Error';
+                            if (this.showToast) this.showToast(`Error loading chat: ${error.message}`, 'error');
+                        } finally {
+                            this.statusMessage = 'Idle';
+                        }
+                    },
+                    onCancel: () => { console.log(`[Confirm Action] Cancelled load chat: ${chatId}`); }
+                });
+            },
+
+            // Uses confirmation modal
+            deleteChatWithConfirmation(chatId) {
+                if (!chatId || this.isLoading()) return;
+                const chatToDelete = this.savedChats.find(c => c.id === chatId);
+                if (!chatToDelete) { console.error("Chat ID not found in loaded list:", chatId); return; }
+
+                this.requireConfirmation({
+                    title: 'Delete Saved Chat',
+                    message: `Are you sure you want to permanently delete the saved chat "${chatToDelete.name || chatId}"?`,
+                    confirmButtonClass: 'bg-red-600 hover:bg-red-700',
+                    onConfirm: async () => {
+                        console.log(`[Confirm Action] Deleting chat: ${chatId}`);
+                        this.statusMessage = 'Deleting chat...';
+                        try {
+                            const response = await fetch(`/delete_chat/${chatId}`, { method: 'DELETE' }); // Ensure Flask DELETE endpoint exists
+                            const result = await response.json();
+                            if (!response.ok || !result.success) throw new Error(result.error || `HTTP error! Status: ${response.status}`);
+
+                            if (this.showToast) this.showToast(result.message || 'Chat deleted.', 'success');
+                            await this.fetchSavedChats(); // Refresh list
+
+                        } catch (error) {
+                            console.error('[API Error] Delete Chat FAILED:', error);
+                            this.statusMessage = 'Delete Error';
+                            if (this.showToast) this.showToast(`Error deleting chat: ${error.message}`, 'error');
+                        } finally {
+                            if (this.statusMessage === 'Deleting chat...') {
+                                setTimeout(() => { this.statusMessage = 'Idle'; }, 1000);
+                            }
+                        }
+                    },
+                    onCancel: () => { console.log(`[Confirm Action] Cancelled delete chat: ${chatId}`); }
+                });
+            },
+
+            // --- File Handling & Ingestion ---
+            async uploadFiles() {
+                // Added console log from previous step for debugging click
+                console.log('[Button Click] Upload files clicked. isLoading:', this.isLoading(), 'File Count:', this.filesToUpload.length);
+                if (!this.filesToUpload.length) {
+                    if (this.showToast) this.showToast("No files selected to upload.", "info");
+                    return;
+                }
+                if (this.isLoading()) {
+                    console.warn('[Button Click] Upload ignored, already loading:', this.statusMessage);
+                    return;
+                }
+
+                console.log(`[API Call] Uploading ${this.filesToUpload.length} files...`);
+                this.statusMessage = 'Uploading files...';
+                const formData = new FormData();
+                this.filesToUpload.forEach(file => formData.append('files', file)); // 'files' must match Flask request.files.getlist key
+
+                try {
+                    const response = await fetch('/upload_files', { method: 'POST', body: formData }); // Ensure Flask POST endpoint exists
+                    const result = await response.json();
+                    if (!response.ok || !result.success) throw new Error(result.error || `HTTP error! Status: ${response.status}`);
+
+                    if (this.showToast) this.showToast(`Files uploaded: ${result.files?.join(', ') || 'OK'}`, 'success');
+                    this.filesToUpload = []; // Clear selection state
+                    this.selectedFileNames = [];
+                    // Clear the actual file input element visually
+                    const fileInput = document.getElementById('fileUpload'); // Use the correct ID from index.html
+                    if (fileInput) fileInput.value = '';
+
+                } catch (error) {
+                    console.error('[API Error] Upload Files FAILED:', error);
+                    this.statusMessage = 'Upload Error';
+                    if (this.showToast) this.showToast(`Upload failed: ${error.message}`, 'error');
+                } finally {
+                    if (this.statusMessage === 'Uploading files...') {
+                        setTimeout(() => { this.statusMessage = 'Idle'; }, 1500);
+                    }
+                }
+            },
+
+            // --- File Handling & Ingestion ---
+
+            async startIngestion() {
+                console.log('[Button Click] Start Full Ingestion clicked. Checking for unsaved changes...');
+                this._confirmUnsavedChanges('Full Ingestion', this._performStartIngestion.bind(this)); 
+            },
+
+            async _performStartIngestion() { // Contains the original full ingestion logic
+                // Check loading state *inside* the core logic as well, in case user double-clicks
+                // or confirmation takes time.
+                if (this.isLoading()) {
+                    console.warn('[Button Click - Core] Full Ingestion ignored, already loading:', this.statusMessage);
+                    // Optionally show toast, though it might be annoying if shown after confirmation
+                    // if (this.showToast) this.showToast("Operation already in progress.", "info");
+                    return;
+                }
+
+                console.log("[API Call] Starting full ingestion via /start_ingestion...");
+                this.statusMessage = 'Starting Full Ingestion...'; // Set loading status for UI feedback
+
+                try {
+                    // Call the Flask backend endpoint for full ingestion
+                    const response = await fetch('/start_ingestion', { method: 'POST' }); // Ensure Flask endpoint exists
+
+                    // Always try to parse the response, even for errors, as backend might send details
+                    const result = await response.json();
+
+                    // Check for HTTP errors first
+                    if (!response.ok) {
+                        // Handle 503, 500, 404 etc. Use error message from backend if available.
+                        let errorDetail = result.error || `HTTP error! Status: ${response.status}`;
+                        // Log traceback if backend provided it (helpful for debugging server-side issues)
+                        if (result.traceback) console.error("Ingestion Traceback:\n", result.traceback);
+                        throw new Error(errorDetail); // Throw to be caught by the catch block
+                    }
+
+                    // --- Success Path ---
+                    // Process successful response, include stats in the message if available
+                    let successMsg = result.message || 'Full ingestion finished.';
+                    if (result.stats) {
+                        // Construct a more detailed message using stats
+                        const stats = result.stats;
+                        const processed = stats.processed_chunks !== undefined ? stats.processed_chunks : stats.processed_files !== undefined ? stats.processed_files : 'N/A'; // Adapt based on what your script returns
+                        const inserted = stats.inserted !== undefined ? stats.inserted : 'N/A';
+                        const errors = stats.errors !== undefined ? stats.errors : 0;
+                        successMsg += ` (Processed: ${processed}, Inserted: ${inserted}, Errors: ${errors})`;
+                    }
+                    if (this.showToast) this.showToast(successMsg, 'success', 8000); // Show success toast for longer
+                    this.statusMessage = 'Ingestion Complete'; // Indicate completion
+
+                } catch (error) {
+                    // --- Error Path ---
+                    console.error('[API Error] Start Full Ingestion FAILED:', error);
+                    this.statusMessage = 'Ingestion Error'; // Set error status
+                    // Show a more detailed error toast for longer
+                    if (this.showToast) this.showToast(`Ingestion failed: ${error.message}`, 'error', 10000);
+
+                } finally {
+                    // --- Finally Block ---
+                    // Reset status after a delay to allow user to see 'Complete' or 'Error'
+                    // Only reset if the status hasn't been changed by another concurrent operation.
+                    setTimeout(() => {
+                        if (this.statusMessage === 'Starting Full Ingestion...' || this.statusMessage === 'Ingestion Complete' || this.statusMessage === 'Ingestion Error') {
+                            this.statusMessage = 'Idle';
+                        }
+                    }, 4000); // 4-second delay before resetting status
+                    // --- END Finally Block ---
+                }
+            }, // End of _performStartIngestion
+
+
+            // --- File Handling & Ingestion ---
+
+            async startIncrementalIngestion() {
+                console.log('[Button Click] Start Incremental Ingestion clicked. Checking for unsaved changes...');
+                // Use the confirmation helper to check for unsaved changes before proceeding
+                // It will call _performStartIncrementalIngestion only if config is clean or after successful save
+                this._confirmUnsavedChanges('Incremental Ingestion', this._performStartIncrementalIngestion.bind(this));
+            },
+
+            async _performStartIncrementalIngestion() { // Contains the original incremental ingestion logic
+                // Check loading state *inside* the core logic as well
+                if (this.isLoading()) {
+                    console.warn('[Button Click - Core] Incremental Ingestion ignored, already loading:', this.statusMessage);
+                    // if (this.showToast) this.showToast("Operation already in progress.", "info"); // Optional toast
+                    return;
+                }
+
+                console.log("[API Call] Starting incremental ingestion via /ingest_block...");
+                this.statusMessage = 'Starting Incremental Ingestion...'; // User feedback
+
+                try {
+                    // Call the Flask backend endpoint for incremental ingestion
+                    const response = await fetch('/ingest_block', { method: 'POST' }); // Ensure Flask endpoint exists
+
+                    // Always try to parse the response
+                    const result = await response.json();
+
+                    // Check for HTTP errors first
+                    if (!response.ok) {
+                        let errorDetail = result.error || `HTTP error! Status: ${response.status}`;
+                        if (result.traceback) console.error("Ingestion Traceback:\n", result.traceback);
+                        throw new Error(errorDetail); // Throw to be caught by the catch block
+                    }
+
+                    // --- Success Path ---
+                    // Process successful response, include stats if available
+                    let successMsg = result.message || 'Incremental ingestion finished.';
+                    if (result.stats) { // Check if stats exist in the result
+                        const stats = result.stats;
+                        // Adapt based on what your incremental script actually returns in stats
+                        const processed = stats.processed_files !== undefined ? stats.processed_files : stats.processed_chunks !== undefined ? stats.processed_chunks : 'N/A';
+                        const inserted = stats.inserted !== undefined ? stats.inserted : 'N/A';
+                        const errors = stats.errors !== undefined ? stats.errors : 0;
+                        successMsg += ` (Processed: ${processed}, Inserted: ${inserted}, Errors: ${errors})`;
+                    }
+                    if (this.showToast) this.showToast(successMsg, 'success', 6000); // Slightly shorter toast than full
+                    this.statusMessage = 'Ingestion Complete'; // Indicate completion
+
+                } catch (error) {
+                    // --- Error Path ---
+                    console.error('[API Error] Start Incremental Ingestion FAILED:', error);
+                    this.statusMessage = 'Ingestion Error'; // Set error status
+                    // Show detailed error toast
+                    if (this.showToast) this.showToast(`Incremental ingestion failed: ${error.message}`, 'error', 10000);
+
+                } finally {
+                    // --- Finally Block ---
+                    // Reset status after a delay, unless another operation started
+                    setTimeout(() => {
+                        if (this.statusMessage === 'Starting Incremental Ingestion...' || this.statusMessage === 'Ingestion Complete' || this.statusMessage === 'Ingestion Error') {
+                            this.statusMessage = 'Idle';
+                        }
+                    }, 4000); // 4-second delay before resetting status
+                    // --- END Finally Block ---
+                }
+            }, // End of _performStartIncrementalIngestion
+
+            async loadInitialConfig() {
+                console.log("Fetching initial config from /get_config...");
+                try {
+                    const response = await fetch('/get_config'); // MUST EXIST IN FLASK
+                    if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    const loadedConfig = await response.json();
+
+                    // Update formConfig state carefully, ensuring structure matches
+                    for (const section in loadedConfig) {
+                        if (this.formConfig[section] && typeof this.formConfig[section] === 'object') {
+                            Object.assign(this.formConfig[section], loadedConfig[section]);
+                        } else {
+                            console.warn(`Section ${section} mismatch or not object.`);
+                            this.formConfig[section] = loadedConfig[section];
+                        }
+                    }
+                    // Ensure arrays are arrays
+                    this.formConfig.document.FILE_TYPES = Array.isArray(this.formConfig.document.FILE_TYPES) ? this.formConfig.document.FILE_TYPES : [];
+                    this.formConfig.env.DOMAIN_KEYWORDS = Array.isArray(this.formConfig.env.DOMAIN_KEYWORDS) ? this.formConfig.env.DOMAIN_KEYWORDS : [];
+                    this.formConfig.env.AUTO_DOMAIN_KEYWORDS = Array.isArray(this.formConfig.env.AUTO_DOMAIN_KEYWORDS) ? this.formConfig.env.AUTO_DOMAIN_KEYWORDS : [];
+                    this.formConfig.env.USER_ADDED_KEYWORDS = Array.isArray(this.formConfig.env.USER_ADDED_KEYWORDS) ? this.formConfig.env.USER_ADDED_KEYWORDS : [];
+                    this._markConfigClean(); // Set the baseline savedConfig AFTER successful load
+                    
+                    console.log("Initial config loaded successfully via API.");
+                } catch (error) {
+                    console.error("Failed to load initial config via API:", error);
+                    this.showToast(`Error loading config: ${error.message}`, 'error');
+                    // Keep default values defined in state
+                    throw error; // Critical for init
+                }
+            },
+
+            async fetchPresets() {
+                console.log("Fetching presets from /list_presets...");
+                try {
+                    const response = await fetch('/list_presets'); // MUST EXIST IN FLASK
+                    if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    this.presets = await response.json();
+                    console.log("Presets loaded via API:", Object.keys(this.presets).length);
+                } catch (error) {
+                    console.error("Failed to fetch presets via API:", error);
+                    this.presets = {};
+                    this.showToast(`Error loading presets: ${error.message}`, 'error');
+                    // Non-critical, don't re-throw
+                }
+            },
+
+            async applyPreset(presetName) {
+                // presetName comes from $event.target.value
+                if (!presetName || this.isLoading()) return;
+                console.log(`Requesting backend to apply preset: ${presetName}`);
+                this.statusMessage = 'Applying Preset...';
+                try {
+                    // Option: Backend applies preset and returns the *new full config*
+                    const response = await fetch(`/apply_preset/${presetName}`, { method: 'POST' }); // MUST EXIST IN FLASK
+                    if (!response.ok) {
+                        let errorData = { error: `HTTP error ${response.status}` };
+                        try { errorData = await response.json(); } catch (e) { }
+                        throw new Error(errorData.error || errorData.message || `Failed to apply preset.`);
+                    }
+                    const result = await response.json(); // Expect { success: true, config: { ... } }
+
+                    if (!result.success || !result.config) {
+                        throw new Error(result.message || "Backend didn't return updated config.");
+                    }
+
+                    // Update local formConfig with the config returned by the backend
+                    for (const section in result.config) {
+                        if (this.formConfig[section]) { Object.assign(this.formConfig[section], result.config[section]); }
+                        else { this.formConfig[section] = result.config[section]; }
+                    }
+                    // Ensure arrays are correct after update
+                    this.formConfig.document.FILE_TYPES = Array.isArray(this.formConfig.document.FILE_TYPES) ? this.formConfig.document.FILE_TYPES : [];
+                    // ... repeat for other arrays ...
+
+                    this.showToast(`Preset '${presetName}' applied.`, 'success');
+                    this.selectedPresetName = presetName; // Ensure dropdown reflects applied preset
+                    this.statusMessage = 'Idle';
+
+                } catch (error) {
+                    console.error('Apply Preset Error:', error);
+                    this.statusMessage = 'Preset Error';
+                    this.showToast(`Error applying preset: ${error.message}`, 'error');
+                    this.selectedPresetName = ''; // Clear dropdown selection on error
+                    setTimeout(() => { if (!this.isLoading()) this.statusMessage = 'Idle'; }, 3000);
+                }
+            },
+
+            async savePreset() {
+                const presetName = this.newPresetName.trim();
+                // Validation: Check if name is provided
+                if (!presetName) {
+                    if (this.showToast) this.showToast("Enter a name for the new preset.", "info");
+                    return; // Stop if no name
+                }
+                // Validation: Check if already performing an action
+                if (this.isLoading()) {
+                    console.warn('[Button Click] Save Preset ignored, already loading:', this.statusMessage);
+                    if (this.showToast) this.showToast("Please wait for the current operation to finish.", "info");
+                    return; // Stop if already busy
+                }
+
+                console.log(`[API Call] Saving current config as preset: ${presetName}`);
+                this.statusMessage = 'Saving Preset...'; // Set loading state
+
+                // Create a deep copy of the current config state to send
+                // Use try/catch for JSON operations just in case formConfig is weird
+                let configToSave;
+                try {
+                    configToSave = JSON.parse(JSON.stringify(this.formConfig));
+                } catch (jsonError) {
+                    console.error("[savePreset] Error preparing config data:", jsonError);
+                    if (this.showToast) this.showToast("Internal error preparing configuration data.", "error");
+                    this.statusMessage = 'Preset Error'; // Set error state
+                    return; // Stop if data cannot be prepared
+                }
+
+                try {
+                    // Make the API call to the backend
+                    const response = await fetch('/save_preset', { // Ensure Flask POST endpoint exists and accepts JSON
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        // Send preset name and the config object
+                        body: JSON.stringify({ preset_name: presetName, config: configToSave })
+                    });
+
+                    const result = await response.json(); // Always try to parse JSON response
+
+                    // Check if the request was successful
+                    if (!response.ok || !result.success) {
+                        // Throw an error to be caught by the catch block
+                        throw new Error(result.error || result.message || `HTTP error! Status: ${response.status}`);
+                    }
+
+                    // --- Success Path ---
+                    if (this.showToast) this.showToast(result.message || `Preset '${presetName}' saved.`, 'success');
+                    this.newPresetName = ''; // Clear the input field
+                    await this.fetchPresets(); // Refresh the preset list dropdown
+                    this.selectedPresetName = presetName; // Select the newly saved preset in the dropdown
+
+                    // statusMessage will be reset in the finally block on success
+
+                } catch (error) {
+                    // --- Error Path ---
+                    console.error('[API Error] Save Preset FAILED:', error);
+                    this.statusMessage = 'Preset Error'; // Set specific error status
+                    if (this.showToast) this.showToast(`Error saving preset: ${error.message}`, 'error');
+                    // Optional: Delay before resetting error status to Idle
+                    setTimeout(() => { if (this.statusMessage === 'Preset Error') this.statusMessage = 'Idle'; }, 3000);
+
+                } finally {
+                    // --- CORRECTED finally block ---
+                    // Reset status *immediately* ONLY IF it's still 'Saving Preset...'
+                    // This handles the success case correctly and avoids interfering with the error case.
+                    if (this.statusMessage === 'Saving Preset...') {
+                        this.statusMessage = 'Idle';
+                        console.log("[savePreset finally] Status reset to Idle after success.");
+                    } else {
+                        // Log if status was already changed (e.g., by the catch block)
+                        console.log("[savePreset finally] Status not 'Saving Preset...', current:", this.statusMessage);
+                    }
+                                  }
+            }, // End of async savePreset
+            async deletePresetWithConfirmation(presetName) {
+                // Validation: Check if a preset name was provided (should come from selectedPresetName)
+                if (!presetName) {
+                    if (this.showToast) this.showToast("No preset selected to delete.", "info");
+                    return;
+                }
+                // Validation: Check if already performing an action
+                if (this.isLoading()) {
+                    console.warn('[Button Click] Delete Preset ignored, already loading:', this.statusMessage);
+                    if (this.showToast) this.showToast("Please wait for the current operation to finish.", "info");
+                    return;
+                }
+
+                // Use the confirmation modal
+                this.requireConfirmation({
+                    title: 'Delete Preset',
+                    message: `Are you sure you want to permanently delete the preset "${presetName}"?`,
+                    confirmButtonClass: 'bg-red-600 hover:bg-red-700', // Red confirm button
+                    onConfirm: async () => { // The actual deletion logic
+                        console.log(`[Confirm Action] Deleting preset: ${presetName}`);
+                        this.statusMessage = 'Deleting Preset...';
+                        try {
+                            // Make the API call to the backend
+                            // Use encodeURIComponent in case preset names have special characters
+                            const response = await fetch(`/delete_preset/${encodeURIComponent(presetName)}`, {
+                                method: 'DELETE' // Use DELETE HTTP method
+                            });
+
+                            const result = await response.json(); // Expect { success: true/false, message: '...' }
+
+                            // Check if the request was successful
+                            if (!response.ok || !result.success) {
+                                throw new Error(result.error || result.message || `HTTP error! Status: ${response.status}`);
+                            }
+
+                            // --- Success Path ---
+                            if (this.showToast) this.showToast(result.message || `Preset '${presetName}' deleted.`, 'success');
+                            await this.fetchPresets(); // Refresh the preset list dropdown
+                            this.selectedPresetName = ''; // Clear the selection as the preset is gone
+
+                            // statusMessage will be reset in finally block
+
+                        } catch (error) {
+                            // --- Error Path ---
+                            console.error('[API Error] Delete Preset FAILED:', error);
+                            this.statusMessage = 'Delete Error';
+                            if (this.showToast) this.showToast(`Error deleting preset: ${error.message}`, 'error');
+                            // Optional: Delay before resetting error status
+                            setTimeout(() => { if (this.statusMessage === 'Delete Error') this.statusMessage = 'Idle'; }, 3000);
+
+                        } finally {
+                            // --- finally block ---
+                            // Reset status ONLY IF it's still 'Deleting Preset...'
+                            if (this.statusMessage === 'Deleting Preset...') {
+                                this.statusMessage = 'Idle';
+                                console.log("[deletePreset finally] Status reset to Idle after attempt.");
+                            } else {
+                                console.log("[deletePreset finally] Status not 'Deleting Preset...', current:", this.statusMessage);
+                            }
+                            // --- END finally block ---
+                        }
+                    }, // End onConfirm
+                    onCancel: () => {
+                        console.log(`[Confirm Action] Cancelled deletion for preset: ${presetName}`);
+                    }
+                }); // End requireConfirmation
+            }, // End of deletePresetWithConfirmation
+
+            
+            // UPDATED: Sends JSON, relies on config.py's update_and_save via Flask endpoint
+            async saveConfig() {
+                if (this.isLoading()) {
+                    console.warn('[Button Click] Save Config ignored, already loading:', this.statusMessage);
+                    if (this.showToast) this.showToast("Please wait for the current operation to finish.", "info");
+                    return false; // Indicate failure/not performed
+                }
+
+                console.log("Saving configuration via /save_config...");
+                this.statusMessage = 'Saving Config...';
+
+                // Create a deep copy of the current config state to send
+                let configDataToSend;
+                try {
+                    configDataToSend = JSON.parse(JSON.stringify(this.formConfig));
+                } catch (jsonError) {
+                    console.error("[saveConfig] Error preparing config data for sending:", jsonError);
+                    this.statusMessage = 'Save Error';
+                    if (this.showToast) this.showToast("Internal error preparing configuration data.", "error");
+                    return false; // Indicate failure
+                }
+
+                try {
+                    const response = await fetch('/save_config', { // Endpoint defined in app.py
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(configDataToSend) // Send the whole config object
+                    });
+
+                    const result = await response.json(); // Expect { success: true/false, message: '...' }
+
+                    if (!response.ok || !result.success) {
+                        // If backend returns an error message, use it, otherwise construct one
+                        const errorMsg = result.error || result.message || `HTTP error ${response.status}`;
+                        throw new Error(errorMsg);
+                    }
+
+                    // --- Success Path ---
+                    this.showToast(result.message || 'Configuration saved successfully!', 'success');
+
+                    // Update savedConfig AFTER successful save ***
+                    this._markConfigClean();
+                    
+
+                    return true; // Indicate success for the confirmation flow
+
+                } catch (error) {
+                    // --- Error Path ---
+                    console.error('Configuration Save Error:', error);
+                    this.statusMessage = 'Save Error';
+                    this.showToast(`Error saving config: ${error.message}`, 'error');
+                    // Return false *after* setting error state and showing toast
+                    return false; // Indicate failure
+
+                } finally {
+                    // --- Finally Block ---
+                    // Reset status *immediately* ONLY IF it's still 'Saving Config...'
+                    // This correctly handles the success case and avoids interfering with the error case's delayed reset.
+                    if (this.statusMessage === 'Saving Config...') {
+                        this.statusMessage = 'Idle';
+                        console.log("[saveConfig finally] Status reset to Idle after success.");
+                    } else if (this.statusMessage === 'Save Error') {
+                        // Optional: Add a slight delay before resetting error status visually
+                        setTimeout(() => {
+                            if (this.statusMessage === 'Save Error') this.statusMessage = 'Idle';
+                        }, 2000);
+                        console.log("[saveConfig finally] Save Error status detected, will reset after delay.");
+                    } else {
+                        // Log if status was already changed by another concurrent operation
+                        console.log("[saveConfig finally] Status not 'Saving Config...' or 'Save Error', current:", this.statusMessage);
+                    }
+                    // --- END Finally Block ---
+                }
+            } // End of async saveConfig
+        }; // End of returned object
+    }); // End of Alpine.data definition
+}); // End of alpine:init listener
+    // Use DOMContentLoaded to explicitly initialize the tree and call init AFTER Alpine is ready
+    // This can be added to your existing Alpine.js initialization
+
+    function addTooltips() {
+        // Create a function to add tooltips to labels
+        function createTooltip(label, key) {
+            // Only proceed if we have content for this key
+            if (!tooltipContent[key]) return;
+
+            // Create wrapper
+            const wrapper = document.createElement('span');
+            wrapper.className = 'tooltip-wrapper';
+
+            // Create icon
+            const icon = document.createElement('span');
+            icon.className = 'tooltip-icon';
+            icon.innerHTML = `
+      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"></circle>
+        <path d="M12 16v-4"></path>
+        <path d="M12 8h.01"></path>
+      </svg>`;
+
+            // Create tooltip content
+            const tooltip = document.createElement('span');
+            tooltip.className = 'tooltip-content';
+            tooltip.textContent = tooltipContent[key];
+
+            // Assemble tooltip
+            wrapper.appendChild(icon);
+            wrapper.appendChild(tooltip);
+
+            // Add tooltip after the label text
+            label.appendChild(wrapper);
+        }
+
+        // Process all labels with data-tooltip attribute
+        document.querySelectorAll('[data-tooltip]').forEach(label => {
+            const key = label.getAttribute('data-tooltip');
+            createTooltip(label, key);
+        });
+    }
+
+    // Function to update config with extracted keywords
+    function updateConfigWithKeywords(keywords) {
+        fetch('/update_config_keywords', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                keywords: keywords
+            })
+        })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Configuration updated successfully with new keywords!');
+                } else {
+                    alert('Failed to update configuration: ' + (data.error || 'Unknown error'));
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Failed to update configuration');
+            });
+    
+        }
+
+// Consolidated listener for non-Alpine DOM setup
+let domContentLoadedFired_setup = false; // Use a specific flag name
+
+document.addEventListener('DOMContentLoaded', function () {
+    if (domContentLoadedFired_setup) {
+        console.warn('[DOM Setup] Consolidated listener fired AGAIN. Preventing re-execution.');
+        return;
+    }
+    domContentLoadedFired_setup = true;
+    console.log('[DOM Setup] Consolidated listener running...');
+
+    // --- Diversity Slider Logic ---
+    const diversitySlider = document.getElementById('diversity');
+    const diversityValue = document.getElementById('diversityValue');
+    if (diversitySlider && diversityValue) {
+        // Set initial value first
+        diversityValue.textContent = diversitySlider.value;
+        // Then add the listener
+        diversitySlider.addEventListener('input', function () {
+            diversityValue.textContent = this.value;
+        });
+        console.log('[DOM Setup] Diversity slider setup complete.');
+    } else {
+        console.warn('[DOM Setup] Diversity slider or value element not found.');
+    }
+
+    // --- NOTE on Keyword Update ---
+    // The logic to call updateConfigWithKeywords should NOT be here.
+    // It needs to be called *after* the keyword builder API call SUCCEEDS
+    // and provides the keywords. This likely needs modification inside
+    // the _performRunKeywordBuilder method.
+    console.log('[DOM Setup] Consolidated listener finished.');
+});
+
+// Final log to confirm script parsing
+console.log('static/ragapp.js parsed successfully.');
+
+// --- END static/ragapp.js ---//

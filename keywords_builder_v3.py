@@ -13,15 +13,16 @@ import spacy
 from keybert import KeyBERT
 from sentence_transformers import SentenceTransformer
 
-# Weaviate v4 imports
+
+from config import cfg # Import the central config object
 import weaviate
 from weaviate.exceptions import WeaviateConnectionError
-
+from weaviate.classes.config import Property, DataType
+#from weaviate.connect import ConnectionParams # Needed if using connect_to_custom
+from weaviate.config import AdditionalConfig # Needed for timeout
+from weaviate.classes.config import Property, DataType
 # --- Configuration & Parameters ---
-DEFAULT_WEAVIATE_HOST = "localhost"
-DEFAULT_WEAVIATE_HTTP_PORT = 8080
-DEFAULT_WEAVIATE_GRPC_PORT = 50051
-DEFAULT_COLLECTION_NAME = "industrial_tech"
+DEFAULT_COLLECTION_NAME = "Industrial_tech" # Keep this or read from cfg later?
 DEFAULT_KEYBERT_MODEL = 'all-MiniLM-L6-v2'
 DEFAULT_SPACY_MODEL = 'en_core_web_sm'
 DEFAULT_TOP_N_PER_DOC = 10 # Keywords to extract *per document*
@@ -45,7 +46,10 @@ logger = logging.getLogger(__name__)
 
 def parse_arguments():
     """Parses command-line arguments."""
+    # Read collection from cfg INSIDE main, not via args default. Remove arg if always using cfg.
+    # parser.add_argument("--collection", default=DEFAULT_COLLECTION_NAME, help="Weaviate collection name (uses config)")
     parser = argparse.ArgumentParser(description="Advanced Keyword Extraction Pipeline (Per-Document KeyBERT).")
+    # Read collection from cfg INSIDE main, not via args default. Remove arg if always using cfg.
     parser.add_argument("--collection", default=DEFAULT_COLLECTION_NAME, help="Weaviate collection name")
     parser.add_argument("--keybert_model", default=DEFAULT_KEYBERT_MODEL, help="Sentence Transformer model for KeyBERT")
     parser.add_argument("--spacy_model", default=DEFAULT_SPACY_MODEL, help="SpaCy model for POS tagging")
@@ -57,6 +61,9 @@ def parse_arguments():
     parser.add_argument("--pos_tags", type=lambda s: set(s.split(',')), default=DEFAULT_POS_TAGS, help="Comma-separated POS tags to keep (e.g., 'NOUN,PROPN')")
     parser.add_argument("--min_doc_freq", type=int, default=DEFAULT_MIN_DOC_FREQ, help="Minimum number of documents a keyword must appear in")
     parser.add_argument("--no_pos_filter", action='store_true', help="Disable POS tag filtering")
+    #parser.add_argument("--weaviate_host", default=DEFAULT_WEAVIATE_HOST, help="Weaviate host")
+    #parser.add_argument("--weaviate_http_port", type=int, default=DEFAULT_WEAVIATE_HTTP_PORT, help="Weaviate HTTP port")
+    #parser.add_argument("--weaviate_grpc_port", type=int, default=DEFAULT_WEAVIATE_GRPC_PORT, help="Weaviate gRPC port")
 
     args = parser.parse_args()
     if len(args.ngram_range) != 2 or args.ngram_range[0] < 1 or args.ngram_range[1] < args.ngram_range[0]:
@@ -74,29 +81,93 @@ def load_spacy_model(model_name: str):
     logger.info(f"Loaded spaCy model '{model_name}'.")
     return nlp
 
-def get_all_content_from_weaviate(client: weaviate.Client, collection_name: str) -> list[str]:
-    """Retrieves non-empty 'content' from all objects."""
-    # ... (Same as before) ...
+# Assuming you already have the config loaded using Pydantic model
+
+def get_all_content_from_weaviate(client: weaviate.WeaviateClient, collection_name: str) -> list[str]:
+    """Retrieves non-empty text content from all objects using available text properties (Weaviate v4 syntax)."""
     texts = []
     try:
-        collection = client.collections.get(collection_name)
-        logger.info(f"Iterating through all objects in '{collection_name}' to retrieve content...")
-        object_count = 0
-        for obj in collection.iterator(return_properties=["content"], include_vector=False):
-            object_count += 1
-            content = obj.properties.get("content")
-            if content and isinstance(content, str) and content.strip(): # Ensure non-empty string
-                texts.append(content)
-            # else:
-            #     logger.debug(f"Object UUID {obj.uuid} missing 'content' property or it's empty/not a string.")
+        logger.info(f"Attempting to access collection '{collection_name}'...")
+        # Check if collection exists using v4 method
+        if not client.collections.exists(collection_name):
+             logger.error(f"Collection '{collection_name}' does not exist in Weaviate.")
+             # Optionally, list available collections if helpful
+             all_collections = client.collections.list_all(simple=True) # Get simple list
+             logger.info(f"Available collections: {[c.name for c in all_collections]}")
+             return []
 
-        logger.info(f"Retrieved non-empty content from {len(texts)} objects (processed {object_count} total objects).")
-        if object_count > 0 and len(texts) == 0:
-             logger.error("Processed objects but failed to extract any valid text content!")
+        # Get the collection object (v4 style)
+        collection = client.collections.get(collection_name)
+        logger.info(f"Successfully accessed collection '{collection_name}'.")
+
+        # Get properties from the collection config (v4 style)
+        config = collection.config.get()
+        text_properties = []
+        for prop in config.properties:
+            # Check for TEXT or TEXT_ARRAY data types USING the imported DataType [2][6]
+            if prop.data_type == DataType.TEXT or prop.data_type == DataType.TEXT_ARRAY:
+                 text_properties.append(prop.name)
+
+        if not text_properties:
+            # Fallback if no text properties are explicitly found (less reliable)
+            text_properties = ["content", "text", "body", "description", "source"] # Keep common fallbacks
+            logger.warning(f"No explicit TEXT properties found in schema for '{collection_name}'. Trying common properties: {text_properties}")
+        else:
+            logger.info(f"Identified text properties to check: {text_properties}")
+
+        logger.info(f"Iterating through objects in '{collection_name}' to retrieve content from properties: {text_properties}...")
+
+        object_count = 0
+        processed_count = 0
+        # Iterate through objects using the v4 iterator [7][4]
+        # Fetch only the identified text properties
+        fetch_props = list(set(text_properties)) # Ensure unique props
+
+        for obj in collection.iterator(return_properties=fetch_props):
+            processed_count += 1
+            found_content_in_obj = False
+            # Access properties via obj.properties dictionary
+            properties = obj.properties
+
+            for prop_name in text_properties:
+                content = properties.get(prop_name)
+                if content:
+                    # Handle both string and list of strings (TEXT_ARRAY)
+                    if isinstance(content, list): # Handle TEXT_ARRAY
+                        for item in content:
+                             if item and isinstance(item, str) and item.strip():
+                                 texts.append(item.strip())
+                                 found_content_in_obj = True
+                    elif isinstance(content, str) and content.strip(): # Handle TEXT
+                        texts.append(content.strip())
+                        found_content_in_obj = True
+
+            if found_content_in_obj:
+                object_count += 1 # Count objects from which we got *any* text
+
+            if processed_count % 500 == 0: # Log progress periodically
+                 logger.info(f"Processed {processed_count} objects...")
+
+        logger.info(f"Finished iterating. Retrieved {len(texts)} non-empty text entries from {object_count} objects (processed {processed_count} total objects).")
+
+        if not texts:
+            # Check total object count in collection for context
+            total_obj_count = collection.aggregate.over_all(total_count=True).total_count
+            logger.warning(f"Failed to extract any text content from '{collection_name}'. The collection has {total_obj_count} objects.")
+            if total_obj_count > 0:
+                 logger.warning(f"Ensure the specified text properties {text_properties} contain data in your objects.")
+
         return texts
+
+    except WeaviateConnectionError as conn_e:
+         logger.critical(f"Weaviate connection error while querying '{collection_name}': {conn_e}", exc_info=True)
+         raise # Re-raise or handle as needed
     except Exception as e:
-        logger.error(f"Failed to retrieve content from Weaviate collection '{collection_name}': {e}", exc_info=True)
-        return []
+        # Log the specific error including the type
+        logger.error(f"Failed to retrieve content from Weaviate collection '{collection_name}' ({type(e).__name__}): {e}", exc_info=True)
+        return [] # Return empty list on other errors
+
+
 
 # <<< MODIFIED: Run KeyBERT per document >>>
 def run_keybert_per_document(texts: list[str], model_name: str, top_n_per_doc: int, ngram_range: tuple[int, int], diversity: float) -> dict[str, float]:
@@ -247,7 +318,7 @@ def apply_final_filters(
     # Final list is already sorted by score
     return filtered_scores
 
-# --- Cluster Keywords (Remains the same) ---
+# --- Cluster Keywords ---
 def cluster_keywords(keywords: list[str], n_clusters: int):
     """Clusters keywords using KMeans."""
     # ... (Same as before) ...
@@ -278,7 +349,7 @@ def cluster_keywords(keywords: list[str], n_clusters: int):
     except Exception as e:
         logger.error(f"Error during keyword clustering: {e}", exc_info=True)
         return {}
-
+    
 
 # --- Main Execution ---
 if __name__ == "__main__":
@@ -286,27 +357,69 @@ if __name__ == "__main__":
     client = None
     nlp_model = None
 
+    if not cfg or not cfg.retrieval or not cfg.model:
+        logger.critical("CRITICAL: Central configuration (cfg) not loaded or incomplete. Cannot proceed.")
+        sys.exit(1)
+
     try:
         # Load spaCy model once
         nlp_model = load_spacy_model(args.spacy_model)
 
-        # Connect to Weaviate
-        logger.info("Connecting to Weaviate...")
-        client = weaviate.connect_to_local(
-            host=DEFAULT_WEAVIATE_HOST,
-            port=DEFAULT_WEAVIATE_HTTP_PORT,
-            grpc_port=DEFAULT_WEAVIATE_GRPC_PORT
-        )
-        if not client.is_ready():
-            raise WeaviateConnectionError("Client connected but not ready.")
-        logger.info("Weaviate connection successful.")
+        # --- Connect to Weaviate using cfg ---
+        w_host = cfg.retrieval.WEAVIATE_HOST
+        w_http_port = cfg.retrieval.WEAVIATE_HTTP_PORT
+        w_grpc_port = cfg.retrieval.WEAVIATE_GRPC_PORT
+        # Ensure w_timeout_tuple is a tuple e.g., (10, 120) from your config
+        w_timeout_tuple = cfg.retrieval.WEAVIATE_TIMEOUT
+        w_collection_name = args.collection # Use collection name from args/defaults
 
-        # Get content
-        all_texts = get_all_content_from_weaviate(client, args.collection)
+        logger.info(f"Connecting to Weaviate at {w_host}:{w_http_port} (gRPC: {w_grpc_port}) using central config...")
+        logger.info(f"Using connection timeout: {w_timeout_tuple}")
 
+        # CORRECTED CONNECTION using connect_to_local and AdditionalConfig
+        try:
+            # Create AdditionalConfig object specifically for the timeout
+            # The timeout parameter within AdditionalConfig expects the tuple[2]
+            additional_config = weaviate.config.AdditionalConfig(timeout=w_timeout_tuple)
+
+            client = weaviate.connect_to_local(
+                host=w_host,
+                port=w_http_port,
+                grpc_port=w_grpc_port,
+                # headers=... # Add API keys or auth headers if needed via headers= parameter
+                additional_config=additional_config # Pass the config object here
+            )
+            # connect_to_local implicitly tries to connect.
+            # Explicit connect() might not be needed but calling is_ready() is crucial.
+
+            if not client.is_ready(): # Check readiness using is_ready() for v4[2][5]
+                 raise WeaviateConnectionError("Weaviate client connected but server reports not ready.")
+
+            logger.info(f"Successfully connected to Weaviate at {w_host}:{w_http_port} and server is ready.")
+
+        except TypeError as te:
+            # Catch the specific error if it persists, helps debugging
+            logger.critical(f"Fatal error: Connection parameter issue. Details: {te}\n"
+                            f"Host: {w_host}, HTTP: {w_http_port}, gRPC: {w_grpc_port}, Timeout: {w_timeout_tuple}", exc_info=True)
+            sys.exit(1)
+        except Exception as e:
+            logger.critical(f"Fatal error: Connection to Weaviate failed. Details: {e}\n"
+                            f"Host: {w_host}, HTTP: {w_http_port}, gRPC: {w_grpc_port}, Timeout: {w_timeout_tuple}", exc_info=True)
+            sys.exit(1)
+
+        # --- Get content using the CORRECTED function from previous step ---
+        all_texts = get_all_content_from_weaviate(client, w_collection_name)
+
+        # Debugging: Check if texts were retrieved
+        # print(f"Retrieved {len(all_texts)} text items.")
+        # if all_texts:
+        #    print(f"First item preview: {repr(all_texts[0][:100])}...")
+
+
+        # <<< The rest of your main logic remains the same >>>
         # Extract Keywords using KeyBERT (Per Document + Aggregation)
         if all_texts:
-            # Returns {keyword: max_score}, {keyword: doc_freq}
+            logger.info(f"Starting KeyBERT extraction on {len(all_texts)} documents...") # Added log
             aggregated_keywords_scores, keyword_frequencies = run_keybert_per_document(
                 all_texts,
                 args.keybert_model,
@@ -317,6 +430,7 @@ if __name__ == "__main__":
 
             # Filter Keywords (Doc Freq, Linguistic + Pattern)
             if aggregated_keywords_scores:
+                logger.info("Applying final filters to aggregated keywords...") # Added log
                 final_keywords_with_scores = apply_final_filters(
                     aggregated_keywords_scores,
                     keyword_frequencies,
@@ -331,35 +445,53 @@ if __name__ == "__main__":
                 final_keywords_with_scores = final_keywords_with_scores[:args.final_top_n]
 
                 if final_keywords_with_scores:
-                    # Print Top N Final Keywords
+                     # Print Top N Final Keywords
                     print(f"\n--- Top {len(final_keywords_with_scores)} Filtered Domain Keywords (ranked by Max KeyBERT score) ---")
                     for term, score in final_keywords_with_scores:
-                        print(f"{term} : {score:.4f}") # Score is Max KeyBERT relevance
+                        print(f"{term} : {score:.4f}")
                     print("-----------------------------------------------------------------------------")
+
+                    # Prepare keywords for file writing
+                    keyword_list_for_file = [term for term, _ in final_keywords_with_scores]
+                    output_filename = "auto_domain_keywords.txt"
+                    try:
+                        logger.info(f"Writing {len(keyword_list_for_file)} keywords to {output_filename}...")
+                        with open(output_filename, "w", encoding="utf-8") as f:
+                            f.write(", ".join(keyword_list_for_file))
+                        logger.info(f"Successfully wrote keywords to {output_filename}")
+                    except IOError as e:
+                         logger.error(f"Failed to write keywords to {output_filename}: {e}")
 
                     # Cluster the final keywords
                     keyword_list_for_clustering = [term for term, _ in final_keywords_with_scores]
-                    clustered_keywords = cluster_keywords(keyword_list_for_clustering, n_clusters=DEFAULT_N_CLUSTERS) # Use DEFINED N_CLUSTERS
+                    num_clusters = getattr(args, 'n_clusters', DEFAULT_N_CLUSTERS) # Use default or add arg
+                    logger.info(f"Starting keyword clustering into {num_clusters} clusters...") # Added log
+                    clustered_keywords = cluster_keywords(keyword_list_for_clustering, n_clusters=num_clusters)
 
                     if clustered_keywords:
-                        print("\n--- Keyword Clusters (Top Keywords) ---")
-                        print(json.dumps(clustered_keywords, indent=2))
+                        print("\n--- Keyword Clusters (Themes) ---")
+                        for cluster_id, keywords_in_cluster in clustered_keywords.items():
+                            print(f"Cluster {cluster_id + 1}: {', '.join(keywords_in_cluster[:15])}" + ("..." if len(keywords_in_cluster) > 15 else ""))
                         print("---------------------------------------")
                     else:
-                         logger.warning("Clustering did not produce results.")
+                        logger.warning("Clustering did not produce results.")
 
                 else:
                     print("No keywords remained after all filtering steps.")
             else:
                 print("KeyBERT did not extract any keywords after aggregation.")
         else:
-            print("No content retrieved from Weaviate.")
+            print("No content retrieved from Weaviate. Cannot perform keyword extraction.") # Modified message
 
     except Exception as e:
-        logger.critical(f"Fatal error: {str(e)}", exc_info=True)
+        logger.critical(f"An unexpected error occurred in the main execution block: {str(e)}", exc_info=True)
         print(f"❌ Failure: {str(e)}")
         sys.exit(1)
+
     finally:
+        # Use is_connected() for v4 to check before closing
         if client and client.is_connected():
             logger.info("Closing Weaviate client connection.")
             client.close()
+        elif client:
+             logger.warning("Client object exists but was not connected.")

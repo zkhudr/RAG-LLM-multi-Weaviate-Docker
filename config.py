@@ -3,7 +3,7 @@
 import os
 import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
-from typing import List, Dict, Any, Optional, Literal # Added Literal
+from typing import List, Dict, Any, Optional, Literal, Tuple # Added Literal
 from dotenv import load_dotenv
 import logging
 import shutil
@@ -64,6 +64,18 @@ def save_yaml_config(data: Dict[str, Any], path: Path):
 
 # === Pydantic Models ===
 
+class PipelineConfig(BaseModel):
+    """Configuration specific to the RAG pipeline execution."""
+    max_history_turns: int = 5  # Default: Use last 5 user/assistant pairs (10 messages)
+
+class DomainKeywordExtractionConfig(BaseModel):
+    keybert_model: str = "all-MiniLM-L6-v2"
+    top_n_per_doc: int = 10
+    final_top_n: int = 100
+    min_doc_freq: int = 2
+    diversity: float = 0.7
+    no_pos_filter: bool = False
+
 class SecurityConfig(BaseModel):
     SANITIZE_INPUT: bool = True
     RATE_LIMIT: int = 10
@@ -81,7 +93,7 @@ class SecurityConfig(BaseModel):
     # which prevents them from being saved back to YAML.
 
 class RetrievalConfig(BaseModel):
-    COLLECTION_NAME: str = "industrial_tech"
+    COLLECTION_NAME: str = "Industrial_tech"
     K_VALUE: int = 6
     SCORE_THRESHOLD: float = 0.6
     LAMBDA_MULT: float = 0.6
@@ -92,10 +104,15 @@ class RetrievalConfig(BaseModel):
     SEMANTIC_WEIGHT: float = 0.7
     SPARSE_WEIGHT: float = 0.3
     PERFORM_DOMAIN_CHECK: bool = True
+    WEAVIATE_HOST: str = os.getenv("WEAVIATE_DOCKER_HOST", "localhost") # Maybe a separate var for host
+    WEAVIATE_HTTP_PORT: int = int(os.getenv("WEAVIATE_HOST_HTTP_PORT") or 8080) # Prioritize env
+    WEAVIATE_GRPC_PORT: int = int(os.getenv("WEAVIATE_HOST_GRPC_PORT") or 50051) # Prioritize env
+    retrieve_with_history: bool = False
+    WEAVIATE_TIMEOUT: Tuple[int, int] = (10, 120)
 
     @field_validator('SEARCH_TYPE')
     def validate_search_type(cls, value):
-        allowed = {'mmr', 'similarity', 'similarity_score_threshold'}
+        allowed = {'mmr', 'similarity', 'similarity_score_threshold','hybrid'}
         val_lower = value.lower()
         if val_lower not in allowed:
             raise ValueError(f"SEARCH_TYPE must be one of {allowed}, got '{value}'")
@@ -153,6 +170,8 @@ class AppConfig(BaseModel):
     document: DocumentConfig = Field(default_factory=DocumentConfig)
     paths: PathConfig = Field(default_factory=PathConfig)
     env: EnvironmentConfig = Field(default_factory=EnvironmentConfig)
+    pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
+    domain_keyword_extraction: DomainKeywordExtractionConfig = Field(default_factory=DomainKeywordExtractionConfig)
 
     # Automatically update derived env fields after validation/loading
     #@model_validator(mode='after')

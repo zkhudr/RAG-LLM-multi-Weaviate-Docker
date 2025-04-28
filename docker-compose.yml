@@ -19,8 +19,9 @@ services:
       # GRPC_ENABLED: "true"
       # GRPC_PORT: "50051"
     ports:
-      - "8080:8080"
-      - "50051:50051"
+      - "${WEAVIATE_HOST_HTTP_PORT:-8080}:8080" # Use env var, fallback to 8080
+      - "${WEAVIATE_HOST_GRPC_PORT:-50051}:50051" # Use env var, fallback to 50051
+    # Optionally pass these ports to your app container's environment if it's also containerized
     volumes:
       - weaviate_data:/var/lib/weaviate
 

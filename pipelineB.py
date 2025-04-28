@@ -416,16 +416,20 @@ class IndustrialAutomationPipeline:
     def _generate_local_response(self, query: str, context: str, chat_history: Optional[List[Dict]] = None) -> str:
         """Generates response using local LLM, context, and chat history."""
         try:
-            system_msg_base = self.cfg.model.SYSTEM_MESSAGE or "You are a helpful industrial automation expert. Use the following context and conversation history to answer the question."
+            # Determine system message based on context and config
+            system_msg = self.cfg.model.SYSTEM_MESSAGE or "You are a helpful AI assistant." # Default to config or generic
+            is_domain_check_off = not self.cfg.retrieval.PERFORM_DOMAIN_CHECK
+            is_context_empty = not context or not context.strip()
 
-            # Format history string
+            if is_domain_check_off and is_context_empty:
+                # Use a purely generic message when domain check is OFF and no context found
+                system_msg = "You are a helpful AI assistant."
+                self.logger.info("Using generic system message for local LLM (no context, domain check OFF).")
+            # else: Use the system_msg loaded from config (which might be domain-specific)
+
             history_str = self._format_chat_history_for_prompt(chat_history)
-
-            # Construct prompt with history
-            context_part = f"Context:\n{context}\n\n" if context else ""
-            # Ensure clear separation and final instruction
-            prompt = f"{system_msg_base}\n\n{history_str}\n\n{context_part}User:\n{query}"
-
+            context_part = f"Context:\n{context}\n\n" if context else "Context: [No relevant information found in documents]\n\n"
+            prompt = f"{system_msg}\n\n{history_str}\n\n{context_part}User:\n{query}"
             # --- ADD THIS LOGGING ---
             self.logger.info("="*20 + " FINAL LOCAL LLM PROMPT " + "="*20)
             self.logger.info(f"System Message Part:\n{system_msg_base}") # Check if new message loaded
@@ -442,114 +446,17 @@ class IndustrialAutomationPipeline:
             return f"Local LLM encountered an error: {str(e)}" # Return error message
 
     # === MODIFIED: call_deepseek_api ===
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-    def call_deepseek_api(self, query: str, context: Optional[str], chat_history: Optional[List[Dict]]) -> Optional[Dict]:
-        """
-        Calls the DeepSeek Chat Completion API, adapting the system prompt
-        based on domain check settings and context availability.
-        """
-        provider_name = "deepseek"
-        api_key = self.cfg.security.DEEPSEEK_API_KEY
-        timeout = self.cfg.security.API_TIMEOUT
-
-        if not api_key:
-            self.logger.warning(f"{provider_name.capitalize()} API key not configured. Skipping API call.")
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        retry_error_callback=lambda retry_state: logger.warning(f"Retrying DeepSeek API call after error: {retry_state.outcome.exception()}")
+    )
+    def call_deepseek_api(self, query: str, context: str, chat_history: Optional[List[Dict]] = None) -> Optional[str]:
+        """Calls DeepSeek API with context and chat history."""
+        if not self.cfg.security.DEEPSEEK_API_KEY:
+            self.logger.info("DeepSeek API key not configured. Skipping API call.")
             return None
 
-        api_url = "https://api.deepseek.com/chat/completions" # Verify DeepSeek endpoint URL
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}"
-        }
-
-        # --- Determine System Prompt ---
-        default_system_message = self.cfg.model.SYSTEM_MESSAGE or "You are a helpful AI assistant."
-        system_prompt_content = default_system_message
-        is_domain_check_off = not self.cfg.retrieval.PERFORM_DOMAIN_CHECK
-        is_context_empty = not context or not context.strip()
-
-        if is_domain_check_off and is_context_empty:
-            # Use a generic prompt if domain check is OFF and no context was retrieved
-            system_prompt_content = "You are a helpful AI assistant. Answer the user's query based on your general knowledge."
-            self.logger.info(f"Using GENERIC system prompt for {provider_name} API (Domain Check OFF, No Context).")
-        else:
-            # Use the configured (potentially domain-specific) system prompt
-             self.logger.info(f"Using CONFIGURED system prompt for {provider_name} API.")
-        # --- End System Prompt Determination ---
-
-        # Format history for API
-        api_history = self._format_chat_history_for_api(chat_history)
-
-        # Construct messages payload
-        messages = [{"role": "system", "content": system_prompt_content}]
-        messages.extend(api_history) # Add formatted history
-        # Add context if available (and domain check wasn't off with empty context)
-        if context and not (is_domain_check_off and is_context_empty):
-             messages.append({"role": "system", "content": f"Use the following context to answer:\n{context}"})
-        # Add the current user query
-        messages.append({"role": "user", "content": query})
-
-        # Prepare request body
-        payload = {
-            "model": self.cfg.model.EXTERNAL_API_MODEL_NAME or "deepseek-chat", # Use config override or DeepSeek default
-            "messages": messages,
-            "temperature": self.cfg.model.LLM_TEMPERATURE,
-            "max_tokens": self.cfg.model.MAX_TOKENS,
-            "top_p": self.cfg.model.TOP_P,
-            "frequency_penalty": self.cfg.model.FREQUENCY_PENALTY,
-            # Add other parameters supported by DeepSeek API if needed
-            "stream": False # Assuming non-streaming for now
-        }
-
-        self.logger.info(f"Calling {provider_name.capitalize()} API: {api_url} with model {payload['model']}")
-        self.logger.debug(f"API Payload (excluding messages): { {k:v for k,v in payload.items() if k != 'messages'} }")
-        self.logger.debug(f"API Messages count: {len(messages)}")
-
-        try:
-            response = requests.post(api_url, headers=headers, json=payload, timeout=timeout)
-            response.raise_for_status() # Raises HTTPError for bad responses (4xx or 5xx)
-
-            api_result = response.json()
-            # Log raw response for debugging if needed
-            # self.logger.debug(f"{provider_name.capitalize()} API Raw Response: {api_result}")
-
-            # Extract the response text (adjust based on actual DeepSeek API structure)
-            response_text = api_result.get("choices", [{}])[0].get("message", {}).get("content", "")
-            model_used = api_result.get("model", payload['model'])
-
-            if not response_text:
-                 self.logger.warning(f"{provider_name.capitalize()} API returned an empty response.")
-                 return None # Or return an error dict
-
-            self.logger.info(f"{provider_name.capitalize()} API call successful. Response length: {len(response_text)}")
-            return {
-                "response": response_text.strip(),
-                "source": provider_name,
-                "model": model_used,
-                "error": False
-            }
-
-        except requests.exceptions.Timeout:
-            self.logger.error(f"{provider_name.capitalize()} API request timed out after {timeout} seconds.")
-            return {"response": f"Error: API request timed out ({provider_name}).", "source": provider_name, "model": payload['model'], "error": True}
-        except requests.exceptions.RequestException as e:
-            self.logger.error(f"{provider_name.capitalize()} API request failed: {e}", exc_info=True)
-            error_detail = str(e)
-            # Try to get more detail from response if available
-            if e.response is not None:
-                try:
-                    error_body = e.response.json()
-                    error_detail = error_body.get("error", {}).get("message", str(e))
-                except json.JSONDecodeError:
-                    error_detail = e.response.text[:200] # Use raw text if not JSON
-
-            return {"response": f"Error: API request failed ({provider_name}): {error_detail}", "source": provider_name, "model": payload['model'], "error": True}
-        except Exception as e:
-            self.logger.error(f"Unexpected error during {provider_name} API call: {e}", exc_info=True)
-            return {"response": f"Error: Unexpected issue during API call ({provider_name}).", "source": provider_name, "model": payload['model'], "error": True}
-   
-
-        # un comment and place properly if needed
         # --- Caching Check (Modified Key - Optional, consider if API calls are expensive/deterministic) ---
         # history_str_api = json.dumps(chat_history) if chat_history else ""
         # api_cache_key_content = f"api_{query}_{self._get_cache_key(context)}_{history_str_api}"
@@ -559,7 +466,64 @@ class IndustrialAutomationPipeline:
         #    self.logger.info("Returning CACHED DeepSeek API response")
         #    return cached.get("response")
         # --- End Caching Check ---
-       
+
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.cfg.security.DEEPSEEK_API_KEY}",
+                "Content-Type": "application/json"
+            }
+
+            system_msg_base = self.cfg.model.SYSTEM_MESSAGE or "You are a helpful industrial automation expert. Use the provided context and conversation history."
+            system_msg = f"{system_msg_base}\n\nContext:\n{context}" if context else system_msg_base
+
+            # Format history for API
+            api_history_messages = self._format_chat_history_for_api(chat_history)
+
+            # Construct messages list: System + History + Current User Query
+            messages = [{"role": "system", "content": system_msg}] + api_history_messages + [{"role": "user", "content": query}]
+
+            payload = {
+                "model": "deepseek-chat", # Use appropriate model name
+                "messages": messages,
+                "temperature": self.cfg.model.LLM_TEMPERATURE,
+                "max_tokens": self.cfg.model.MAX_TOKENS,
+                "top_p": self.cfg.model.TOP_P,
+                "frequency_penalty": self.cfg.model.FREQUENCY_PENALTY,
+            }
+
+            self.logger.debug(f"DeepSeek API Payload Messages (Preview): {json.dumps(messages, indent=2)[:500]}...")
+
+            response = requests.post(
+                "https://api.deepseek.com/v1/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=self.cfg.security.API_TIMEOUT
+            )
+            response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+            result_data = response.json()
+
+            if result_data and "choices" in result_data and result_data["choices"]:
+                api_result = result_data["choices"][0].get("message", {}).get("content")
+                if api_result:
+                    # Optional: Save to cache if enabled
+                    # self._save_to_cache(api_cache_key, {"response": api_result.strip()})
+                    return api_result.strip()
+                else:
+                     self.logger.warning("API response missing content in choices.")
+                     return None
+            else:
+                self.logger.error(f"API response missing expected structure: {result_data}")
+                return None
+        except requests.exceptions.RequestException as e:
+            logger.error(f"DeepSeek API request failed: {e}", exc_info=True)
+            return None # Return None on failure
+        except (KeyError, IndexError, json.JSONDecodeError) as e:
+            logger.error(f"DeepSeek API response parsing failed: {e}", exc_info=True)
+            return None
+        except Exception as e:
+            logger.error(f"DeepSeek API call failed unexpectedly: {str(e)}", exc_info=True)
+            return None
+
     def validate_technical_response(self, response: str) -> bool:
         """Validates if the response seems technically relevant (basic keyword check)."""
         if not response: return False
