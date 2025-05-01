@@ -1,17 +1,10 @@
 # calculate_centroid.py
+
 import numpy as np
 import weaviate
 import logging
 import sys
-from config import config as cfg # Use config for collection name and centroid path
-
-# --- Configuration ---
-# Get Weaviate connection details and centroid path from config
-DEFAULT_WEAVIATE_HOST = "localhost" # Or get from config if moved there
-DEFAULT_WEAVIATE_HTTP_PORT = 8080
-DEFAULT_WEAVIATE_GRPC_PORT = 50051
-COLLECTION_NAME = getattr(cfg.retrieval, 'COLLECTION_NAME', "industrial_tech")
-CENTROID_SAVE_PATH = getattr(cfg.paths, 'DOMAIN_CENTROID_PATH', "./domain_centroid.npy")
+from config import config as cfg  # Use config for collection name, centroid path, and connection details
 
 # --- Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -25,15 +18,16 @@ def calculate_and_save_centroid(client: weaviate.Client, collection_name: str, s
 
         all_vectors = []
         processed_count = 0
+
         # Iterate through all objects, fetching only the vector
         for obj in collection.iterator(include_vector=True, return_properties=[]):
-            if obj.vector and 'default' in obj.vector: # Adjust 'default' if using named vectors
+            if obj.vector and 'default' in obj.vector:  # Adjust 'default' if using named vectors
                 all_vectors.append(obj.vector['default'])
                 processed_count += 1
                 if processed_count % 1000 == 0:
                     logger.info(f"Fetched {processed_count} vectors...")
             # else:
-            #    logger.warning(f"Object UUID {obj.uuid} missing vector.")
+            #     logger.warning(f"Object UUID {obj.uuid} missing vector.")
 
         if not all_vectors:
             logger.error("No vectors found in the collection. Cannot calculate centroid.")
@@ -56,18 +50,37 @@ def calculate_and_save_centroid(client: weaviate.Client, collection_name: str, s
 if __name__ == "__main__":
     client = None
     try:
-        logger.info("Connecting to Weaviate...")
+        # Get connection details from config
+        host = cfg.retrieval.WEAVIATE_HOST
+        http_port = cfg.retrieval.WEAVIATE_HTTP_PORT
+        grpc_port = cfg.retrieval.WEAVIATE_GRPC_PORT
+        collection_name = cfg.retrieval.COLLECTION_NAME
+        centroid_save_path = getattr(cfg.paths, 'DOMAIN_CENTROID_PATH', "./domain_centroid.npy")
+        
+        logger.info(f"Connecting to Weaviate at {host}:{http_port} (gRPC: {grpc_port})...")
+        
         client = weaviate.connect_to_local(
-            host=DEFAULT_WEAVIATE_HOST,
-            port=DEFAULT_WEAVIATE_HTTP_PORT,
-            grpc_port=DEFAULT_WEAVIATE_GRPC_PORT
+            host=host,
+            port=http_port,
+            grpc_port=grpc_port
         )
+
         if not client.is_connected():
-            raise ConnectionError("Failed to connect to Weaviate.")
+            raise ConnectionError(f"Failed to connect to Weaviate at {host}:{http_port}.")
+            
         logger.info("Weaviate connection successful.")
-
-        calculate_and_save_centroid(client, COLLECTION_NAME, CENTROID_SAVE_PATH)
-
+        
+        # Optional: Check collection exists
+        try:
+            collection_check = client.collections.get(collection_name)
+            count = collection_check.aggregate.over_all(total_count=True).total_count
+            logger.info(f"Collection '{collection_name}' has {count} items.")
+        except Exception as e:
+            logger.error(f"Error checking collection '{collection_name}': {e}")
+            raise
+            
+        calculate_and_save_centroid(client, collection_name, centroid_save_path)
+        
     except Exception as e:
         logger.critical(f"Centroid calculation failed: {e}")
         sys.exit(1)

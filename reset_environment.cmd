@@ -1,0 +1,9 @@
+@echo off
+echo Testing Weaviate...
+curl -s -o nul -w "Weaviate HTTP Status: %%{http_code}\n" http://localhost:8080/v1/meta
+
+echo Testing Ollama...
+curl -s -o nul -w "Ollama HTTP Status: %%{http_code}\n" http://localhost:11434/api/tags
+
+echo Testing Integration...
+curl -X POST http://localhost:8080/v1/modules/text2vec-ollama/configure -H "Content-Type: application/json" -d "{\"ollamaEndpoint\": \"http://ollama:11434\"}"

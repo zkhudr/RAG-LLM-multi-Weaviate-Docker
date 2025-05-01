@@ -8,7 +8,6 @@ from langchain_weaviate.vectorstores import WeaviateVectorStore
 # -----------------------
 
 # --- Original Imports ---
-# Corrected Ollama Import (Address Deprecation Warning)
 from langchain_ollama import OllamaEmbeddings
 # --- Was: from langchain_community.embeddings import OllamaEmbeddings ---
 from config import cfg  # Keep using central config
@@ -19,12 +18,6 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 # Configure logging
 logger = logging.getLogger(__name__)
-
-# Define defaults here or ensure they are accessible if needed
-DEFAULT_WEAVIATE_HOST = "localhost"
-DEFAULT_WEAVIATE_HTTP_PORT = 8080
-DEFAULT_WEAVIATE_GRPC_PORT = 50051
-DEFAULT_COLLECTION_NAME = "industrial_tech"
 
 class TechnicalRetriever:
 
@@ -52,35 +45,60 @@ class TechnicalRetriever:
     def _init_vectorstore(self):
         """Initializes the Weaviate client and Langchain vector store wrapper."""
         try:
-            self.logger.info("Attempting to connect to Weaviate...")
+            # --- MODIFIED: Get connection details from self.cfg ---
+            host = self.cfg.retrieval.WEAVIATE_HOST
+            http_port = self.cfg.retrieval.WEAVIATE_HTTP_PORT
+            grpc_port = self.cfg.retrieval.WEAVIATE_GRPC_PORT
+            collection_name = self.cfg.retrieval.COLLECTION_NAME # Get collection name from cfg
+
+            self.logger.info(f"Attempting to connect to Weaviate at {host}:{http_port} (gRPC: {grpc_port})...")
+
+            # Close existing client if it exists and is connected
+            if self.weaviate_client and self.weaviate_client.is_connected():
+                self.logger.warning("Existing Weaviate client found. Closing before reconnecting.")
+                try:
+                    self.weaviate_client.close()
+                except Exception as close_err:
+                    self.logger.error(f"Error closing existing client: {close_err}")
+
+            # Connect using details from cfg
             self.weaviate_client = weaviate.connect_to_local(
-                host=DEFAULT_WEAVIATE_HOST,
-                port=DEFAULT_WEAVIATE_HTTP_PORT,
-                grpc_port=DEFAULT_WEAVIATE_GRPC_PORT
+                host=host,
+                port=http_port,
+                grpc_port=grpc_port
             )
             if not self.weaviate_client.is_connected():
-                 raise WeaviateConnectionError("Weaviate client failed to connect.")
+                raise WeaviateConnectionError(f"Weaviate client failed to connect to {host}:{http_port}.")
+
             self.logger.info("Weaviate client connected successfully.")
 
-            collection_name = getattr(self.cfg.retrieval, 'COLLECTION_NAME', DEFAULT_COLLECTION_NAME)
             self.logger.info(f"Initializing Weaviate vector store wrapper for collection: '{collection_name}'")
-            # Corrected Instantiation
+
+            # Corrected Instantiation using collection_name from cfg
             self.vectorstore = WeaviateVectorStore(
                 client=self.weaviate_client,
                 index_name=collection_name,
                 text_key="content",
                 embedding=self.embeddings,
-                attributes=["source", "page", "filetype", "created_date", "modified_date"]
+                attributes=["source", "page", "filetype", "created_date", "modified_date"] # Adjust if schema differs
             )
             self.logger.info("Weaviate vector store wrapper initialized.")
 
-            # Optional: Check count (already present)
-            count = self.vectorstore._collection.aggregate.over_all(total_count=True).total_count
-            if count == 0:
-                self.logger.warning(f"Weaviate collection '{collection_name}' appears to be empty.")
+            # Optional: Check count
+            try:
+                count = self.vectorstore._collection.aggregate.over_all(total_count=True).total_count
+                if count == 0:
+                    self.logger.warning(f"Weaviate collection '{collection_name}' at {host}:{http_port} appears to be empty.")
+                else:
+                     self.logger.info(f"Collection '{collection_name}' has {count} items.")
+            except Exception as count_err:
+                 self.logger.error(f"Could not get item count for collection '{collection_name}': {count_err}")
 
         except Exception as e:
             self.logger.error(f"Weaviate vector store initialization failed: {str(e)}", exc_info=True)
+            # Set client and vectorstore to None on failure to prevent usage
+            self.weaviate_client = None
+            self.vectorstore = None
             raise RuntimeError("Failed to initialize Weaviate connection") from e
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
