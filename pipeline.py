@@ -204,60 +204,94 @@ class IndustrialAutomationPipeline:
 
     # === NEW: Helper to format history for LLM prompt ===
     def _format_chat_history_for_prompt(self, chat_history: Optional[List[Dict]]) -> str:
-        """ Formats chat history into a simple string for the LLM prompt. """
+        """ Formats chat history into a simple string for the LLM prompt, respecting max_history_turns. """
         if not chat_history:
             return ""
-        formatted_history = ""
-        # Iterate through history *before* the latest user message
-        # Limit history depth if needed (e.g., last 6 messages)
-        history_to_use = chat_history[:-1] # Use all previous for now
-        # history_to_use = chat_history[-7:-1] # Example: Last 6 messages (3 pairs)
-
+        
+        formatted_history = ""  # Initialize here
+        
+        # Get max history turns from config
+        max_turns = self.cfg.pipeline.max_history_turns
+        
+        # Calculate how many messages to include (2 messages per turn - user & assistant)
+        max_messages = max_turns * 2
+        
+        # Get the appropriate slice of history
+        if len(chat_history) > max_messages + 1:  # +1 to account for latest message
+            history_to_use = chat_history[-max_messages-1:-1]  # Include up to max_messages, excluding latest
+        else:
+            history_to_use = chat_history[:-1]  # Use all previous if fewer than max
+        
+        # Debug logging
+        self.logger.debug(f"Formatting {len(history_to_use)} messages from history (max_turns={max_turns})")
+        
         for message in history_to_use:
-             role = message.get("role", "unknown").capitalize()
-             content = message.get("content", "").strip()
-             if content: # Skip empty messages
-                 formatted_history += f"{role}:\n{content}\n\n"
+            role = message.get("role", "unknown").capitalize()
+            content = message.get("content", "").strip()
+            if content:  # Skip empty messages
+                formatted_history += f"{role}:\n{content}\n\n"
+        
         return formatted_history.strip()
 
-    # === NEW: Helper to format history for DeepSeek API ===
+    # === NEW: Helper to format history for LLM API ===
     def _format_chat_history_for_api(self, chat_history: Optional[List[Dict]]) -> List[Dict]:
-        """ Formats chat history into the list format expected by DeepSeek API. """
+        """ Formats chat history into the list format expected by API, respecting max_history_turns. """
         if not chat_history:
             return []
-        # Return messages *before* the latest user message
-        # Limit history depth if needed
-        history_to_use = chat_history[:-1] # Use all previous for now
-        # history_to_use = chat_history[-7:-1] # Example: Last 6 messages
-
+        
+        # Get max history turns from config
+        max_turns = self.cfg.pipeline.max_history_turns
+        
+        # Calculate how many messages to include (2 messages per turn - user & assistant)
+        max_messages = max_turns * 2
+        
+        # Get the appropriate slice of history
+        if len(chat_history) > max_messages:
+            history_to_use = chat_history[-max_messages-1:-1]  # Include up to max_messages, excluding latest
+        else:
+            history_to_use = chat_history[:-1]  # Use all previous messages if fewer than max
+        
         api_history = []
         for msg in history_to_use:
             role = msg.get("role")
             content = msg.get("content")
-            if role in ["user", "assistant"] and content: # Filter for valid roles/content
+            if role in ["user", "assistant"] and content:  # Filter for valid roles/content
                 api_history.append({"role": role, "content": content})
+        
         return api_history
 
-    # === MODIFIED: generate_response ===
+        # === MODIFIED: generate_response ===
     def generate_response(self, query: str, chat_history: Optional[List[Dict]] = None) -> Dict:
-        """Generates response using context and optional chat history."""
-        self.logger.info(f"Generating response for query snippet: '{query[:50]}...' with history length: {len(chat_history) if chat_history else 0}")
+        """
+        Generates response using context and optional chat history, with history-aware
+        caching, retrieval, and optional response validation.
+        """
+        self.logger.info(f"Generating response with max_history_turns={self.cfg.pipeline.max_history_turns}, " 
+                 f"history length: {len(chat_history) if chat_history else 0}")
+        # --- History-Aware Caching Check ---
+        # Get max history turns from config
+        max_turns = self.cfg.pipeline.max_history_turns
 
-        # --- Caching Check (Modified Key) ---
-        # History-aware cache key
-        history_str = json.dumps(chat_history) if chat_history else ""
-        cache_key_content = f"{query}_{history_str}"
-        cache_key = self._get_cache_key(cache_key_content) # Generate hash key
+        # Calculate how many messages to include
+        max_messages = max_turns * 2
 
-        cached = self._load_from_cache(cache_key) # Use the key
+        # Get the appropriate slice of history for caching
+        history_for_cache = chat_history[-max_messages-1:-1] if chat_history and len(chat_history) > max_messages else chat_history[:-1] if chat_history else None
+
+        history_for_cache_key = self._format_chat_history_for_api(history_for_cache)
+        history_str_for_key = json.dumps(history_for_cache_key) if history_for_cache_key else ""
+        cache_key_content = f"{query}_{history_str_for_key}"
+        cache_key = self._get_cache_key(cache_key_content)
+
+        cached = self._load_from_cache(cache_key)
         if cached:
-            self.logger.info("Returning CACHED response (history-aware)")
-            # Ensure cached response has standard keys
+            self.logger.info("Returning CACHED response (history-aware key used)")
             cached.setdefault('response', '')
             cached.setdefault('source', 'cache')
             cached.setdefault('model', 'cache')
-            cached.setdefault('timestamp', datetime.now().isoformat())
             cached.setdefault('context', '')
+            cached.setdefault('error', False)
+            cached['timestamp'] = datetime.now().isoformat()
             return cached
         # --- End Caching Check ---
 
@@ -266,7 +300,8 @@ class IndustrialAutomationPipeline:
             if self.cfg.security.SANITIZE_INPUT:
                 sanitized_query = self._sanitize_input(query)
                 if not sanitized_query or len(sanitized_query) < 3:
-                    return self._format_response("Query too short or invalid", "validation", context=None, error=True)
+                    self.logger.warning("Query failed sanitization or was too short.")
+                    return self._format_response("Query too short or invalid after sanitization", "validation", context=None, error=True)
             else:
                 sanitized_query = query
 
@@ -277,50 +312,104 @@ class IndustrialAutomationPipeline:
                 domain_match = self._check_domain_relevance_hybrid(sanitized_query, query_terms)
                 if not domain_match:
                     self.logger.info("Query deemed outside domain scope by hybrid check.")
-                    return self._format_response("Query outside industrial automation scope", "domain_check", context=None)
+                    return self._format_response("Query appears to be outside the scope of industrial automation.", "domain_check", context=None)
                 self.logger.info("Query passed hybrid domain relevance check.")
             else:
                 self.logger.info("Domain relevance check skipped by configuration.")
 
-            # --- Context Retrieval ---
-            # Consider if retrieval should use rewritten query or history in future
-            context = self.retriever.get_context(sanitized_query) # Use sanitized query for retrieval
+            # --- History-Aware Context Retrieval ---
+            # --- History-Aware Context Retrieval ---
+            retrieval_query = sanitized_query
+            if self.cfg.retrieval.retrieve_with_history and chat_history:
+                # Get max history turns from config
+                max_turns = self.cfg.pipeline.max_history_turns
+                
+                # Calculate how many messages to include
+                max_messages = max_turns * 2
+                
+                # Get the appropriate slice of history for retrieval context
+                history_for_retrieval = chat_history[-max_messages-1:-1] if len(chat_history) > max_messages else chat_history[:-1]
+                
+                last_user_message_content = ""
+                for i in range(len(history_for_retrieval) - 1, -1, -1):
+                    if history_for_retrieval[i].get("role") == "user":
+                        last_user_message_content = history_for_retrieval[i].get("content", "")
+                        break
+                
+                if last_user_message_content:
+                    retrieval_query = f"Previous user question context: {last_user_message_content}\n\nCurrent user question: {sanitized_query}"
+                    self.logger.info(f"Retrieving context using history-aware query: '{retrieval_query[:150]}...'")
+                else:
+                    self.logger.info("retrieve_with_history enabled, but no previous user message found.")
+            else:
+                self.logger.info(f"Retrieving context using latest query only: '{retrieval_query[:100]}...'")
+
+            context = self.retriever.get_context(retrieval_query)
             if not context:
-                self.logger.warning(f"No context found for query: {sanitized_query[:50]}...")
-                # Decide: Answer without context or return specific message?
-                # Let's answer without context for now.
+                self.logger.warning(f"No context found for retrieval query: {retrieval_query[:50]}...")
 
             # --- Response Generation (Pass History) ---
             local_response = self._generate_local_response(sanitized_query, context, chat_history)
 
             api_response = None
-            if self.cfg.security.DEEPSEEK_API_KEY:
-                 api_response = self.call_deepseek_api(sanitized_query, context, chat_history) # Pass history
+            provider = self.cfg.model.EXTERNAL_API_PROVIDER.lower()
+            api_key_exists = False
+            if provider == 'deepseek' and self.cfg.security.DEEPSEEK_API_KEY:
+                api_key_exists = True
+                api_response = self.call_deepseek_api(sanitized_query, context, chat_history)
+            elif provider == 'openai' and self.cfg.security.OPENAI_API_KEY:
+                self.logger.warning("OpenAI provider selected but call_openai_api not implemented yet.")
+            elif provider != 'none':
+                self.logger.warning(f"External provider '{provider}' configured but no key/call function.")
 
-            merged_response = self.merge_responses(local_response, api_response) # Use original merge logic
+            merged_response = self.merge_responses(local_response, api_response)
 
-            # --- Validation (Optional) ---
-            # is_valid = self.validate_technical_response(merged_response)
-            # self.logger.info(f"Response validation result: {is_valid}")
-            # if not is_valid: # Handle invalid response if needed
+            # --- Optional Validation --- START OF COMPLETED SECTION ---
+            response_text = merged_response.get("response") or merged_response.get("text") or ""
+            is_valid = self.validate_technical_response(response_text)
+            #is_valid = self.validate_technical_response(merged_response)
+            logger.warning(f"[Debug] merged_response = {merged_response}")
+            self.logger.info(f"Response validation result: {is_valid}")
+
+            validation_failed_source = None # Flag to potentially override source later
+            if not is_valid:
+                self.logger.warning(f"Generated response failed technical validation. Original response snippet: '{merged_response[:100]}...'")
+                # Option A: Replace the response
+                merged_response = "The generated response may not be directly related to industrial automation or lacks specific technical terms. Please clarify or ask about a specific technical topic."
+                validation_failed_source = "validation_failed" # Set a flag/source override
+            # --- Optional Validation --- END OF COMPLETED SECTION ---
 
             # --- Format final response ---
+            source = "local_llm"
+            if api_response and provider != 'none':
+                source = provider
+            elif api_key_exists and not api_response and provider != 'none':
+                source = f"{provider}_api_failed_fallback_local"
+
+            # Override source if validation failed and we replaced the message
+            if validation_failed_source:
+                source = validation_failed_source
+
             final_result = self._format_response(
-                merged_response,
-                source="merged" if api_response else "local_llm",
-                context=context
+                response=merged_response,             # Use potentially modified response
+                source=source,                         # Use potentially modified source
+                context=context if is_valid else "",   # Don't show context if validation failed
+                error=False                            # Not treating validation failure as a hard error
             )
 
             # --- Caching Save ---
-            self._save_to_cache(cache_key, final_result) # Use history-aware key
+            # Only cache responses that passed validation
+            if is_valid:
+                self._save_to_cache(cache_key, final_result) # Use history-aware key
+            else:
+                self.logger.info("Skipping cache save for validation-failed response.")
 
             return final_result
 
         except Exception as e:
-            self.logger.exception(f"Pipeline error for query '{query[:50]}...': {str(e)}")
-            # Return error in the standard format
+            self.logger.exception(f"Pipeline error during generate_response for query '{query[:50]}...': {str(e)}")
             return self._format_response(
-                response=f"Sorry, an internal error occurred: {str(e)}",
+                response=f"Sorry, an internal error occurred processing your request.",
                 source="pipeline_error",
                 context=None,
                 error=True
@@ -356,17 +445,114 @@ class IndustrialAutomationPipeline:
             return f"Local LLM encountered an error: {str(e)}" # Return error message
 
     # === MODIFIED: call_deepseek_api ===
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=30),
-        retry_error_callback=lambda retry_state: logger.warning(f"Retrying DeepSeek API call after error: {retry_state.outcome.exception()}")
-    )
-    def call_deepseek_api(self, query: str, context: str, chat_history: Optional[List[Dict]] = None) -> Optional[str]:
-        """Calls DeepSeek API with context and chat history."""
-        if not self.cfg.security.DEEPSEEK_API_KEY:
-            self.logger.info("DeepSeek API key not configured. Skipping API call.")
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    def call_deepseek_api(self, query: str, context: Optional[str], chat_history: Optional[List[Dict]]) -> Optional[Dict]:
+        """
+        Calls the DeepSeek Chat Completion API, adapting the system prompt
+        based on domain check settings and context availability.
+        """
+        provider_name = "deepseek"
+        api_key = self.cfg.security.DEEPSEEK_API_KEY
+        timeout = self.cfg.security.API_TIMEOUT
+
+        if not api_key:
+            self.logger.warning(f"{provider_name.capitalize()} API key not configured. Skipping API call.")
             return None
 
+        api_url = "https://api.deepseek.com/chat/completions" # Verify DeepSeek endpoint URL
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        }
+
+        # --- Determine System Prompt ---
+        default_system_message = self.cfg.model.SYSTEM_MESSAGE or "You are a helpful AI assistant."
+        system_prompt_content = default_system_message
+        is_domain_check_off = not self.cfg.retrieval.PERFORM_DOMAIN_CHECK
+        is_context_empty = not context or not context.strip()
+
+        if is_domain_check_off and is_context_empty:
+            # Use a generic prompt if domain check is OFF and no context was retrieved
+            system_prompt_content = "You are a helpful AI assistant. Answer the user's query based on your general knowledge."
+            self.logger.info(f"Using GENERIC system prompt for {provider_name} API (Domain Check OFF, No Context).")
+        else:
+            # Use the configured (potentially domain-specific) system prompt
+             self.logger.info(f"Using CONFIGURED system prompt for {provider_name} API.")
+        # --- End System Prompt Determination ---
+
+        # Format history for API
+        api_history = self._format_chat_history_for_api(chat_history)
+
+        # Construct messages payload
+        messages = [{"role": "system", "content": system_prompt_content}]
+        messages.extend(api_history) # Add formatted history
+        # Add context if available (and domain check wasn't off with empty context)
+        if context and not (is_domain_check_off and is_context_empty):
+             messages.append({"role": "system", "content": f"Use the following context to answer:\n{context}"})
+        # Add the current user query
+        messages.append({"role": "user", "content": query})
+
+        # Prepare request body
+        payload = {
+            "model": self.cfg.model.EXTERNAL_API_MODEL_NAME or "deepseek-chat", # Use config override or DeepSeek default
+            "messages": messages,
+            "temperature": self.cfg.model.LLM_TEMPERATURE,
+            "max_tokens": self.cfg.model.MAX_TOKENS,
+            "top_p": self.cfg.model.TOP_P,
+            "frequency_penalty": self.cfg.model.FREQUENCY_PENALTY,
+            # Add other parameters supported by DeepSeek API if needed
+            "stream": False # Assuming non-streaming for now
+        }
+
+        self.logger.info(f"Calling {provider_name.capitalize()} API: {api_url} with model {payload['model']}")
+        self.logger.debug(f"API Payload (excluding messages): { {k:v for k,v in payload.items() if k != 'messages'} }")
+        self.logger.debug(f"API Messages count: {len(messages)}")
+
+        try:
+            response = requests.post(api_url, headers=headers, json=payload, timeout=timeout)
+            response.raise_for_status() # Raises HTTPError for bad responses (4xx or 5xx)
+
+            api_result = response.json()
+            # Log raw response for debugging if needed
+            # self.logger.debug(f"{provider_name.capitalize()} API Raw Response: {api_result}")
+
+            # Extract the response text (adjust based on actual DeepSeek API structure)
+            response_text = api_result.get("choices", [{}])[0].get("message", {}).get("content", "")
+            model_used = api_result.get("model", payload['model'])
+
+            if not response_text:
+                 self.logger.warning(f"{provider_name.capitalize()} API returned an empty response.")
+                 return None # Or return an error dict
+
+            self.logger.info(f"{provider_name.capitalize()} API call successful. Response length: {len(response_text)}")
+            return {
+                "response": response_text.strip(),
+                "source": provider_name,
+                "model": model_used,
+                "error": False
+            }
+
+        except requests.exceptions.Timeout:
+            self.logger.error(f"{provider_name.capitalize()} API request timed out after {timeout} seconds.")
+            return {"response": f"Error: API request timed out ({provider_name}).", "source": provider_name, "model": payload['model'], "error": True}
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"{provider_name.capitalize()} API request failed: {e}", exc_info=True)
+            error_detail = str(e)
+            # Try to get more detail from response if available
+            if e.response is not None:
+                try:
+                    error_body = e.response.json()
+                    error_detail = error_body.get("error", {}).get("message", str(e))
+                except json.JSONDecodeError:
+                    error_detail = e.response.text[:200] # Use raw text if not JSON
+
+            return {"response": f"Error: API request failed ({provider_name}): {error_detail}", "source": provider_name, "model": payload['model'], "error": True}
+        except Exception as e:
+            self.logger.error(f"Unexpected error during {provider_name} API call: {e}", exc_info=True)
+            return {"response": f"Error: Unexpected issue during API call ({provider_name}).", "source": provider_name, "model": payload['model'], "error": True}
+   
+
+        # un comment and place properly if needed
         # --- Caching Check (Modified Key - Optional, consider if API calls are expensive/deterministic) ---
         # history_str_api = json.dumps(chat_history) if chat_history else ""
         # api_cache_key_content = f"api_{query}_{self._get_cache_key(context)}_{history_str_api}"
@@ -376,64 +562,7 @@ class IndustrialAutomationPipeline:
         #    self.logger.info("Returning CACHED DeepSeek API response")
         #    return cached.get("response")
         # --- End Caching Check ---
-
-        try:
-            headers = {
-                "Authorization": f"Bearer {self.cfg.security.DEEPSEEK_API_KEY}",
-                "Content-Type": "application/json"
-            }
-
-            system_msg_base = self.cfg.model.SYSTEM_MESSAGE or "You are a helpful industrial automation expert. Use the provided context and conversation history."
-            system_msg = f"{system_msg_base}\n\nContext:\n{context}" if context else system_msg_base
-
-            # Format history for API
-            api_history_messages = self._format_chat_history_for_api(chat_history)
-
-            # Construct messages list: System + History + Current User Query
-            messages = [{"role": "system", "content": system_msg}] + api_history_messages + [{"role": "user", "content": query}]
-
-            payload = {
-                "model": "deepseek-chat", # Use appropriate model name
-                "messages": messages,
-                "temperature": self.cfg.model.LLM_TEMPERATURE,
-                "max_tokens": self.cfg.model.MAX_TOKENS,
-                "top_p": self.cfg.model.TOP_P,
-                "frequency_penalty": self.cfg.model.FREQUENCY_PENALTY,
-            }
-
-            self.logger.debug(f"DeepSeek API Payload Messages (Preview): {json.dumps(messages, indent=2)[:500]}...")
-
-            response = requests.post(
-                "https://api.deepseek.com/v1/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=self.cfg.security.API_TIMEOUT
-            )
-            response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
-            result_data = response.json()
-
-            if result_data and "choices" in result_data and result_data["choices"]:
-                api_result = result_data["choices"][0].get("message", {}).get("content")
-                if api_result:
-                    # Optional: Save to cache if enabled
-                    # self._save_to_cache(api_cache_key, {"response": api_result.strip()})
-                    return api_result.strip()
-                else:
-                     self.logger.warning("API response missing content in choices.")
-                     return None
-            else:
-                self.logger.error(f"API response missing expected structure: {result_data}")
-                return None
-        except requests.exceptions.RequestException as e:
-            logger.error(f"DeepSeek API request failed: {e}", exc_info=True)
-            return None # Return None on failure
-        except (KeyError, IndexError, json.JSONDecodeError) as e:
-            logger.error(f"DeepSeek API response parsing failed: {e}", exc_info=True)
-            return None
-        except Exception as e:
-            logger.error(f"DeepSeek API call failed unexpectedly: {str(e)}", exc_info=True)
-            return None
-
+       
     def validate_technical_response(self, response: str) -> bool:
         """Validates if the response seems technically relevant (basic keyword check)."""
         if not response: return False

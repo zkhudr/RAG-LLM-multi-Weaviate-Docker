@@ -22,6 +22,9 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 # Weaviate v4 imports
 import weaviate
+
+from weaviate import WeaviateClient
+from weaviate.connect import ConnectionParams
 from weaviate.classes.config import Property, DataType, Configure,VectorDistances
 from weaviate.classes.data import DataObject
 from weaviate.exceptions import (
@@ -46,76 +49,89 @@ weaviate_logger = logging.getLogger("weaviate")
 weaviate_logger.setLevel(logging.WARNING)
 weaviate_logger.propagate = False
 
-def setup_logging(verbose: bool = False) -> None:
-    """Configure standardized logging format"""
-    warnings.filterwarnings("ignore", message="CropBox.*")  # Now works
-    warnings.filterwarnings("ignore", category=UserWarning)
-    
-    level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler("ingestion.log", encoding='utf-8'),
-            logging.StreamHandler()
-        ]
-    )
-
-    warnings.filterwarnings("ignore", message="CropBox.*")
-    warnings.filterwarnings("ignore", category=UserWarning)
-
 # ========== PIPELINE CONFIGURATION ==========
 class PipelineConfig:
     """Centralized pipeline configuration for Weaviate v4"""
     # Document processing
     MIN_CONTENT_LENGTH = 50
     VECTORSTORE_COLLECTION = "industrial_tech"
-    
-    # Weaviate connection
-    WEAVIATE_HOST = "localhost"
-    WEAVIATE_HTTP_PORT = 8080
-    WEAVIATE_GRPC_PORT = 50051
+    # Weaviate connection - NOW USING VALUES FROM YOUR config.py
+    WEAVIATE_HOST = cfg.retrieval.WEAVIATE_HOST
+    WEAVIATE_HTTP_PORT = cfg.retrieval.WEAVIATE_HTTP_PORT
+    WEAVIATE_GRPC_PORT = cfg.retrieval.WEAVIATE_GRPC_PORT
     WEAVIATE_TIMEOUT = (30, 300)
-    
     # Embedding configuration
-    EMBEDDING_MODEL = getattr(cfg.model, 'EMBEDDING_MODEL', 'llama2')
+    EMBEDDING_MODEL = cfg.model.EMBEDDING_MODEL
     EMBEDDING_TIMEOUT = 30
     EMBEDDING_BASE_URL = "http://localhost:11434"
-    
     # Document processing
-    PDF_TABLE_EXTRACTION = getattr(cfg.document, 'PARSE_TABLES', True)
-    CHUNK_SIZE = getattr(cfg.document, 'CHUNK_SIZE', 1000)
-    CHUNK_OVERLAP = getattr(cfg.document, 'CHUNK_OVERLAP', 200)
-    
+    PDF_TABLE_EXTRACTION = cfg.document.PARSE_TABLES
+    CHUNK_SIZE = cfg.document.CHUNK_SIZE
+    CHUNK_OVERLAP = cfg.document.CHUNK_OVERLAP
     # Retry configuration
     RETRY_ATTEMPTS = 3
     RETRY_WAIT_MULTIPLIER = 2
     RETRY_MAX_WAIT = 30
-    
-    # Client management
-    # In class PipelineConfig:
+
     @classmethod
-    def get_client(cls):
-        logger.info(f"Attempting connection via connect_to_local to {cls.WEAVIATE_HOST}:{cls.WEAVIATE_HTTP_PORT} / gRPC:{cls.WEAVIATE_GRPC_PORT}")
+    def get_client(cls): # Signature remains correct (only cls)
+        """Weaviate v4 client initialization using official connection method.
+        Reads CURRENT connection details from the global cfg object."""
+        from weaviate import WeaviateClient
+        from weaviate.connect import ConnectionParams
+        from weaviate.config import AdditionalConfig
+        from config import cfg # Ensure global cfg is accessible
+
+        # --- READ CURRENT CONFIG FROM GLOBAL cfg ---
+        if not cfg or not cfg.retrieval:
+            logger.error("get_client: Global cfg or cfg.retrieval not available!")
+            # Handle this case - maybe raise error or return None?
+            raise RuntimeError("Configuration (cfg) not loaded or incomplete.")
+
+        # Use cfg directly, not cls attributes
+        host = cfg.retrieval.WEAVIATE_HOST
+        http_port = cfg.retrieval.WEAVIATE_HTTP_PORT
+        grpc_port = cfg.retrieval.WEAVIATE_GRPC_PORT
+        timeout = cfg.retrieval.WEAVIATE_TIMEOUT
+        # --- END READING CURRENT CONFIG ---
+
+        logger.info(f"Connecting to {host}:{http_port} (from current cfg)") # Log source
+        client = None
         try:
-            client = weaviate.connect_to_local(
-                host=cls.WEAVIATE_HOST,
-                port=cls.WEAVIATE_HTTP_PORT,
-                grpc_port=cls.WEAVIATE_GRPC_PORT
-                # timeout_config argument removed
+            connection_params = ConnectionParams.from_params(
+                http_host=host,         # Use variable from cfg
+                http_port=http_port,    # Use variable from cfg
+                http_secure=False,
+                grpc_host=host,         # Use variable from cfg
+                grpc_port=grpc_port,    # Use variable from cfg
+                grpc_secure=False
             )
-            # connect_to_local connects automatically, check readiness
-            logger.info("connect_to_local finished. Checking readiness...")
-            if not client.is_ready():
-                 raise WeaviateConnectionError("client.is_ready() check failed after connect_to_local.")
-            logger.info("Client connection successful and ready (connect_to_local).")
+
+            client = WeaviateClient(
+                connection_params=connection_params,
+                additional_config=AdditionalConfig(timeout=timeout) # Use variable from cfg
+            )
+
+            client.connect() # Connect
+
+            if not client.is_live():
+                logger.error(f"Weaviate client connected to {host}:{http_port} but reports not live.")
+                # Close client before raising if possible
+                if client and hasattr(client, 'close') and callable(client.close): client.close()
+                raise WeaviateConnectionError(f"Weaviate server at {host}:{http_port} connected but is not live.")
+
+            logger.info(f"Weaviate client connected successfully to {host}:{http_port} and is live.")
             return client
+
         except Exception as e:
-            logger.error(f"Failed during connect_to_local or readiness check: {e}", exc_info=True)
-            raise
-
-
-
+            logger.error(f"Connection failed during get_client to {host}:{http_port}: {e}", exc_info=True)
+            if client and hasattr(client, 'close') and callable(client.close):
+                try:
+                    if client.is_connected(): client.close()
+                    logger.info("Closed partially created client after connection failure.")
+                except Exception as close_err:
+                    logger.error(f"Error closing client during exception handling: {close_err}")
+            return None # Return None on failure
 
 # ========== CORE COMPONENTS ==========
 class RobustPDFLoaderV4:
@@ -359,6 +375,8 @@ class DocumentProcessor:
                         Property(name="page", data_type=DataType.INT),
                         Property(name="created_date", data_type=DataType.DATE),
                         Property(name="modified_date", data_type=DataType.DATE),
+                        Property(name="content_flags", data_type=DataType.TEXT_ARRAY),
+                        Property(name="error_messages", data_type=DataType.TEXT_ARRAY),
                     ],
                     vectorizer_config=Configure.Vectorizer.none(), # Correct for external embeddings
                     vector_index_config=Configure.VectorIndex.hnsw(
@@ -493,8 +511,6 @@ if __name__ == "__main__":
         parser.add_argument("--folder", "-f", type=str)
         parser.add_argument("--verbose", "-v", action="store_true")
         args = parser.parse_args()
-        
-        setup_logging(args.verbose)
         client = PipelineConfig.get_client()
         
         # Validate connection
