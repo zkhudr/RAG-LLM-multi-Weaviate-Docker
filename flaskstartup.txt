@@ -1,0 +1,248 @@
+(rg-venv) F:\AI builds exampls\RAG_chatboost>python app.py
+2025-05-02 06:27:38,967 - __main__ - INFO - Logging configured: Level=INFO, File=F:\AI builds exampls\RAG_chatboost\instance\app.log
+2025-05-02 06:27:38,993 - __main__ - INFO - Docker client initialized and connected successfully.
+2025-05-02 06:27:38,996 - __main__ - INFO - Successfully imported configuration (cfg, AppConfig).
+2025-05-02 06:27:42,346 - __main__ - INFO - Successfully imported IndustrialAutomationPipeline.
+F:\AI builds exampls\RAG-API\rg-venv\Lib\site-packages\PyPDF2\__init__.py:21: DeprecationWarning: PyPDF2 is deprecated. Please move to the pypdf library instead.
+  warnings.warn(
+2025-05-02 06:27:42,507 - __main__ - INFO - Successfully imported full ingestion components (DocumentProcessor, PipelineConfig).
+2025-05-02 06:27:42,609 - __main__ - INFO - Successfully imported incremental ingestion component (run_ingestion as run_incremental_ingestion).
+2025-05-02 06:27:42,610 - __main__ - INFO - Checked/Ensured instance, session, Weaviate data, and document directories.
+2025-05-02 06:27:42,623 - __main__ - INFO - Application starting...
+2025-05-02 06:27:42,624 - __main__ - INFO - Entering application context for initialization.
+F:\AI builds exampls\RAG-API\rg-venv\Lib\site-packages\flask_session\filesystem\filesystem.py:57: DeprecationWarning: 'SESSION_FILE_DIR' is deprecated and will be removed in a future release. Instead pass FileSystemCache(directory, threshold, mode) instance as SESSION_CACHELIB.
+  warnings.warn(
+F:\AI builds exampls\RAG-API\rg-venv\Lib\site-packages\flask_session\filesystem\filesystem.py:63: DeprecationWarning: 'SESSION_FILE_THRESHOLD' is deprecated and will be removed in a future release. Instead pass FileSystemCache(directory, threshold, mode) instance as SESSION_CLIENT.
+  warnings.warn(
+F:\AI builds exampls\RAG-API\rg-venv\Lib\site-packages\flask_session\filesystem\filesystem.py:75: DeprecationWarning: FileSystemSessionInterface is deprecated and will be removed in a future release. Instead use the CacheLib backend directly.
+  warnings.warn(
+F:\AI builds exampls\RAG-API\rg-venv\Lib\site-packages\flask_session\base.py:172: DeprecationWarning: The 'use_signer' option is deprecated and will be removed in the next minor release. Please update your configuration accordingly or open an issue.
+  warnings.warn(
+2025-05-02 06:27:42,668 - __main__ - INFO - Flask extensions initialized.
+2025-05-02 06:27:42,668 - __main__ - INFO - Checking/Creating database tables...
+2025-05-02 06:27:42,668 - __main__ - INFO - DB tables checked/created.
+2025-05-02 06:27:42,668 - __main__ - INFO - Attempting to initialize/re-initialize pipeline...
+2025-05-02 06:27:43,994 - retriever - INFO - Initializing TechnicalRetriever for Weaviate...
+2025-05-02 06:27:45,174 - retriever - INFO - OllamaEmbeddings initialized with model: nomic-embed-text
+2025-05-02 06:27:45,174 - retriever - INFO - Attempting to connect to Weaviate at localhost:8091 (gRPC: 51002)...
+2025-05-02 06:27:47,195 - retriever - INFO - Weaviate client connected successfully.
+2025-05-02 06:27:47,195 - retriever - INFO - Initializing Weaviate vector store wrapper for collection: 'Industrial_tech'
+2025-05-02 06:27:47,195 - retriever - INFO - Weaviate vector store wrapper initialized.
+2025-05-02 06:27:47,256 - retriever - INFO - Collection 'Industrial_tech' has 13829 items.
+2025-05-02 06:27:47,256 - pipeline - INFO - Loaded domain centroid vector from ./domain_centroid.npy with shape (768,)
+2025-05-02 06:27:47,256 - pipeline - WARNING - Domain keywords list is EMPTY during pipeline initialization!
+2025-05-02 06:27:47,256 - __main__ - INFO - Pipeline initialized/re-initialized successfully.
+2025-05-02 06:27:47,256 - __main__ - INFO - Loaded 14 presets from 'F:\AI builds exampls\RAG_chatboost\presets.json'. Global updated.
+2025-05-02 06:27:47,256 - __main__ - INFO - Presets loaded in main block. Count: 14
+2025-05-02 06:27:47,256 - __main__ - INFO - Flask-Session: Type=filesystem, Dir=./.flask_session
+2025-05-02 06:27:47,256 - __main__ - INFO - Database URI: sqlite:///F:\AI builds exampls\RAG_chatboost\instance\chat_history.db
+2025-05-02 06:27:47,256 - __main__ - INFO - Starting Flask server on http://0.0.0.0:5000/ (Debug: False)
+ * Serving Flask app 'app'
+ * Debug mode: on
+2025-05-02 06:27:47,287 - werkzeug - INFO - ←[31m←[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.←[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://192.168.1.145:5000
+2025-05-02 06:27:47,287 - werkzeug - INFO - ←[33mPress CTRL+C to quit←[0m
+2025-05-02 06:28:07,346 - __main__ - INFO - [Flask Hook] Running @app.before_request to initialize pipeline...
+2025-05-02 06:28:07,346 - __main__ - INFO - Attempting to initialize/re-initialize pipeline...
+2025-05-02 06:28:08,460 - retriever - INFO - Initializing TechnicalRetriever for Weaviate...
+2025-05-02 06:28:09,600 - retriever - INFO - OllamaEmbeddings initialized with model: nomic-embed-text
+2025-05-02 06:28:09,601 - retriever - INFO - Attempting to connect to Weaviate at localhost:8091 (gRPC: 51002)...
+2025-05-02 06:28:11,500 - retriever - INFO - Weaviate client connected successfully.
+2025-05-02 06:28:11,500 - retriever - INFO - Initializing Weaviate vector store wrapper for collection: 'Industrial_tech'
+2025-05-02 06:28:11,500 - retriever - INFO - Weaviate vector store wrapper initialized.
+2025-05-02 06:28:11,566 - retriever - INFO - Collection 'Industrial_tech' has 13829 items.
+2025-05-02 06:28:11,566 - pipeline - INFO - Loaded domain centroid vector from ./domain_centroid.npy with shape (768,)
+2025-05-02 06:28:11,566 - pipeline - WARNING - Domain keywords list is EMPTY during pipeline initialization!
+F:\AI builds exampls\RAG-API\rg-venv\Lib\site-packages\weaviate\warnings.py:314: ResourceWarning: Con004: The connection to Weaviate was not closed properly. This can lead to memory leaks.
+            Please make sure to close the connection using `client.close()`.
+  warnings.warn(
+F:\AI builds exampls\RAG_chatboost\app.py:206: ResourceWarning: unclosed <socket.socket fd=4056, family=23, type=1, proto=0, laddr=('::1', 54577, 0, 0), raddr=('::1', 8091, 0, 0)>
+  pipeline = IndustrialAutomationPipeline() # Instantiate
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+2025-05-02 06:28:11,583 - __main__ - INFO - Pipeline initialized/re-initialized successfully.
+2025-05-02 06:28:11,603 - werkzeug - INFO - 127.0.0.1 - - [02/May/2025 06:28:11] "GET / HTTP/1.1" 200 -
+2025-05-02 06:28:11,640 - __main__ - INFO - [Flask Hook] Running @app.before_request to initialize pipeline...
+2025-05-02 06:28:11,640 - __main__ - INFO - Attempting to initialize/re-initialize pipeline...
+2025-05-02 06:28:11,644 - __main__ - INFO - [Flask Hook] Running @app.before_request to initialize pipeline...
+2025-05-02 06:28:11,644 - __main__ - INFO - [Flask Hook] Running @app.before_request to initialize pipeline...
+2025-05-02 06:28:11,645 - __main__ - INFO - Attempting to initialize/re-initialize pipeline...
+2025-05-02 06:28:11,645 - __main__ - INFO - Attempting to initialize/re-initialize pipeline...
+2025-05-02 06:28:11,647 - __main__ - INFO - [Flask Hook] Running @app.before_request to initialize pipeline...
+2025-05-02 06:28:11,648 - __main__ - INFO - Attempting to initialize/re-initialize pipeline...
+2025-05-02 06:28:11,650 - __main__ - INFO - [Flask Hook] Running @app.before_request to initialize pipeline...
+2025-05-02 06:28:11,652 - __main__ - INFO - Attempting to initialize/re-initialize pipeline...
+2025-05-02 06:28:13,283 - retriever - INFO - Initializing TechnicalRetriever for Weaviate...
+2025-05-02 06:28:13,327 - retriever - INFO - Initializing TechnicalRetriever for Weaviate...
+2025-05-02 06:28:13,334 - retriever - INFO - Initializing TechnicalRetriever for Weaviate...
+2025-05-02 06:28:13,336 - retriever - INFO - Initializing TechnicalRetriever for Weaviate...
+2025-05-02 06:28:13,342 - retriever - INFO - Initializing TechnicalRetriever for Weaviate...
+2025-05-02 06:28:14,883 - retriever - INFO - OllamaEmbeddings initialized with model: nomic-embed-text
+2025-05-02 06:28:14,883 - retriever - INFO - Attempting to connect to Weaviate at localhost:8091 (gRPC: 51002)...
+2025-05-02 06:28:14,944 - retriever - INFO - OllamaEmbeddings initialized with model: nomic-embed-text
+2025-05-02 06:28:14,944 - retriever - INFO - Attempting to connect to Weaviate at localhost:8091 (gRPC: 51002)...
+2025-05-02 06:28:14,949 - retriever - INFO - OllamaEmbeddings initialized with model: nomic-embed-text
+2025-05-02 06:28:14,949 - retriever - INFO - Attempting to connect to Weaviate at localhost:8091 (gRPC: 51002)...
+2025-05-02 06:28:14,955 - retriever - INFO - OllamaEmbeddings initialized with model: nomic-embed-text
+2025-05-02 06:28:14,956 - retriever - INFO - Attempting to connect to Weaviate at localhost:8091 (gRPC: 51002)...
+2025-05-02 06:28:15,011 - retriever - INFO - OllamaEmbeddings initialized with model: nomic-embed-text
+2025-05-02 06:28:15,012 - retriever - INFO - Attempting to connect to Weaviate at localhost:8091 (gRPC: 51002)...
+2025-05-02 06:28:17,500 - retriever - INFO - Weaviate client connected successfully.
+2025-05-02 06:28:17,501 - retriever - INFO - Initializing Weaviate vector store wrapper for collection: 'Industrial_tech'
+2025-05-02 06:28:17,507 - retriever - INFO - Weaviate vector store wrapper initialized.
+2025-05-02 06:28:17,516 - retriever - INFO - Weaviate client connected successfully.
+2025-05-02 06:28:17,516 - retriever - INFO - Initializing Weaviate vector store wrapper for collection: 'Industrial_tech'
+2025-05-02 06:28:17,516 - retriever - INFO - Weaviate vector store wrapper initialized.
+2025-05-02 06:28:17,535 - retriever - INFO - Weaviate client connected successfully.
+2025-05-02 06:28:17,535 - retriever - INFO - Initializing Weaviate vector store wrapper for collection: 'Industrial_tech'
+2025-05-02 06:28:17,551 - retriever - INFO - Weaviate vector store wrapper initialized.
+2025-05-02 06:28:17,555 - retriever - INFO - Collection 'Industrial_tech' has 13829 items.
+2025-05-02 06:28:17,556 - pipeline - INFO - Loaded domain centroid vector from ./domain_centroid.npy with shape (768,)
+2025-05-02 06:28:17,557 - pipeline - WARNING - Domain keywords list is EMPTY during pipeline initialization!
+F:\AI builds exampls\RAG-API\rg-venv\Lib\site-packages\weaviate\warnings.py:314: ResourceWarning: Con004: The connection to Weaviate was not closed properly. This can lead to memory leaks.
+            Please make sure to close the connection using `client.close()`.
+  warnings.warn(
+F:\AI builds exampls\RAG_chatboost\app.py:206: ResourceWarning: unclosed <socket.socket fd=4304, family=23, type=1, proto=0, laddr=('::1', 54598, 0, 0), raddr=('::1', 8091, 0, 0)>
+  pipeline = IndustrialAutomationPipeline() # Instantiate
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+2025-05-02 06:28:17,563 - retriever - INFO - Weaviate client connected successfully.
+2025-05-02 06:28:17,566 - __main__ - INFO - Pipeline initialized/re-initialized successfully.
+2025-05-02 06:28:17,569 - retriever - INFO - Initializing Weaviate vector store wrapper for collection: 'Industrial_tech'
+2025-05-02 06:28:17,575 - retriever - INFO - Weaviate client connected successfully.
+2025-05-02 06:28:17,575 - retriever - INFO - Collection 'Industrial_tech' has 13829 items.
+2025-05-02 06:28:17,576 - retriever - INFO - Initializing Weaviate vector store wrapper for collection: 'Industrial_tech'
+2025-05-02 06:28:17,577 - retriever - INFO - Weaviate vector store wrapper initialized.
+2025-05-02 06:28:17,580 - pipeline - INFO - Loaded domain centroid vector from ./domain_centroid.npy with shape (768,)
+2025-05-02 06:28:17,580 - pipeline - WARNING - Domain keywords list is EMPTY during pipeline initialization!
+2025-05-02 06:28:17,581 - retriever - INFO - Weaviate vector store wrapper initialized.
+F:\AI builds exampls\RAG_chatboost\app.py:206: ResourceWarning: unclosed <socket.socket fd=4692, family=23, type=1, proto=0, laddr=('::1', 54610, 0, 0), raddr=('::1', 8091, 0, 0)>
+  pipeline = IndustrialAutomationPipeline() # Instantiate
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+2025-05-02 06:28:17,583 - __main__ - INFO - Pipeline initialized/re-initialized successfully.
+2025-05-02 06:28:17,583 - retriever - INFO - Collection 'Industrial_tech' has 13829 items.
+2025-05-02 06:28:17,583 - pipeline - INFO - Loaded domain centroid vector from ./domain_centroid.npy with shape (768,)
+2025-05-02 06:28:17,583 - pipeline - WARNING - Domain keywords list is EMPTY during pipeline initialization!
+2025-05-02 06:28:17,601 - __main__ - INFO - Pipeline initialized/re-initialized successfully.
+2025-05-02 06:28:17,625 - retriever - INFO - Collection 'Industrial_tech' has 13829 items.
+2025-05-02 06:28:17,626 - pipeline - INFO - Loaded domain centroid vector from ./domain_centroid.npy with shape (768,)
+2025-05-02 06:28:17,626 - pipeline - WARNING - Domain keywords list is EMPTY during pipeline initialization!
+2025-05-02 06:28:17,632 - __main__ - INFO - Pipeline initialized/re-initialized successfully.
+2025-05-02 06:28:17,635 - retriever - INFO - Collection 'Industrial_tech' has 13829 items.
+2025-05-02 06:28:17,636 - pipeline - INFO - Loaded domain centroid vector from ./domain_centroid.npy with shape (768,)
+2025-05-02 06:28:17,637 - pipeline - WARNING - Domain keywords list is EMPTY during pipeline initialization!
+2025-05-02 06:28:17,643 - __main__ - INFO - Pipeline initialized/re-initialized successfully.
+2025-05-02 06:28:17,734 - werkzeug - INFO - 127.0.0.1 - - [02/May/2025 06:28:17] "←[36mGET /static/ragapp.js HTTP/1.1←[0m" 304 -
+2025-05-02 06:28:17,783 - werkzeug - INFO - 127.0.0.1 - - [02/May/2025 06:28:17] "←[36mGET /static/tooltip.js HTTP/1.1←[0m" 304 -
+2025-05-02 06:28:17,839 - werkzeug - INFO - 127.0.0.1 - - [02/May/2025 06:28:17] "←[36mGET /static/styles.css HTTP/1.1←[0m" 304 -
+2025-05-02 06:28:17,900 - werkzeug - INFO - 127.0.0.1 - - [02/May/2025 06:28:17] "←[36mGET /static/tooltipContent.js HTTP/1.1←[0m" 304 -
+2025-05-02 06:28:17,934 - werkzeug - INFO - 127.0.0.1 - - [02/May/2025 06:28:17] "←[36mGET /static/tooltip.css HTTP/1.1←[0m" 304 -
+2025-05-02 06:28:18,041 - __main__ - INFO - [Flask Hook] Running @app.before_request to initialize pipeline...
+2025-05-02 06:28:18,041 - __main__ - INFO - Attempting to initialize/re-initialize pipeline...
+2025-05-02 06:28:18,044 - __main__ - INFO - [Flask Hook] Running @app.before_request to initialize pipeline...
+2025-05-02 06:28:18,045 - __main__ - INFO - Attempting to initialize/re-initialize pipeline...
+2025-05-02 06:28:18,047 - __main__ - INFO - [Flask Hook] Running @app.before_request to initialize pipeline...
+2025-05-02 06:28:18,048 - __main__ - INFO - [Flask Hook] Running @app.before_request to initialize pipeline...
+2025-05-02 06:28:18,048 - __main__ - INFO - Attempting to initialize/re-initialize pipeline...
+2025-05-02 06:28:18,048 - __main__ - INFO - Attempting to initialize/re-initialize pipeline...
+2025-05-02 06:28:18,050 - __main__ - INFO - [Flask Hook] Running @app.before_request to initialize pipeline...
+2025-05-02 06:28:18,050 - __main__ - INFO - Attempting to initialize/re-initialize pipeline...
+2025-05-02 06:28:18,050 - __main__ - INFO - [Flask Hook] Running @app.before_request to initialize pipeline...
+2025-05-02 06:28:18,050 - __main__ - INFO - Attempting to initialize/re-initialize pipeline...
+F:\AI builds exampls\RAG-API\rg-venv\Lib\site-packages\httpx\_models.py:126: ResourceWarning: unclosed <socket.socket fd=4732, family=23, type=1, proto=0, laddr=('::1', 54611, 0, 0), raddr=('::1', 8091, 0, 0)>
+  return [(raw_key, value) for raw_key, _, value in self._list]
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+F:\AI builds exampls\RAG-API\rg-venv\Lib\site-packages\httpx\_models.py:126: ResourceWarning: unclosed <socket.socket fd=4764, family=23, type=1, proto=0, laddr=('::1', 54612, 0, 0), raddr=('::1', 8091, 0, 0)>
+  return [(raw_key, value) for raw_key, _, value in self._list]
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+F:\AI builds exampls\RAG-API\rg-venv\Lib\site-packages\httpx\_models.py:126: ResourceWarning: unclosed <socket.socket fd=4580, family=23, type=1, proto=0, laddr=('::1', 54613, 0, 0), raddr=('::1', 8091, 0, 0)>
+  return [(raw_key, value) for raw_key, _, value in self._list]
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+2025-05-02 06:28:19,867 - retriever - INFO - Initializing TechnicalRetriever for Weaviate...
+2025-05-02 06:28:19,884 - retriever - INFO - Initializing TechnicalRetriever for Weaviate...
+2025-05-02 06:28:19,884 - retriever - INFO - Initializing TechnicalRetriever for Weaviate...
+2025-05-02 06:28:19,900 - retriever - INFO - Initializing TechnicalRetriever for Weaviate...
+2025-05-02 06:28:19,919 - retriever - INFO - Initializing TechnicalRetriever for Weaviate...
+2025-05-02 06:28:19,934 - retriever - INFO - Initializing TechnicalRetriever for Weaviate...
+2025-05-02 06:28:21,634 - retriever - INFO - OllamaEmbeddings initialized with model: nomic-embed-text
+2025-05-02 06:28:21,634 - retriever - INFO - Attempting to connect to Weaviate at localhost:8091 (gRPC: 51002)...
+2025-05-02 06:28:21,650 - retriever - INFO - OllamaEmbeddings initialized with model: nomic-embed-text
+2025-05-02 06:28:21,650 - retriever - INFO - Attempting to connect to Weaviate at localhost:8091 (gRPC: 51002)...
+2025-05-02 06:28:21,669 - retriever - INFO - OllamaEmbeddings initialized with model: nomic-embed-text
+2025-05-02 06:28:21,669 - retriever - INFO - Attempting to connect to Weaviate at localhost:8091 (gRPC: 51002)...
+2025-05-02 06:28:21,669 - retriever - INFO - OllamaEmbeddings initialized with model: nomic-embed-text
+2025-05-02 06:28:21,669 - retriever - INFO - Attempting to connect to Weaviate at localhost:8091 (gRPC: 51002)...
+2025-05-02 06:28:21,719 - retriever - INFO - OllamaEmbeddings initialized with model: nomic-embed-text
+2025-05-02 06:28:21,719 - retriever - INFO - Attempting to connect to Weaviate at localhost:8091 (gRPC: 51002)...
+2025-05-02 06:28:21,719 - retriever - INFO - OllamaEmbeddings initialized with model: nomic-embed-text
+2025-05-02 06:28:21,719 - retriever - INFO - Attempting to connect to Weaviate at localhost:8091 (gRPC: 51002)...
+2025-05-02 06:28:24,400 - retriever - INFO - Weaviate client connected successfully.
+2025-05-02 06:28:24,400 - retriever - INFO - Initializing Weaviate vector store wrapper for collection: 'Industrial_tech'
+2025-05-02 06:28:24,417 - retriever - INFO - Weaviate vector store wrapper initialized.
+2025-05-02 06:28:24,417 - retriever - INFO - Weaviate client connected successfully.
+2025-05-02 06:28:24,417 - retriever - INFO - Initializing Weaviate vector store wrapper for collection: 'Industrial_tech'
+2025-05-02 06:28:24,417 - retriever - INFO - Weaviate client connected successfully.
+2025-05-02 06:28:24,417 - retriever - INFO - Initializing Weaviate vector store wrapper for collection: 'Industrial_tech'
+2025-05-02 06:28:24,433 - retriever - INFO - Weaviate vector store wrapper initialized.
+2025-05-02 06:28:24,434 - retriever - INFO - Weaviate vector store wrapper initialized.
+2025-05-02 06:28:24,451 - retriever - INFO - Weaviate client connected successfully.
+2025-05-02 06:28:24,451 - retriever - INFO - Initializing Weaviate vector store wrapper for collection: 'Industrial_tech'
+2025-05-02 06:28:24,451 - retriever - INFO - Collection 'Industrial_tech' has 13829 items.
+2025-05-02 06:28:24,467 - pipeline - INFO - Loaded domain centroid vector from ./domain_centroid.npy with shape (768,)
+2025-05-02 06:28:24,467 - pipeline - WARNING - Domain keywords list is EMPTY during pipeline initialization!
+F:\AI builds exampls\RAG-API\rg-venv\Lib\site-packages\weaviate\warnings.py:314: ResourceWarning: Con004: The connection to Weaviate was not closed properly. This can lead to memory leaks.
+            Please make sure to close the connection using `client.close()`.
+  warnings.warn(
+2025-05-02 06:28:24,467 - retriever - INFO - Weaviate vector store wrapper initialized.
+F:\AI builds exampls\RAG_chatboost\app.py:206: ResourceWarning: unclosed <socket.socket fd=4816, family=23, type=1, proto=0, laddr=('::1', 54614, 0, 0), raddr=('::1', 8091, 0, 0)>
+  pipeline = IndustrialAutomationPipeline() # Instantiate
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+2025-05-02 06:28:24,467 - __main__ - INFO - Pipeline initialized/re-initialized successfully.
+2025-05-02 06:28:24,484 - retriever - INFO - Collection 'Industrial_tech' has 13829 items.
+2025-05-02 06:28:24,486 - retriever - INFO - Collection 'Industrial_tech' has 13829 items.
+2025-05-02 06:28:24,492 - pipeline - INFO - Loaded domain centroid vector from ./domain_centroid.npy with shape (768,)
+2025-05-02 06:28:24,494 - pipeline - INFO - Loaded domain centroid vector from ./domain_centroid.npy with shape (768,)
+2025-05-02 06:28:24,494 - pipeline - WARNING - Domain keywords list is EMPTY during pipeline initialization!
+2025-05-02 06:28:24,495 - pipeline - WARNING - Domain keywords list is EMPTY during pipeline initialization!
+2025-05-02 06:28:24,503 - __main__ - INFO - Pipeline initialized/re-initialized successfully.
+2025-05-02 06:28:24,509 - __main__ - INFO - Pipeline initialized/re-initialized successfully.
+2025-05-02 06:28:24,510 - werkzeug - INFO - 127.0.0.1 - - [02/May/2025 06:28:24] "GET /list_weaviate_instances HTTP/1.1" 200 -
+2025-05-02 06:28:24,513 - __main__ - INFO - Config to be returned: {'security': {'SANITIZE_INPUT': True, 'RATE_LIMIT': 10, 'API_TIMEOUT': 30, 'CACHE_ENABLED': False}, 'retrieval': {'COLLECTION_NAME': 'Industrial_tech', 'K_VALUE': 6, 'SCORE_THRESHOLD': 0.6, 'LAMBDA_MULT': 0.6, 'SEARCH_TYPE': 'mmr', 'DOMAIN_SIMILARITY_THRESHOLD': 0.65, 'SPARSE_RELEVANCE_THRESHOLD': 0.15, 'FUSED_RELEVANCE_THRESHOLD': 0.45, 'SEMANTIC_WEIGHT': 0.7, 'SPARSE_WEIGHT': 0.3, 'PERFORM_DOMAIN_CHECK': True, 'WEAVIATE_HOST': 'localhost', 'WEAVIATE_HTTP_PORT': 8091, 'WEAVIATE_GRPC_PORT': 51002, 'retrieve_with_history': False, 'WEAVIATE_TIMEOUT': (10, 120)}, 'model': {'LLM_TEMPERATURE': 0.5, 'MAX_TOKENS': 1536, 'OLLAMA_MODEL': 'deepseek-coder:6.7b-instruct-q5_K_M', 'EMBEDDING_MODEL': 'nomic-embed-text', 'TOP_P': 0.9, 'FREQUENCY_PENALTY': 0.1, 'SYSTEM_MESSAGE': 'You are an expert AI assistant...', 'EXTERNAL_API_PROVIDER': 'deepseek', 'EXTERNAL_API_MODEL_NAME': None}, 'document': {'CHUNK_SIZE': 768, 'CHUNK_OVERLAP': 70, 'FILE_TYPES': ['pdf', 'txt', 'csv', 'md', 'docx'], 'PARSE_TABLES': True, 'GENERATE_SUMMARY': False}, 'paths': {'DOCUMENT_DIR': './data', 'DOMAIN_CENTROID_PATH': './domain_centroid.npy'}, 'env': {'DOMAIN_KEYWORDS': [], 'AUTO_DOMAIN_KEYWORDS': [], 'USER_ADDED_KEYWORDS': []}, 'pipeline': {'max_history_turns': 5}, 'domain_keyword_extraction': {'keybert_model': 'all-MiniLM-L6-v2', 'top_n_per_doc': 10, 'final_top_n': 100, 'min_doc_freq': 2, 'diversity': 0.7, 'no_pos_filter': False}}
+2025-05-02 06:28:24,513 - werkzeug - INFO - 127.0.0.1 - - [02/May/2025 06:28:24] "GET /list_chats HTTP/1.1" 200 -
+2025-05-02 06:28:24,513 - werkzeug - INFO - 127.0.0.1 - - [02/May/2025 06:28:24] "GET /get_config HTTP/1.1" 200 -
+2025-05-02 06:28:24,523 - retriever - INFO - Collection 'Industrial_tech' has 13829 items.
+F:\ComfyUI\python312\Lib\json\decoder.py:354: ResourceWarning: unclosed <socket.socket fd=4372, family=23, type=1, proto=0, laddr=('::1', 54632, 0, 0), raddr=('::1', 8091, 0, 0)>
+  obj, end = self.scan_once(s, idx)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+F:\ComfyUI\python312\Lib\json\decoder.py:354: ResourceWarning: unclosed <socket.socket fd=1172, family=23, type=1, proto=0, laddr=('::1', 54633, 0, 0), raddr=('::1', 8091, 0, 0)>
+  obj, end = self.scan_once(s, idx)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+2025-05-02 06:28:24,523 - retriever - INFO - Weaviate client connected successfully.
+2025-05-02 06:28:24,534 - pipeline - INFO - Loaded domain centroid vector from ./domain_centroid.npy with shape (768,)
+2025-05-02 06:28:24,535 - retriever - INFO - Initializing Weaviate vector store wrapper for collection: 'Industrial_tech'
+2025-05-02 06:28:24,535 - pipeline - WARNING - Domain keywords list is EMPTY during pipeline initialization!
+F:\AI builds exampls\RAG_chatboost\app.py:206: ResourceWarning: unclosed <socket.socket fd=4416, family=23, type=1, proto=0, laddr=('::1', 54634, 0, 0), raddr=('::1', 8091, 0, 0)>
+  pipeline = IndustrialAutomationPipeline() # Instantiate
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+2025-05-02 06:28:24,546 - __main__ - INFO - Pipeline initialized/re-initialized successfully.
+2025-05-02 06:28:24,553 - retriever - INFO - Weaviate client connected successfully.
+2025-05-02 06:28:24,554 - __main__ - INFO - Returning auto domain keywords: []
+2025-05-02 06:28:24,555 - retriever - INFO - Weaviate vector store wrapper initialized.
+2025-05-02 06:28:24,555 - retriever - INFO - Initializing Weaviate vector store wrapper for collection: 'Industrial_tech'
+2025-05-02 06:28:24,555 - werkzeug - INFO - 127.0.0.1 - - [02/May/2025 06:28:24] "GET /get_auto_domain_keywords HTTP/1.1" 200 -
+2025-05-02 06:28:24,562 - retriever - INFO - Weaviate vector store wrapper initialized.
+2025-05-02 06:28:24,603 - retriever - INFO - Collection 'Industrial_tech' has 13829 items.
+2025-05-02 06:28:24,605 - pipeline - INFO - Loaded domain centroid vector from ./domain_centroid.npy with shape (768,)
+2025-05-02 06:28:24,605 - pipeline - WARNING - Domain keywords list is EMPTY during pipeline initialization!
+F:\AI builds exampls\RAG_chatboost\app.py:206: ResourceWarning: unclosed <socket.socket fd=4704, family=23, type=1, proto=0, laddr=('::1', 54635, 0, 0), raddr=('::1', 8091, 0, 0)>
+  pipeline = IndustrialAutomationPipeline() # Instantiate
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+2025-05-02 06:28:24,613 - __main__ - INFO - Pipeline initialized/re-initialized successfully.
+2025-05-02 06:28:24,614 - retriever - INFO - Collection 'Industrial_tech' has 13829 items.
+2025-05-02 06:28:24,618 - werkzeug - INFO - 127.0.0.1 - - [02/May/2025 06:28:24] "GET /list_presets HTTP/1.1" 200 -
+2025-05-02 06:28:24,618 - pipeline - INFO - Loaded domain centroid vector from ./domain_centroid.npy with shape (768,)
+2025-05-02 06:28:24,618 - pipeline - WARNING - Domain keywords list is EMPTY during pipeline initialization!
+2025-05-02 06:28:24,622 - __main__ - INFO - Pipeline initialized/re-initialized successfully.
+[2025-05-02 06:28:24,622] INFO in app: API /api/key_status: Returning status: {'deepseek': True, 'openai': True, 'anthropic': True, 'cohere': False}
+2025-05-02 06:28:24,622 - app - INFO - API /api/key_status: Returning status: {'deepseek': True, 'openai': True, 'anthropic': True, 'cohere': False}
+2025-05-02 06:28:24,622 - werkzeug - INFO - 127.0.0.1 - - [02/May/2025 06:28:24] "GET /api/key_status HTTP/1.1" 200 -

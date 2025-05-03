@@ -16,6 +16,7 @@ document.addEventListener('alpine:init', () => {
             newPresetName: '',
             newInstanceName: '',
             selectedPresetName: '',
+           
 
             // === COLLECTIONS ===
             chatHistory: [],
@@ -48,8 +49,13 @@ document.addEventListener('alpine:init', () => {
                 onCancel: () => { },
                 confirmButtonClass: ''
             },
-
+            
             autoDomainKeywords: '',
+            lastAutoDomainKeywordsList: [],
+
+            // === Centroid ===
+            centroidStats: {},
+            queryCentroidInsight: {},
 
             // === CONFIGURATION ===
             formConfig: {
@@ -112,109 +118,275 @@ document.addEventListener('alpine:init', () => {
                 },
                 pipeline: {
                     max_history_turns: 5,
-                    },
+                },
                 savedConfig: null,
-                configDirtyExplicitlySet: false
-            }
-        });
+                configDirtyExplicitlySet: false,
+            },
+
+        })
 
         // Return the component definition
         return {
-            // Spread all reactive state properties
+            // === State ===
             ...reactiveState,
-
-            // === LIFECYCLE METHODS ===
+            autoDomainKeywordsList: [],        // Currently active auto keywords
+            allAutoDomainKeywordsList: [],     // Full fetched list
+            lastAutoDomainKeywordsList: [],    // Backup for “restore”
+            activeAutoDomainKeywordsSet: new Set(),
+            autoKeywordsEnabled: true,
+            topNOptions: [],                   // [10, 20, …]
+            selectedTopN: 10,
+            
+            get topNOptionsHtml() {
+                return this.topNOptions.map(n => `<option value="${n}">${n}</option>`).join('');
+            },
+            // === Initialization ===
             init() {
-                console.log("[Component Init] Initializing ragApp component");
                 if (!this.initCalled) {
-                    this.loadInitialData();
+                    this.initCalled = true;
+                    // Load entire YAML-config into formConfig, including SELECTED_N_TOP
+                    this.loadInitialConfig()
+                        .then(() => {
+                            // then fetch auto-domain keywords using the correct env
+                            this.fetchAutoDomainKeywords();
+                        })
+                        .catch(e => console.error("Initial config load error:", e));
                 }
-                this.$watch('statusMessage', (value) => {
-                    console.log('[Status Change]', value);
-                });
             },
 
-            // === UTILITY METHODS ===
-            isLoading() {
-                const msg = this.statusMessage.toLowerCase();
-                return msg.includes('loading') || msg.includes('saving') ||
-                    msg.includes('creating') || msg.includes('removing') ||
-                    msg.includes('activating') || msg.includes('ingesting') ||
-                    msg.includes('uploading') || msg.includes('sending') ||
-                    msg.includes('replying') || msg.includes('applying');
+            // === Fetch & Apply Top-N Keywords ===
+
+            applyTopNKeywords() {
+                this.autoDomainKeywordsList = this.allAutoDomainKeywordsList.slice(0, this.selectedTopN);
+                this._updateActiveSet();
+                this.syncActiveKeywordsToBackend();
+
+                // Add this block to save the selectedTopN to config
+                this.saveTopNToConfig(this.selectedTopN);
             },
 
-            isLoadingChat() {
-                return this.isStreaming ||
-                    this.statusMessage === 'Sending...' ||
-                    this.statusMessage === 'Assistant is replying...';
-            },
-
-            formatTimestamp(isoString) {
-                if (!isoString) return '';
+            async saveTopNToConfig(topN) {
                 try {
-                    return new Date(isoString).toLocaleString();
+                    const response = await fetch('/update_topn_config', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            topN: topN
+                        })
+                    });
+                    const result = await response.json();
+                    if (!result.success) {
+                        console.error("Failed to save TopN to config:", result.error);
+                    }
                 } catch (e) {
-                    return isoString;
+                    console.error("Error saving TopN to config:", e);
                 }
             },
 
-            scrollToBottom() {
-                this.$nextTick(() => {
-                    const el = this.$refs.chatHistoryContainer;
-                    if (el) el.scrollTop = el.scrollHeight;
-                });
+            // === Toggle / Restore ===
+            toggleAutoKeywords() {
+                this.autoKeywordsEnabled = !this.autoKeywordsEnabled;
+                console.log("Auto keywords enabled:", this.autoKeywordsEnabled);
+
+                if (this.autoKeywordsEnabled) {
+                    // Re-enable: restore last set
+                    if (this.lastAutoDomainKeywordsList.length > 0) {
+                        this.autoDomainKeywordsList = [...this.lastAutoDomainKeywordsList];
+                        this._updateActiveSet();
+                        this.syncActiveKeywordsToBackend();
+                        this.showToast("Auto keywords enabled and restored.", "success");
+                    } else {
+                        // If no saved list, reload from backend
+                        this.fetchAutoDomainKeywords().then(() => {
+                            this.showToast("Auto keywords enabled.", "success");
+                        });
+                    }
+                } else {
+                    // Disable: save current then clear
+                    this.lastAutoDomainKeywordsList = [...this.autoDomainKeywordsList];
+                    this.autoDomainKeywordsList = [];
+                    this._updateActiveSet();
+                    this.syncActiveKeywordsToBackend();
+                    this.showToast("Auto keywords disabled.", "info");
+                }
             },
 
 
-                    async saveConfig() {
-                        if (this.isLoading()) {
-                            console.warn('[Button Click] Save Config ignored, already loading:', this.statusMessage);
-                            if (this.showToast) this.showToast("Please wait for the current operation to finish.", "info");
-                            return false;
+            restoreAutoDomainKeywords() {
+                if (this.lastAutoDomainKeywordsList.length) {
+                    this.autoDomainKeywordsList = [...this.lastAutoDomainKeywordsList];
+                    this._updateActiveSet();
+                    this.syncActiveKeywordsToBackend();
+                    this.showToast("Restored last auto keywords set.", "success");
+                } else {
+                    // Try to fetch from backend if no saved list
+                    this.fetchAutoDomainKeywords().then(() => {
+                        if (this.allAutoDomainKeywordsList.length > 0) {
+                            this.showToast("Fetched keywords from backend.", "success");
+                        } else {
+                            this.showToast("No previous set to restore and none on backend.", "info");
                         }
 
-                        console.log("Saving configuration via /save_config...");
-                        this.statusMessage = 'Saving Config...';
+                        console.log("Current list:", this.autoDomainKeywordsList);
+                        console.log("Last saved list:", this.lastAutoDomainKeywordsList);
+                    });
+                }
+            },
 
-                        try {
-                            const response = await fetch('/save_config', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify(this.formConfig)
-                            });
 
-                            const result = await response.json();
+            _updateActiveSet() {
+                this.activeAutoDomainKeywordsSet = new Set(this.autoDomainKeywordsList);
+            },
 
-                            if (!response.ok || !result.success) {
-                                const errorMsg = result.error || result.message || `HTTP error ${response.status}`;
-                                throw new Error(errorMsg);
-                            }
+            // === Backend Sync ===
+            async syncActiveKeywordsToBackend() {
+                try {
+                    console.log("Syncing keywords to backend:", Array.from(this.activeAutoDomainKeywordsSet));
+                    const response = await fetch('/update_auto_domain_keywords', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            keywords: Array.from(this.activeAutoDomainKeywordsSet)
+                        })
+                    });
+                    const result = await response.json();
+                    if (!result.success) {
+                        console.error("Backend sync failed:", result.error);
+                        throw new Error(result.error || "Unknown error");
+                    }
+                    console.log("Keywords synced successfully");
+                } catch (e) {
+                    console.error("Sync error:", e);
+                    this.showToast(`Failed to update keywords: ${e.message}`, "error");
+                }
+            },
 
-                            if (result.config) {
-                                console.log("[saveConfig] Merging validated config from backend");
-                                this.deepMerge(this.formConfig, result.config);
-                            }
 
-                            this.showToast(result.message || 'Configuration saved successfully!', 'success');
-                            this._markConfigClean();
-                            return true;
+            // === UI Feedback ===
+            showToast(message, type = 'info', duration = 3000) {
+                this.toast.message = message;
+                this.toast.type = type;
+                this.toast.show = true;
+                clearTimeout(this.toast.timeout);
+                this.toast.timeout = setTimeout(() => this.toast.show = false, duration);
+            },
 
-                        } catch (error) {
-                            console.error('Configuration Save Error:', error);
-                            this.statusMessage = 'Save Error';
-                            this.showToast(`Error saving config: ${error.message}`, 'error');
-                            return false;
-                        } finally {
-                            if (this.statusMessage === 'Saving Config...') {
-                                this.statusMessage = 'Idle';
-                            } else if (this.statusMessage === 'Save Error') {
-                                setTimeout(() => {
-                                    if (this.statusMessage === 'Save Error') this.statusMessage = 'Idle';
-                                }, 2000);
-                            }
-                        }
-                    },
+
+    // === LIFECYCLE METHODS ===
+    init() {
+        console.log("[Component Init] Initializing ragApp component");
+        if (!this.initCalled) {
+            this.loadInitialData();
+        }
+        this.$watch('statusMessage', (value) => {
+            console.log('[Status Change]', value);
+        })
+    },
+
+    // === UTILITY METHODS ===
+    isLoading() {
+        const msg = this.statusMessage.toLowerCase();
+        return msg.includes('loading') || msg.includes('saving') ||
+            msg.includes('creating') || msg.includes('removing') ||
+            msg.includes('activating') || msg.includes('ingesting') ||
+            msg.includes('uploading') || msg.includes('sending') ||
+            msg.includes('replying') || msg.includes('applying');
+    },
+
+
+    isLoadingChat() {
+        return this.isStreaming ||
+            this.statusMessage === 'Sending...' ||
+            this.statusMessage === 'Assistant is replying...';
+    },
+
+    formatTimestamp(isoString) {
+        if (!isoString) return '';
+        try {
+            return new Date(isoString).toLocaleString();
+        } catch (e) {
+            return isoString;
+        }
+    },
+
+    scrollToBottom() {
+        this.$nextTick(() => {
+            const el = this.$refs.chatHistoryContainer;
+            if (el) el.scrollTop = el.scrollHeight;
+        });
+    },
+
+            data() {
+                return {
+                    isSavingTopN: false,
+                    // …other state…
+                }
+            },
+            methods: {
+                async applyTopNKeywords() {
+                    if (this.isSavingTopN) return;        // drop any extra clicks
+                    this.isSavingTopN = true;
+                    try {
+                        await this.saveTopNToConfig();      // your existing save method
+                        this.showToast("Top-N saved", "success");
+                    } catch (e) {
+                        this.showToast(`Failed to save Top-N: ${e}`, "error");
+                    } finally {
+                        this.isSavingTopN = false;
+                    }
+                },
+                // …
+            },        
+
+    async saveConfig() {
+        if (this.isLoading()) {
+            console.warn('[Button Click] Save Config ignored, already loading:', this.statusMessage);
+            if (this.showToast) this.showToast("Please wait for the current operation to finish.", "info");
+            return false;
+        }
+
+        console.log("Saving configuration via /save_config...");
+        this.statusMessage = 'Saving Config...';
+
+        try {
+            const response = await fetch('/save_config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(this.formConfig)
+            });
+
+            const result = await response.json();
+
+            if (!response.ok || !result.success) {
+                const errorMsg = result.error || result.message || `HTTP error ${response.status}`;
+                throw new Error(errorMsg);
+            }
+
+            if (result.config) {
+                console.log("[saveConfig] Merging validated config from backend");
+                this.deepMerge(this.formConfig, result.config);
+            }
+
+            this.showToast(result.message || 'Configuration saved successfully!', 'success');
+            this._markConfigClean();
+            return true;
+
+        } catch (error) {
+            console.error('Configuration Save Error:', error);
+            this.statusMessage = 'Save Error';
+            this.showToast(`Error saving config: ${error.message}`, 'error');
+            return false;
+        } finally {
+            if (this.statusMessage === 'Saving Config...') {
+                this.statusMessage = 'Idle';
+            } else if (this.statusMessage === 'Save Error') {
+                setTimeout(() => {
+                    if (this.statusMessage === 'Save Error') this.statusMessage = 'Idle';
+                }, 2000);
+            }
+        }
+    },
+
 
                     // === INITIALIZATION METHOD (Called manually below) ===
                     async loadInitialData() {
@@ -289,7 +461,8 @@ document.addEventListener('alpine:init', () => {
                                     catch (e) {
                                         console.error("[Init API] fetchAutoDomainKeywords FAILED:", e);
                                     }
-                                })()
+                                })(),
+
                             ]);
 
                             console.log("[Init Method] Promise.all finished.");
@@ -531,12 +704,10 @@ document.addEventListener('alpine:init', () => {
                     // Helper to reset dirty state (called after successful save/load)
                     _markConfigClean() {
                         try {
-                            this.savedConfig = JSON.parse(JSON.stringify(this
-                                .formConfig)); // Deep copy current state
+                            this.savedConfig = JSON.parse(JSON.stringify(this.formConfig)); // Deep copy current state
                             this.configDirtyExplicitlySet = false; // Reset explicit flag
                             console.log("[Dirty State] Marked config as clean.");
-                        }
-                        catch (e) {
+                        } catch (e) {
                             console.error("[Dirty State] Error marking config clean:", e);
                             // savedConfig might be invalid now, maybe reload?
                             this.savedConfig = null;
@@ -719,6 +890,23 @@ document.addEventListener('alpine:init', () => {
                         this.filesToUpload = Array.from(event.target.files || []);
                         this.selectedFileNames = this.filesToUpload.map(f => f.name);
                     },
+
+
+                    // Helper: is a keyword active?
+                    isKeywordActive(kw) {
+                        return this.activeAutoDomainKeywordsSet.has(kw);
+                    },
+
+                    // Toggle keyword active/inactive
+                    toggleKeyword(kw) {
+                        if (this.activeAutoDomainKeywordsSet.has(kw)) {
+                            this.activeAutoDomainKeywordsSet.delete(kw);
+                        } else {
+                            this.activeAutoDomainKeywordsSet.add(kw);
+                        }
+                        this.syncActiveKeywordsToBackend();
+                    },
+
 
                     // === ASYNC ACTIONS (Backend Interaction - Implementations unchanged, ensure endpoints exist) ===
                     // --- API Keys ---
@@ -1467,139 +1655,175 @@ document.addEventListener('alpine:init', () => {
                     }, // End of _performStartIncrementalIngestion
 
 
-                    async loadInitialConfig() {
-                        console.log("Fetching initial config from /get_config...");
-                        try {
-                            const response = await fetch('/get_config');
-                            if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                            const loadedConfig = await response.json();
+            async loadInitialConfig() {
+                console.log("Fetching initial config from /get_config...");
+                try {
+                    const response = await fetch('/get_config');
+                    if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    const loadedConfig = await response.json();
 
-                            // Helper function for safe array conversion
-                            const ensureArray = (value) => {
-                                if (Array.isArray(value)) return value;
-                                if (typeof value === 'string') return value.split(',').map(s => s.trim());
-                                return [];
-                            };
+                    // Helper for safe array conversion
+                    const ensureArray = (value) => {
+                        if (Array.isArray(value)) return value;
+                        if (typeof value === 'string') return value.split(',').map(s => s.trim());
+                        return [];
+                    };
 
-                            // Type-aware config merging
-                            for (const section in loadedConfig) {
-                                if (!Object.hasOwn(loadedConfig, section)) continue;
+                    // Keys we want to merge instead of fully replacing the section
+                    const MERGE_ARRAY_KEYS = [
+                        'FILE_TYPES',
+                        'DOMAIN_KEYWORDS',
+                        'AUTO_DOMAIN_KEYWORDS',
+                        'USER_ADDED_KEYWORDS'
+                    ];
+                    const MERGE_KEYS = [...MERGE_ARRAY_KEYS, 'SELECTED_N_TOP'];
 
-                                const loadedValue = loadedConfig[section];
-                                const currentValue = this.formConfig[section];
+                    // Merge each top-level section
+                    for (const section in loadedConfig) {
+                        if (!Object.hasOwn(loadedConfig, section)) continue;
+                        const loadedValue = loadedConfig[section];
+                        const currentValue = this.formConfig[section];
 
-                                // 1. Handle array-to-array updates
-                                if (Array.isArray(currentValue) && Array.isArray(loadedValue)) {
-                                    this.formConfig[section] = [...loadedValue];
-                                    continue;
-                                }
-
-                                // 2. Handle object-to-object deep merge
-                                if (typeof currentValue === 'object' && currentValue !== null &&
-                                    typeof loadedValue === 'object' && loadedValue !== null &&
-                                    !Array.isArray(currentValue) && !Array.isArray(loadedValue)) {
-                                    this.deepMerge(currentValue, loadedValue);
-                                }
-                                // 3. Handle type mismatches and primitives
-                                else {
-                                    // Log type mismatch warnings
-                                    if (typeof currentValue !== typeof loadedValue) {
-                                        console.warn(`Section ${section} type mismatch: 
-                        Frontend: ${typeof currentValue}, 
-                        Backend: ${typeof loadedValue}`);
-                                    }
-
-                                    // Special handling for array fields that might come as strings
-                                    if (section === 'document' || section === 'env') {
-                                        if (['FILE_TYPES', 'DOMAIN_KEYWORDS', 'AUTO_DOMAIN_KEYWORDS', 'USER_ADDED_KEYWORDS'].some(f => f === section)) {
-                                            this.formConfig[section] = ensureArray(loadedValue);
-                                            continue;
-                                        }
-                                    }
-
-                                    // Direct assignment for other cases
-                                    this.formConfig[section] = loadedValue;
-                                }
-                            }
-
-                            // Post-merge array validation for critical sections
-                            const arrayFields = {
-                                document: ['FILE_TYPES'],
-                                env: ['DOMAIN_KEYWORDS', 'AUTO_DOMAIN_KEYWORDS', 'USER_ADDED_KEYWORDS']
-                            };
-
-                            for (const [section, fields] of Object.entries(arrayFields)) {
-                                if (!this.formConfig[section]) this.formConfig[section] = {};
-                                for (const field of fields) {
-                                    this.formConfig[section][field] = ensureArray(this.formConfig[section][field]);
-                                }
-                            }
-
-                            // Set clean state after successful merge
-                            this._markConfigClean();
-                            console.log("Config loaded and marked clean");
-
-                        } catch (error) {
-                            console.error("Config load failed:", error);
-                            this.showToast(`Config load error: ${error.message}`, 'error');
-
-                            // Reset critical arrays to safe defaults
-                            this.formConfig.document.FILE_TYPES = [];
-                            this.formConfig.env.DOMAIN_KEYWORDS = [];
-                            this.formConfig.env.AUTO_DOMAIN_KEYWORDS = [];
-                            this.formConfig.env.USER_ADDED_KEYWORDS = [];
-
-                            throw error;
+                        // 1. Array-to-array
+                        if (Array.isArray(currentValue) && Array.isArray(loadedValue)) {
+                            this.formConfig[section] = [...loadedValue];
+                            continue;
                         }
-                    },
+
+                        // 2. Deep-merge objects
+                        if (
+                            typeof currentValue === 'object' && currentValue !== null &&
+                            typeof loadedValue === 'object' && loadedValue !== null &&
+                            !Array.isArray(currentValue) && !Array.isArray(loadedValue)
+                        ) {
+                            this.deepMerge(currentValue, loadedValue);
+                            continue;
+                        }
+
+                        // 3. Fallback assignment with type-mismatch warning
+                        if (typeof currentValue !== typeof loadedValue) {
+                            console.warn(
+                                `Section ${section} type mismatch: Frontend=${typeof currentValue}, Backend=${typeof loadedValue}`
+                            );
+                        }
+
+                        // 4. Special-case merge of certain env/document keys (including SELECTED_N_TOP)
+                        if (
+                            (section === 'document' || section === 'env') &&
+                            Object.keys(loadedValue).some(key => MERGE_KEYS.includes(key))
+                        ) {
+                            for (const key in loadedValue) {
+                                if (MERGE_ARRAY_KEYS.includes(key)) {
+                                    // always an array
+                                    this.formConfig[section][key] = ensureArray(loadedValue[key]);
+                                } else if (key === 'SELECTED_N_TOP') {
+                                    // preserve numeric top-N setting
+                                    this.formConfig[section][key] = loadedValue[key];
+                                } else {
+                                    // any other field in this section
+                                    this.formConfig[section][key] = loadedValue[key];
+                                }
+                            }
+                        } else {
+                            // fully replace the section
+                            this.formConfig[section] = loadedValue;
+                        }
+                    }
+
+                    // Ensure critical nested arrays exist
+                    const arrayFields = {
+                        document: ['FILE_TYPES'],
+                        env: ['DOMAIN_KEYWORDS', 'AUTO_DOMAIN_KEYWORDS', 'USER_ADDED_KEYWORDS']
+                    };
+                    for (const [sec, fields] of Object.entries(arrayFields)) {
+                        if (!this.formConfig[sec]) this.formConfig[sec] = {};
+                        for (const fld of fields) {
+                            this.formConfig[sec][fld] = ensureArray(this.formConfig[sec][fld]);
+                        }
+                    }
+
+                    // Populate keyword controls as before...
+                    const autoKeys = this.formConfig.env.AUTO_DOMAIN_KEYWORDS;
+                    this.autoDomainKeywordsList = [...autoKeys];
+                    this.autoDomainKeywords = autoKeys.join(', ');
+
+                    // **Updated:** apply SELECTED_N_TOP instead of SELECTED_N_TOP
+                    if (this.formConfig.env.SELECTED_N_TOP != null) {
+                        this.selectedTopN = this.formConfig.env.SELECTED_N_TOP;
+                    }
+
+                    this.allAutoDomainKeywordsList = Array.isArray(this.formConfig.env.AUTO_DOMAIN_KEYWORDS) ?
+                        [...this.formConfig.env.AUTO_DOMAIN_KEYWORDS] : [];
+                    try {
+                        this.updateTopNOptions();
+                        console.log(`TopN options updated with ${this.topNOptions.length} values`);
+                    } catch (e) {
+                        console.error("Error updating TopN options:", e);
+                    }
+
+                    this._markConfigClean();
+                    console.log("Config loaded, keywords populated, and state marked clean");
+
+                } catch (error) {
+                    console.error("Config load failed:", error);
+                    this.showToast(`Config load error: ${error.message}`, 'error');
+                    // reset to safe defaults...
+                    this.formConfig.document.FILE_TYPES = [];
+                    this.formConfig.env.DOMAIN_KEYWORDS = [];
+                    this.formConfig.env.AUTO_DOMAIN_KEYWORDS = [];
+                    this.formConfig.env.USER_ADDED_KEYWORDS = [];
+                    this.autoDomainKeywordsList = [];
+                    this.autoDomainKeywords = '';
+                    throw error;
+                }
+            },
 
                     // Add deepMerge helper in your component
-                    deepMerge(target, source) {
-                        for (const key in source) {
-                            if (Object.hasOwn(source, key)) {
-                                const sourceVal = source[key];
-                                const targetVal = target[key];
+                // Deep‐merge two plain‐object structures
+                deepMerge(target, source) {
+                    for (const [key, sourceVal] of Object.entries(source)) {
+                        const targetVal = target[key];
 
-                                if (typeof sourceVal === 'object' && sourceVal !== null &&
-                                    typeof targetVal === 'object' && targetVal !== null &&
-                                    !Array.isArray(sourceVal) && !Array.isArray(targetVal)) {
-                                    this.deepMerge(targetVal, sourceVal);
-                                } else {
-                                    target[key] = sourceVal;
-                                }
-                            }
+                        if (this.isPlainObject(sourceVal) && this.isPlainObject(targetVal)) {
+                            this.deepMerge(targetVal, sourceVal);
+                        } else if (Array.isArray(sourceVal) && Array.isArray(targetVal)) {
+                            // override arrays
+                            target[key] = [...sourceVal];
+                        } else {
+                            // clone objects/arrays to avoid shared refs
+                            target[key] = this.isPlainObject(sourceVal)
+                                ? { ...sourceVal }
+                                : Array.isArray(sourceVal)
+                                    ? [...sourceVal]
+                                    : sourceVal;
                         }
-                    },
-                    
-                    updateConfigWithKeywords(keywords) {
-                        console.log("[Update Config] Updating configuration with new keywords:", keywords);
-                        // replace the user‐added keywords list in your UI
-                        this.formConfig.env.USER_ADDED_KEYWORDS = keywords;
-                        this.showToast(
-                            `Configuration updated with ${keywords.length} keywords.`,
-                            'success'
-                        );
-                    },
+                    }
+                },
 
-                    async fetchAutoDomainKeywords() {
-                        try {
-                            const response = await fetch('/get_auto_domain_keywords');
-                            const data = await response.json();
-                            if (data.success) {
-                                // If you want a comma-separated string:
-                                this.autoDomainKeywords = Array.isArray(data.keywords) ?
-                                    data.keywords.join(', ') :
-                                    data.keywords;
-                            }
-                            else {
-                                this.autoDomainKeywords = '[No auto domain keywords found]';
-                            }
-                        }
-                        catch (error) {
-                            this.autoDomainKeywords = '[Error loading auto domain keywords]';
-                            console.error('Failed to fetch auto domain keywords:', error);
-                        }
-                    },
+                // Check for a plain object
+                isPlainObject(v) {
+                    return Object.prototype.toString.call(v) === '[object Object]';
+                },
+
+                // Example of another helper method
+                updateConfigWithKeywords(keywords) {
+                    console.log("[Update Config] New keywords:", keywords);
+                    this.formConfig.env.USER_ADDED_KEYWORDS = keywords;
+                    this.showToast(`Configuration updated with ${keywords.length} keywords.`, 'success');
+                },
+
+            updateTopNOptions() {
+                const max = this.allAutoDomainKeywordsList.length;
+                this.topNOptions = Array.from(
+                    { length: Math.ceil(max / 10) },
+                    (_, i) => Math.min((i + 1) * 10, max)
+                );
+                if (max > 0 && max % 10 !== 0 && !this.topNOptions.includes(max)) {
+                    this.topNOptions.push(max);
+                }
+                this.topNOptions.sort((a, b) => a - b);
+                this.selectedTopN = this.topNOptions[0] || 0;
+            },
 
 
                     async fetchPresets() {
@@ -1654,6 +1878,22 @@ document.addEventListener('alpine:init', () => {
                                     this.formConfig[section] = result.config[section];
                                 }
                             }
+
+                            // Add this block to refresh auto domain keywords
+                            if (this.formConfig.env && Array.isArray(this.formConfig.env.AUTO_DOMAIN_KEYWORDS)) {
+                                // Update the auto domain keywords lists
+                                this.allAutoDomainKeywordsList = [...this.formConfig.env.AUTO_DOMAIN_KEYWORDS];
+                                this.autoDomainKeywordsList = [...this.allAutoDomainKeywordsList];
+                                this.activeAutoDomainKeywordsSet = new Set(this.autoDomainKeywordsList);
+
+                                this.updateTopNOptions();
+
+                                // Log for debugging
+                                console.log("Updated auto domain keywords after preset application:", this.allAutoDomainKeywordsList.length);
+                            }
+
+                            this._markConfigClean();
+
                             // Ensure arrays are correct after update
                             this.formConfig.document.FILE_TYPES = Array.isArray(this.formConfig.document
                                 .FILE_TYPES) ? this.formConfig.document.FILE_TYPES : [];
@@ -1770,6 +2010,7 @@ document.addEventListener('alpine:init', () => {
                             }
                         }
                     }, // End of async savePreset
+
                     async deletePresetWithConfirmation(presetName) {
                         // Validation: Check if a preset name was provided (should come from selectedPresetName)
                         if (!presetName) {
@@ -1854,10 +2095,89 @@ document.addEventListener('alpine:init', () => {
                                 }
                             }); // End requireConfirmation
                     }, // End of deletePresetWithConfirmation
+
+                    
+                    async fetchCentroidStats() {
+                        const resp = await fetch('/api/centroid');
+                        this.centroidStats = await resp.json();
+                        if (resp.ok) this.centroidStats = await resp.json();
+                    },
+
+                    async fetchQueryCentroidInsight(queryEmbedding) {
+                        const resp = await fetch('/api/centroid/query_insight', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ vector: queryEmbedding })
+                        });
+                        if (resp.ok) this.queryCentroidInsight = await resp.json();
+                    },
+
+            async fetchAutoDomainKeywords() {
+                try {
+                    console.log("[Init API] Starting fetchAutoDomainKeywords...");
+                    const res = await fetch('/get_auto_domain_keywords');
+                    const data = await res.json();
+
+                    // Check if data.keywords exists and is an array
+                    this.allAutoDomainKeywordsList = Array.isArray(data.keywords) ? data.keywords : [];
+
+                    // 2. Comma-string for the textarea display
+                    this.autoDomainKeywords = this.allAutoDomainKeywordsList.length
+                        ? this.allAutoDomainKeywordsList.join(', ')
+                        : '[No auto domain keywords found]';
+
+                    // 3. Set for toggling individual keywords
+                    this.activeAutoDomainKeywordsSet = new Set(this.allAutoDomainKeywordsList);
+
+                    // 4. Build options using the helper method
+                    this.updateTopNOptions();
+                    this.applyTopNKeywords();
+
+                    console.log("[Init API] Finished fetchAutoDomainKeywords with",
+                        this.allAutoDomainKeywordsList.length, "keywords");
+                }
+                catch (error) {
+                    console.error('Failed to fetch auto domain keywords:', error);
+                    this.allAutoDomainKeywordsList = [];
+                    this.autoDomainKeywords = '[Error loading auto domain keywords]';
+                    this.activeAutoDomainKeywordsSet = new Set();
+
+                    // Still call updateTopNOptions to ensure UI is consistent
+                    this.updateTopNOptions();
+                }
+            },
+
+
+                    // Send the active keywords to backend (update config/file)
+            async syncActiveKeywordsToBackend() {
+                try {
+                    console.log("Syncing keywords to backend:", Array.from(this.activeAutoDomainKeywordsSet));
+                    const response = await fetch('/update_auto_domain_keywords', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            keywords: Array.from(this.activeAutoDomainKeywordsSet),
+                            target_field: "AUTO_DOMAIN_KEYWORDS"  // Add this line to specify the target field
+                        })
+                    });
+                    const result = await response.json();
+                    if (!result.success) {
+                        console.error("Backend sync failed:", result.error);
+                        throw new Error(result.error || "Unknown error");
+                    }
+                    console.log("Keywords synced successfully");
+                } catch (e) {
+                    console.error("Sync error:", e);
+                    this.showToast(`Failed to update keywords: ${e.message}`, "error");
+                }
+            }
+
                          
         }; // ✅ Close return
     }); // ✅ Close Alpine.data
 }); // ✅ Close 'alpine:init' listener
+
+
 
 function addTooltips() {
     // Create a function to add tooltips to labels

@@ -24,6 +24,8 @@ from weaviate.exceptions import WeaviateConnectionError # Use for specific catch
 import urllib.parse
 from logging.handlers import RotatingFileHandler # Use rotating handler for safety
 import sys # For StreamHandler
+from config import save_yaml_config, CONFIG_YAML_PATH
+import threading, time
 
 
 load_dotenv()
@@ -38,6 +40,11 @@ if app.secret_key == 'fallback_secret_key_for_dev_only':
 
 log_level = logging.INFO # Or DEBUG based on needs
 log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+
+SAVE_LOCK = threading.Lock()
+
+
 
 # Use instance path for log file - NOW 'app' exists
 log_file_path = os.path.join(app.instance_path, 'app.log')
@@ -191,23 +198,55 @@ except Exception as e: logger.error(f"CRITICAL: Could not create required direct
 # --- Global Presets Variable ---
 presets = {}
 
-# --- Pipeline Initialization Function ---
+# At module scope, before your function definition:
+_pipeline_initializing = False
+
 def initialize_pipeline(app_context=None):
-    """Initializes or re-initializes the global pipeline object."""
-    global pipeline, pipeline_available
-    context = app_context if app_context else app.app_context()
-    with context:
-        logger.info("Attempting to initialize/re-initialize pipeline...")
-        if not pipeline_available: logger.error("Skip init: Pipeline module unavailable."); pipeline = None; return
-        if not config_available or not cfg: logger.error("Skip init: Config unavailable."); pipeline = None; return
-        try:
-            # ... (Close old client if exists) ...
-            pipeline = IndustrialAutomationPipeline() # Instantiate
-            logger.info("Pipeline initialized/re-initialized successfully.")
-            # ... (Log connection status checks) ...
-        except Exception as e:
-            pipeline = None
-            logger.error(f"Failed to initialize/re-initialize Pipeline: {e}", exc_info=True)
+    """Initializes or re-initializes the global pipeline object exactly once at a time."""
+    global pipeline, pipeline_available, _pipeline_initializing
+
+    # Prevent concurrent inits
+    if _pipeline_initializing:
+        return
+
+    _pipeline_initializing = True
+    try:
+        # Use the provided context or fall back to app.app_context()
+        context = app_context or app.app_context()
+        with context:
+            logger.info("Initializing pipeline...")
+
+            # Skip if pipeline code or config is unavailable
+            if not pipeline_available:
+                logger.error("Skip init: Pipeline module unavailable.")
+                pipeline = None
+                return
+
+            if not config_available or cfg is None:
+                logger.error("Skip init: Config unavailable.")
+                pipeline = None
+                return
+
+            # Close old Weaviate client if it exists
+            try:
+                old_client = getattr(pipeline, "retriever", None)
+                if old_client and hasattr(old_client, "weaviate_client"):
+                    old_client.weaviate_client.close()
+                    logger.info("Closed existing Weaviate client.")
+            except Exception as close_err:
+                logger.warning(f"Error closing old Weaviate client: {close_err}")
+
+            # Instantiate the new pipeline
+            pipeline = IndustrialAutomationPipeline()
+            logger.info("Pipeline initialized successfully.")
+
+    except Exception as e:
+        pipeline = None
+        logger.error(f"Pipeline initialization failed: {e}", exc_info=True)
+
+    finally:
+        _pipeline_initializing = False
+
 
 # === Utility Functions ===
 
@@ -313,17 +352,19 @@ def save_config_to_yaml(config_dict: Dict[str, Any]) -> bool:
             dump_dict = validated_config.model_dump() if hasattr(validated_config, 'model_dump') else validated_config.dict()
 
             # Handle FlowStyleList for keywords before dumping
-            if FlowStyleList and 'env' in dump_dict:
-                for key in ['DOMAIN_KEYWORDS', 'AUTO_DOMAIN_KEYWORDS', 'USER_ADDED_KEYWORDS']:
-                    if key in dump_dict['env'] and isinstance(dump_dict['env'][key], list):
-                        dump_dict['env'][key] = FlowStyleList(dump_dict['env'][key])
+            #if FlowStyleList and 'env' in dump_dict:
+            #    for key in ['DOMAIN_KEYWORDS', 'AUTO_DOMAIN_KEYWORDS', 'USER_ADDED_KEYWORDS']:
+            #        if key in dump_dict['env'] and isinstance(dump_dict['env'][key], list):
+            #            dump_dict['env'][key] = FlowStyleList(dump_dict['env'][key])
 
 
             # 4. Atomic write to YAML using standard Dumper
             temp_path = f"{CONFIG_YAML_PATH}.tmp"
             with open(temp_path, 'w', encoding='utf-8') as f:
                 # Use default_flow_style=False for block style unless FlowStyleList is used
-                yaml.dump(dump_dict, f, indent=2, sort_keys=False, default_flow_style=None)
+                with open(CONFIG_YAML_PATH, 'w', encoding='utf-8') as f:
+                    yaml.dump(dump_dict, f, indent=2, sort_keys=False, default_flow_style=None)
+
             os.replace(temp_path, CONFIG_YAML_PATH)
             logging.info(f"Configuration saved successfully to {CONFIG_YAML_PATH}")
             return True
@@ -1027,7 +1068,12 @@ def run_keyword_builder():
             logger.info(f"Saved raw output to {output_file}")
         except Exception as save_error:
             logger.warning(f"Failed to save raw output: {save_error}")
-        
+
+        # sync auto_domain_keywords
+        if keywords:
+            keyword_terms = [kw["term"] for kw in keywords if "term" in kw]
+            update_auto_domain_keywords(keyword_terms)
+
         # Return successful response with extracted keywords
         return jsonify({
             "success": True,
@@ -1114,6 +1160,64 @@ def cleanup_resources():
         except Exception as e:
             logger.error(f"Error during additional Weaviate connection cleanup: {e}")
 atexit.register(cleanup_resources)
+
+
+def update_auto_domain_keywords(keywords: list):
+    """
+    Updates auto_domain_keywords.txt and the config's AUTO_DOMAIN_KEYWORDS field.
+    """
+    from pathlib import Path
+
+    # 1. Write to auto_domain_keywords.txt
+    output_file = Path("auto_domain_keywords.txt")
+    try:
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write(", ".join(keywords))
+        logger.info(f"Wrote {len(keywords)} keywords to {output_file}")
+    except Exception as e:
+        logger.error(f"Failed to write keywords to {output_file}: {e}")
+
+    # 2. Update config and save
+    try:
+        # Update in-memory config
+        if hasattr(cfg, "env"):
+            cfg.env.AUTO_DOMAIN_KEYWORDS = keywords
+        else:
+            logger.warning("cfg.env is missing; cannot update AUTO_DOMAIN_KEYWORDS")
+
+        # Prepare config dict for saving
+        dump_method = getattr(cfg, 'model_dump', getattr(cfg, 'dict', None))
+        config_dict = dump_method() if dump_method else {}
+
+        # Use your validated YAML save function (handles FlowStyleList)
+        save_config_to_yaml(config_dict)
+        logger.info("AUTO_DOMAIN_KEYWORDS updated and config saved.")
+    except Exception as e:
+        logger.error(f"Failed to update config with new keywords: {e}")
+
+
+        def save_yaml_config(data: Dict, path: Path):
+            temp_path = path.with_suffix(".tmp")
+            # ... dump to temp_path ...
+            with SAVE_LOCK:
+                for attempt in range(3):
+                    try:
+                        os.replace(temp_path, path)
+                        return True
+                    except OSError as e:
+                        logger.warning(f"save attempt {attempt+1} failed: {e}")
+                        time.sleep(0.1)
+                # last-ditch copy fallback
+                shutil.copyfile(str(temp_path), str(path))
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
+                return True
+    
+
+
+################## @app.route( from here on
    
 @app.route('/update_config_keywords', methods=['POST'])
 def update_config_keywords():
@@ -1754,12 +1858,7 @@ def remove_weaviate_instance():
 
     return jsonify({"success": True, "message": final_message}), 200
 
-# --- END MODIFIED /remove_weaviate_instance ---
 
-
-# --- Make sure initialize_pipeline is called on startup ---
-
-# Optional Debug route
 @app.route("/list_routes")
 def list_routes():
     routes = []
@@ -1771,25 +1870,136 @@ def list_routes():
         })
     return jsonify({"routes": sorted(routes, key=lambda x: x["path"])})
 
-@app.before_request
-def ensure_pipeline_initialized():
-    logger.info("[Flask Hook] Running @app.before_request to initialize pipeline...")
-    initialize_pipeline()
+
+initialize_pipeline()
 
 @app.route('/get_auto_domain_keywords', methods=['GET'])
 def get_auto_domain_keywords():
+    keywords = []
+    # 1. Try config first
+    if hasattr(cfg, "env"):
+        raw = getattr(cfg.env, "AUTO_DOMAIN_KEYWORDS", [])
+        # Handle both formats: list of strings, or list with one comma-separated string
+        if isinstance(raw, list):
+            if len(raw) == 1 and isinstance(raw[0], str) and ',' in raw[0]:
+                # Split the single string into keywords
+                keywords = [kw.strip() for kw in raw[0].split(",") if kw.strip()]
+            else:
+                # Already a list of keywords
+                keywords = raw
+        elif isinstance(raw, str):
+            keywords = [kw.strip() for kw in raw.split(",") if kw.strip()]
+    # 2. Fallback: try file if config is empty
+    if not keywords:
+        try:
+            with open("auto_domain_keywords.txt", "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                if content:
+                    keywords = [kw.strip() for kw in content.split(",") if kw.strip()]
+        except Exception as e:
+            logger.error(f"Failed to read auto_domain_keywords.txt: {e}")
+
+    logger.info(f"Returning auto domain keywords: {keywords}")
+    return jsonify({"success": bool(keywords), "keywords": keywords})
+
+
+    
+    # app.py (add after other imports)
+from centroid_manager import CentroidManager
+centroid_manager = CentroidManager()
+
+@app.route("/api/centroid", methods=["GET"])
+def get_centroid_api():
+    centroid = centroid_manager.get_centroid()
+    meta = centroid_manager.get_metadata()
+    if centroid is None:
+        return jsonify({"error": "Centroid not available"}), 404
+    return jsonify({
+        "centroid": centroid.tolist(),
+        "meta": meta
+    })
+
+@app.route('/update_auto_domain_keywords', methods=['POST'])
+def update_auto_domain_keywords():
     try:
-        with open('auto_domain_keywords.txt', 'r') as file:
-            keywords = file.read().strip()  # Read keywords from the file
-            keyword_list = keywords.split(',')  # Split by comma to get an array
-        return jsonify({'success': True, 'keywords': keyword_list})
+        data = request.get_json()
+        keywords = data.get('keywords', [])
+        target_field = data.get('target_field', 'AUTO_DOMAIN_KEYWORDS')
+        
+        # Update the correct field in the config
+        if hasattr(cfg, "env"):
+            # Store current SELECTED_N_TOP value if it exists
+            selected_n_top = getattr(cfg.env, "SELECTED_N_TOP", None)
+            
+            if target_field == "AUTO_DOMAIN_KEYWORDS":
+                cfg.env.AUTO_DOMAIN_KEYWORDS = keywords
+            elif target_field == "DOMAIN_KEYWORDS":
+                cfg.env.DOMAIN_KEYWORDS = keywords
+            else:
+                return jsonify(success=False, error=f"Invalid target field: {target_field}"), 400
+            
+            # Restore SELECTED_N_TOP value if it existed
+            if selected_n_top is not None:
+                cfg.env.SELECTED_N_TOP = selected_n_top
+                
+        # Save to file
+        with open("auto_domain_keywords.txt", "w", encoding="utf-8") as f:
+            f.write(", ".join(keywords))
+            
+        # Update YAML config
+        dump_method = getattr(cfg, 'model_dump', getattr(cfg, 'dict', None))
+        config_dict = dump_method()
+        save_yaml_config(config_dict, CONFIG_YAML_PATH)
+        
+        return jsonify(success=True)
     except Exception as e:
-        return jsonify({'success': False, 'message': str(e)})
+        logger.error(f"Failed to update auto domain keywords: {e}")
+        return jsonify(success=False, error=str(e)), 500
+
+    
+
+@app.route('/update_topn_config', methods=['POST'])
+def update_topn_config():
+    """Updates the config with the selected TopN value."""
+    if not config_available or not cfg:
+        return jsonify({"success": False, "error": "Config system unavailable."}), 503
+    
+    try:
+        data = request.get_json()
+        top_n = data.get('topN')
+        
+        if top_n is None:
+            return jsonify({"success": False, "error": "No topN value provided"}), 400
+            
+        # Create updates dictionary for config
+        updates = {
+            'env': {
+                'SELECTED_N_TOP': top_n
+            }
+        }
+        
+        # Update config
+        config_changed = cfg.update_and_save(updates)
+        
+        return jsonify({
+            "success": True,
+            "message": f"Updated configuration with TopN: {top_n}"
+        })
+        
+    except Exception as e:
+        logger.error(f"Error updating config with TopN: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    
 
 
 # === Main Execution Block ===
 if __name__ == '__main__':
     logger.info("Application starting...")
+
+    with app.app_context():
+        initialize_pipeline()
+
     if not config_available or not cfg: logger.critical("CRITICAL: Config failed load."); exit(1) # Using exit() directly here, consider sys.exit(1)
 
     try: # Setup directories early

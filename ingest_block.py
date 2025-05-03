@@ -13,6 +13,8 @@ from pathlib import Path
 import datetime as dt
 from datetime import timezone
 from typing import List, Dict, Optional, Tuple, Union, Any, Generator
+from centroid_manager import CentroidManager
+centroid_manager = CentroidManager()
 
 # PDF processing (ensure imports are correct)
 try:
@@ -512,6 +514,18 @@ def run_ingestion(folder: str) -> dict:
                 # else: logger.info("run_ingestion: Weaviate client was already closed.") # Reduce noise
             except Exception as close_err:
                 logger.error(f"run_ingestion: Error closing Weaviate client: {close_err}")
+
+
+def after_ingestion(client, collection_name):
+    # ...fetch all vectors from collection...
+    vectors = []
+    collection = client.collections.get(collection_name)
+    for obj in collection.iterator(include_vector=True, return_properties=[]):
+        if obj.vector and 'default' in obj.vector:
+            vectors.append(obj.vector['default'])
+    if vectors:
+        centroid = np.mean(np.array(vectors), axis=0)
+        centroid_manager.save_centroid(centroid)
 
 
 # --- Main Execution (for running script directly) ---

@@ -151,34 +151,31 @@ class PathConfig(BaseModel):
     DOMAIN_CENTROID_PATH: str = "./domain_centroid.npy"
 
 class EnvironmentConfig(BaseModel):
-    DOMAIN_KEYWORDS: List[str] = []
-    AUTO_DOMAIN_KEYWORDS: List[str] = []
-    USER_ADDED_KEYWORDS: List[str] = []
+    DOMAIN_KEYWORDS: List[str]       = Field(default_factory=list)
+    AUTO_DOMAIN_KEYWORDS: List[str]  = Field(default_factory=list)
+    USER_ADDED_KEYWORDS: List[str]   = Field(default_factory=list)
+    SELECTED_N_TOP: int              = Field(
+        10,
+        description="How many top terms to show by default"
+    )
 
     @property
     def merged_keywords(self) -> List[str]:
         domain = self.DOMAIN_KEYWORDS or []
-        auto = self.AUTO_DOMAIN_KEYWORDS or []
-        user = self.USER_ADDED_KEYWORDS or []
-        return sorted(list(set(domain + auto + user))) # Sort for consistency
+        auto   = self.AUTO_DOMAIN_KEYWORDS or []
+        user   = self.USER_ADDED_KEYWORDS or []
+        return sorted(list(set(domain + auto + user)))  # Sort for consistency
 
 # === Root Config Model ===
 class AppConfig(BaseModel):
-    security: SecurityConfig = Field(default_factory=SecurityConfig)
-    retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
-    model: ModelConfig = Field(default_factory=ModelConfig)
-    document: DocumentConfig = Field(default_factory=DocumentConfig)
-    paths: PathConfig = Field(default_factory=PathConfig)
-    env: EnvironmentConfig = Field(default_factory=EnvironmentConfig)
-    pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
+    security: SecurityConfig                   = Field(default_factory=SecurityConfig)
+    retrieval: RetrievalConfig                 = Field(default_factory=RetrievalConfig)
+    model: ModelConfig                         = Field(default_factory=ModelConfig)
+    document: DocumentConfig                   = Field(default_factory=DocumentConfig)
+    paths: PathConfig                          = Field(default_factory=PathConfig)
+    env: EnvironmentConfig                     = Field(default_factory=EnvironmentConfig)
+    pipeline: PipelineConfig                   = Field(default_factory=PipelineConfig)
     domain_keyword_extraction: DomainKeywordExtractionConfig = Field(default_factory=DomainKeywordExtractionConfig)
-
-    # Automatically update derived env fields after validation/loading
-    #@model_validator(mode='after')
-    #def update_derived_env_fields(self) -> 'AppConfig':
-     #   self.env.API_TIMEOUT = self.security.API_TIMEOUT
-     #   self.env.EMBEDDING_MODEL = self.model.EMBEDDING_MODEL
-     #   return self
 
     @classmethod
     def load_from_yaml(cls, path: Path = CONFIG_YAML_PATH) -> 'AppConfig':
@@ -187,8 +184,10 @@ class AppConfig(BaseModel):
             logger.warning(f"Configuration file {path} not found. Creating default config.")
             default_config = cls()
             try:
-                # Use model_dump with exclude_defaults=False? Or just dump? Exclude keys explicitly.
-                dump_data = default_config.model_dump(exclude={'security': {'DEEPSEEK_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'COHERE_API_KEY'}})
+                dump_data = default_config.model_dump(
+                    exclude={'security': {'DEEPSEEK_API_KEY', 'OPENAI_API_KEY', 
+                            'ANTHROPIC_API_KEY', 'COHERE_API_KEY'}}
+                )
                 save_yaml_config(dump_data, path)
             except Exception as save_e:
                 logger.error(f"Failed to save default config file {path}: {save_e}")
@@ -196,19 +195,29 @@ class AppConfig(BaseModel):
 
         try:
             with open(path, 'r', encoding='utf-8') as f:
+                # 1. Load raw data first
                 raw_config_data = yaml.safe_load(f) or {}
+                
+                # 2. Process domain keywords if exists
+                if 'env' in raw_config_data and 'DOMAIN_KEYWORDS' in raw_config_data['env']:
+                    raw_config_data['env']['DOMAIN_KEYWORDS'] = tuple(
+                        raw_config_data['env']['DOMAIN_KEYWORDS']
+                    )
 
-            # Validate raw data against the AppConfig model
-            # Pydantic automatically merges defaults for missing fields
-            instance = cls(**raw_config_data)
-
-            # Note: The @model_validator handles updating derived fields now.
+                # 3. Validate and create instance
+                instance = cls(**raw_config_data)
+                
+                # 4. Run model validators
+                instance.model_post_init(None)
 
             logger.info(f"Configuration loaded and validated from {path}")
             return instance
-        except Exception as e: # Catch YAML, Validation, and other errors
+            
+        except Exception as e:
             logger.error(f"Failed to load/validate configuration from {path}: {e}", exc_info=True)
             raise RuntimeError(f"Could not load/validate configuration from {path}") from e
+        
+        
 
     def update_and_save(self, updates: Dict[str, Any], path: Path = CONFIG_YAML_PATH):
         """Updates current config, validates, saves if changed."""

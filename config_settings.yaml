@@ -1,9 +1,9 @@
 security: {SANITIZE_INPUT: true, RATE_LIMIT: 20, API_TIMEOUT: 30, CACHE_ENABLED: true}
 retrieval:
   COLLECTION_NAME: Industrial_tech
-  K_VALUE: 6
+  K_VALUE: 5
   SCORE_THRESHOLD: 0.6
-  LAMBDA_MULT: 0.6
+  LAMBDA_MULT: 0.7
   SEARCH_TYPE: mmr
   DOMAIN_SIMILARITY_THRESHOLD: 0.65
   SPARSE_RELEVANCE_THRESHOLD: 0.15
@@ -16,11 +16,11 @@ retrieval:
   WEAVIATE_GRPC_PORT: 51002
   retrieve_with_history: false
   WEAVIATE_TIMEOUT: [10, 120]
-model: {LLM_TEMPERATURE: 0.6, MAX_TOKENS: 1024, OLLAMA_MODEL: deepseek-r1, EMBEDDING_MODEL: nomic-embed-text,
-  TOP_P: 0.9, FREQUENCY_PENALTY: 0.1, SYSTEM_MESSAGE: You are a helpful AI assistant
-    for industrial automation. Use the provided context and conversation history to
-    answer accurately and clearly. Provide sufficient detail but remain focused on
-    the question., EXTERNAL_API_PROVIDER: deepseek, EXTERNAL_API_MODEL_NAME: null}
+model: {LLM_TEMPERATURE: 0.1, MAX_TOKENS: 512, OLLAMA_MODEL: deepseek-r1, EMBEDDING_MODEL: nomic-embed-text,
+  TOP_P: 0.9, FREQUENCY_PENALTY: 0.1, SYSTEM_MESSAGE: 'Answer concisely based ONLY
+    on the provided context documents. Be factual and direct. Avoid speculation or
+    information not present in the context. Prefer short answers, yes/no if applicable.',
+  EXTERNAL_API_PROVIDER: deepseek, EXTERNAL_API_MODEL_NAME: null}
 document:
   CHUNK_SIZE: 345
   CHUNK_OVERLAP: 56
@@ -69,8 +69,24 @@ env:
       Performance Monitoring, E-Stop Systems, Variable Frequency Drives, HART Communicators,
     Smart Devices, Thermal Imaging, Industrial Robots, ControlEdge PLC, Process Automation
       Servers, Gas Detection Systems]
-  AUTO_DOMAIN_KEYWORDS: []
+  AUTO_DOMAIN_KEYWORDS: [2018 www honeywellprocess, lcn honeywell confidential, honeywell
+      portfolio update, 2018 2018 honeywell, q4000 frame scanner, glossary term 119,
+    hidden markov model, 2018 honeywell international, honeywellprocess com 2019,
+    honeywell trademark, honeywell trademark honeywell, honeywell automation investment,
+    segment profit, 2019 www honeywellprocess, portfolio honeywell portfolio, comparable
+      gaap measures, gaap measures portfolio, controller masterlogic plc, ootthheerr
+      wwaarrrraannttiieess eexxpprreesssseedd, com 2018 honeywell, "honeywell international\
+      \ s\xE0rl", lcn elcn migration, refinery rijeka refinery, emission reductions
+      honeywell, experion lcn honeywell, honeywell portfolio, trademark honeywell
+      international, 2019 honeywell, remedy honeywell warrants, hart smartview terminals,
+    portfolio honeywell, honeywell account manager, shall honeywell liable, future
+      use table, discriminant analysis flda, turbomachinery controls emulation, trainview
+      operator hmi, contact honeywell sales, lcn honeywell, honeywell disclaims, refinery
+      salzbergen refinery, standardization hmi libraries, 083339 crank arm, masterlogic
+      ml200 plc, herculink trademark honeywell, non gaap financial, honeywell com,
+    legacy scada systems, honeywell liable consequential, honeywell process solutions]
   USER_ADDED_KEYWORDS: [Emerson, competitors, SLB, VSD]
+  SELECTED_N_TOP: 50
 pipeline: {max_history_turns: 5}
 domain_keyword_extraction: {keybert_model: all-MiniLM-L6-v2, top_n_per_doc: 50, final_top_n: 200,
   min_doc_freq: 3, diversity: 0.3, no_pos_filter: true}

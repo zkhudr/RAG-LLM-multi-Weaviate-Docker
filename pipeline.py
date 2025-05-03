@@ -11,6 +11,8 @@ import json
 import os
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
+from centroid_manager import CentroidManager
+centroid_manager = CentroidManager()
 
 # Assuming these are correctly importable from your project structure
 try:
@@ -151,6 +153,7 @@ class IndustrialAutomationPipeline:
         try:
             query_embedding = self.embeddings.embed_query(query)
             query_vector = np.array(query_embedding).reshape(1, -1)
+            centroid_feedback = centroid_manager.query_insight(query_vector.flatten())
             similarity = cosine_similarity(query_vector, self.domain_centroid)[0][0]
             similarity = max(0.0, min(1.0, similarity)) # Clip
             return float(similarity)
@@ -395,7 +398,8 @@ class IndustrialAutomationPipeline:
                 source=source,                         # Use potentially modified source
                 context=context if is_valid else "",   # Don't show context if validation failed
                 error=False                            # Not treating validation failure as a hard error
-            )
+                )
+            final_result["centroid_feedback"] = centroid_feedback or {}
 
             # --- Caching Save ---
             # Only cache responses that passed validation
@@ -611,6 +615,7 @@ class IndustrialAutomationPipeline:
             "timestamp": datetime.now().isoformat(),
             "error": error # Include error flag
         }
+    
 
 # === Keep direct execution block for testing (if desired) ===
 if __name__ == "__main__":
