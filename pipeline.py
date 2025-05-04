@@ -11,6 +11,8 @@ import json
 import os
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
+from centroid_manager import CentroidManager
+centroid_manager = CentroidManager()
 
 # Assuming these are correctly importable from your project structure
 try:
@@ -143,20 +145,23 @@ class IndustrialAutomationPipeline:
     # === End Cache Functions ===
 
 
-    def _calculate_semantic_score(self, query: str) -> float:
+    def _calculate_semantic_score(self, query: str) -> Tuple[float, Dict]:
         """Calculates cosine similarity between query embedding and domain centroid."""
         if self.domain_centroid is None:
             logger.warning("Cannot calculate semantic score, domain centroid not loaded.")
-            return 0.0
+            return 0.0, {}
+        
         try:
             query_embedding = self.embeddings.embed_query(query)
             query_vector = np.array(query_embedding).reshape(1, -1)
+            centroid_feedback = centroid_manager.query_insight(query_vector.flatten())
             similarity = cosine_similarity(query_vector, self.domain_centroid)[0][0]
             similarity = max(0.0, min(1.0, similarity)) # Clip
-            return float(similarity)
+            return float(similarity), centroid_feedback
         except Exception as e:
-            logger.error(f"Error calculating semantic score for query '{query[:50]}...': {e}", exc_info=True)
-            return 0.0
+            logger.error(f"Error calculating semantic score: {e}", exc_info=True)
+            return 0.0, {}
+
 
     def _calculate_sparse_score(self, query_terms: List[str]) -> float:
         """Calculates keyword overlap ratio between query terms and domain keywords."""
@@ -180,9 +185,9 @@ class IndustrialAutomationPipeline:
         self.logger.debug(f"Sparse Check: Cleaned Terms={cleaned_query_terms}, Matches={match_count}, Ratio={overlap_ratio:.3f}")
         return overlap_ratio
 
-    def _check_domain_relevance_hybrid(self, query: str, query_terms: List[str]) -> bool:
+    def _check_domain_relevance_hybrid(self, query: str, query_terms: List[str]) -> Tuple[bool, Dict]:
         """Performs hybrid relevance check using semantic and sparse scores."""
-        semantic_score = self._calculate_semantic_score(query)
+        semantic_score, centroid_feedback = self._calculate_semantic_score(query)
         sparse_score = self._calculate_sparse_score(query_terms)
 
         fused_score = (semantic_score * self.cfg.retrieval.SEMANTIC_WEIGHT) + \
@@ -309,13 +314,14 @@ class IndustrialAutomationPipeline:
 
             # --- Domain Check ---
             if self.cfg.retrieval.PERFORM_DOMAIN_CHECK:
-                domain_match = self._check_domain_relevance_hybrid(sanitized_query, query_terms)
+                domain_match, centroid_feedback = self._check_domain_relevance_hybrid(sanitized_query, query_terms)
                 if not domain_match:
                     self.logger.info("Query deemed outside domain scope by hybrid check.")
                     return self._format_response("Query appears to be outside the scope of industrial automation.", "domain_check", context=None)
                 self.logger.info("Query passed hybrid domain relevance check.")
             else:
                 self.logger.info("Domain relevance check skipped by configuration.")
+                centroid_feedback = {}  # Initialize with empty dict when skipped
 
             # --- History-Aware Context Retrieval ---
             # --- History-Aware Context Retrieval ---
@@ -364,20 +370,21 @@ class IndustrialAutomationPipeline:
 
             merged_response = self.merge_responses(local_response, api_response)
 
-            # --- Optional Validation --- START OF COMPLETED SECTION ---
+            # --- Optional Validation ---
             response_text = merged_response.get("response") or merged_response.get("text") or ""
-            is_valid = self.validate_technical_response(response_text)
-            #is_valid = self.validate_technical_response(merged_response)
-            logger.warning(f"[Debug] merged_response = {merged_response}")
-            self.logger.info(f"Response validation result: {is_valid}")
+            is_valid = True  # Default to valid
+            if self.cfg.retrieval.PERFORM_TECHNICAL_VALIDATION:  # Check if validation is enabled
+                is_valid = self.validate_technical_response(response_text)
+                logger.warning(f"[Debug] merged_response = {merged_response}")
+                self.logger.info(f"Response validation result: {is_valid}")
 
-            validation_failed_source = None # Flag to potentially override source later
+            validation_failed_source = None  # Flag to potentially override source later
             if not is_valid:
-                self.logger.warning(f"Generated response failed technical validation. Original response snippet: '{merged_response[:100]}...'")
+                self.logger.warning(f"Generated response failed technical validation. Original response snippet: '{response_text[:100]}...'")
                 # Option A: Replace the response
                 merged_response = "The generated response may not be directly related to industrial automation or lacks specific technical terms. Please clarify or ask about a specific technical topic."
-                validation_failed_source = "validation_failed" # Set a flag/source override
-            # --- Optional Validation --- END OF COMPLETED SECTION ---
+                validation_failed_source = "validation_failed"  # Set a flag/source override
+
 
             # --- Format final response ---
             source = "local_llm"
@@ -395,7 +402,8 @@ class IndustrialAutomationPipeline:
                 source=source,                         # Use potentially modified source
                 context=context if is_valid else "",   # Don't show context if validation failed
                 error=False                            # Not treating validation failure as a hard error
-            )
+                )
+            final_result["centroid_feedback"] = centroid_feedback or {}
 
             # --- Caching Save ---
             # Only cache responses that passed validation
@@ -611,6 +619,7 @@ class IndustrialAutomationPipeline:
             "timestamp": datetime.now().isoformat(),
             "error": error # Include error flag
         }
+    
 
 # === Keep direct execution block for testing (if desired) ===
 if __name__ == "__main__":

@@ -1,63 +1,62 @@
 // static/tooltipContent.js
 const tooltipContent = {
     // Model Section
-    "LLM_TEMPERATURE": "Sampling temp (0-2). Low (<0.3) = deterministic/factual. High (>0.7) = creative/diverse. Rec: 0.3-0.7. Tune for task. Start low for stability.",
-    "MAX_TOKENS": "Max output tokens from LLM. Hard limit on response length. Balance vs context window & latency. Rec: 512-1024. Ensure fits context.",
-    "OLLAMA_MODEL": "Specify local Ollama model name (e.g., 'llama3', 'mistral'). Must be pulled via `ollama pull <model>`.",
-    "EMBEDDING_MODEL": "Vector embedding model (e.g., 'nomic-embed-text', 'all-MiniLM-L6-v2'). Impacts retrieval quality & speed. Check dimensions compatibility.",
-    "TOP_P": "Nucleus sampling (0-1). Alternative/combo with temp. Considers tokens within top P% probability mass. Rec: ~0.9. Less sensitive than temp.",
-    "FREQUENCY_PENALTY": "Penalize token frequency (0-2). Reduces word/phrase repetition. Higher values = stronger penalty. Rec: 0.1-0.4.",
-    "SYSTEM_MESSAGE": "LLM system prompt. Defines persona, task, constraints, output format. Crucial for instruction following & RAG integration.",
-    "EXTERNAL_API_PROVIDER": "Select external LLM API provider ('openai', 'deepseek', 'anthropic', etc.). Requires corresponding API key in .env/secrets.",
-    "EXTERNAL_API_MODEL_NAME": "Optional: Specify provider's model (e.g., 'gpt-4o', 'deepseek-chat'). Overrides provider default if set. Check provider docs for valid names.",
+    "LLM_TEMPERATURE": "Controls how predictable vs. creative the model’s output is. Range: 0 (fully deterministic) to 2 (very creative). We usually start around 0.3–0.7 for a good mix of accuracy and variety. :contentReference[oaicite:0]{index=0}",
+    "MAX_TOKENS": "The hard limit on how long the model’s reply can be (in tokens). Think of it as the max word count. 512–1024 tokens is a solid default.",
+    "OLLAMA_MODEL": "Name of your local Ollama model (e.g. 'llama3', 'mistral'). Make sure you’ve downloaded it with `ollama pull <model>`.",
+    "EMBEDDING_MODEL": "Which text-to-vector model to use (e.g. 'nomic-embed-text' or 'all-MiniLM-L6-v2'). This choice affects retrieval accuracy and speed :contentReference[oaicite:1]{index=1}.",
+    "TOP_P": "Nucleus sampling: only consider tokens within the top P cumulative probability. Lower = more focused; higher = more varied. Try ~0.9. :contentReference[oaicite:2]{index=2}",
+    "FREQUENCY_PENALTY": "Gently discourages the model from repeating the same words. A value of 0.1–0.4 usually reduces repetition without harming coherence. :contentReference[oaicite:3]{index=3}",
+    "SYSTEM_MESSAGE": "Your high-level instructions to the model—defines its role, tone, rules, and output format.",
+    "EXTERNAL_API_PROVIDER": "The cloud LLM service to use (e.g. 'openai', 'anthropic'). Make sure the corresponding API key is set in your environment.",
+    "EXTERNAL_API_MODEL_NAME": "(Optional) The exact model name from that provider (e.g. 'gpt-4o', 'deepseek-chat'). Overrides their default—check their docs for valid names.",
 
     // Retrieval Section
-    "COLLECTION_NAME": "Target Weaviate collection/class name. Case-sensitive. Must match index schema.",
-    "K_VALUE": "Top-K documents retrieved per query. More context vs prompt size/noise/latency. Rec: 5-10. Tune based on LLM ctx limit & answer quality.",
-    "SCORE_THRESHOLD": "Min vector similarity score (0-1) for retrieved chunks. Filters irrelevant results post-retrieval. Rec: 0.6-0.75. Tune based on results.",
-    "LAMBDA_MULTIPLIER": "MMR lambda (0-1). Balances relevance vs diversity. 1.0 = pure similarity, 0.0 = max diversity. Rec: 0.5-0.7 (bias relevance).",
-    "SEARCH_TYPE": "Weaviate query method: 'similarity' (vector only), 'mmr' (similarity + diversity), 'hybrid' (vector + keyword/BM25 - *if implemented*).",
-    "DOMAIN_SIMILARITY_THRESHOLD": "Vector similarity threshold (0-1) for initial query domain check (if enabled). Filters off-topic queries. Rec: 0.6-0.75.",
-    "SPARSE_RELEVANCE_THRESHOLD": "Min scaled BM25 score (0-1) for sparse retrieval relevance (hybrid search). Corpus-dependent. Rec: ~0.1-0.2.",
-    "FUSED_RELEVANCE_THRESHOLD": "Min combined score (0-1) after RRF/weighting dense & sparse results (hybrid search). Final relevance gate. Rec: ~0.3-0.4.",
-    "SEMANTIC_WEIGHT": "Weight for dense (vector) search in hybrid fusion (e.g., RRF alpha). Rec: ~0.5-0.8. Often `semantic + sparse = 1.0`.",
-    "SPARSE_WEIGHT": "Weight for sparse (keyword/BM25) search in hybrid fusion (e.g., RRF 1-alpha). Rec: ~0.2-0.5. Often `semantic + sparse = 1.0`.",
-    "PERFORM_DOMAIN_CHECK": "Enable/disable initial query domain check using vector similarity. Keeps RAG focused on relevant topics. Recommended.",
-    "WEAVIATE_HOST": "Weaviate instance hostname or IP address. Ensure accessible from app.",
-    "WEAVIATE_HTTP_PORT": "Weaviate instance HTTP port (default 8080 or 8090). Match Weaviate config.",
-    "WEAVIATE_GRPC_PORT": "Weaviate instance gRPC port (default 50051 or 50061). Match Weaviate config.",
-    "retrieve_with_history": "Append chat history to user query before embedding for retrieval. Improves conversational context, can dilute query focus.",
-    // --- Added/Updated Domain Related ---
-    "DOMAIN_CENTROID": "Domain vector (`.npy`). Pre-calc semantic center. Used by `PERFORM_DOMAIN_CHECK` for query relevance via cosine similarity. Impacts retrieval filtering.",
-    "DOMAIN_KEYWORDS": "Core keyword list (config/YAML). Defines static domain terms. Used in sparse part of `PERFORM_DOMAIN_CHECK`. Base for relevance tuning.",
-    "AUTO_DOMAIN_KEYWORDS": "Keywords from builder script output. Dynamically generated. Supplements `DOMAIN_KEYWORDS` for sparse checks. Overwritten on rebuild.",
-    "USER_ADDED_KEYWORDS": "Keywords manually added by user (via UI/config?). Supplements static/auto keywords for sparse checks. User-controlled additions.",
-    // --- End Added/Updated ---
+    "COLLECTION_NAME": "The exact Weaviate collection/class you want to query. It’s case-sensitive and must match your schema.",
+    "K_VALUE": "How many top documents to fetch for each query. More documents = more context but higher latency. We often use 5–10.",
+    "SCORE_THRESHOLD": "Throw away any retrieved chunks scoring below this (0–1). Use ~0.6–0.75 to filter out off-topic results.",
+    "LAMBDA_MULTIPLIER": "For MMR: trades off relevance vs. diversity (0 = max diversity, 1 = pure relevance). Try around 0.5–0.7.",
+    "SEARCH_TYPE": "Which retrieval strategy: 'similarity' (vector only), 'mmr' (adds diversity), or 'hybrid' (combines vector + BM25 if you’ve implemented it).",
+    "DOMAIN_SIMILARITY_THRESHOLD": "Before full retrieval, discard queries if they’re too far (cosine) from your domain centroid. Helps keep results on-topic.",
+    "SPARSE_RELEVANCE_THRESHOLD": "In hybrid mode, the minimum BM25 score (0–1) to keep a result. Around 0.1–0.2 often works.",
+    "FUSED_RELEVANCE_THRESHOLD": "After mixing dense + sparse scores, drop anything under this combined threshold (0–1). Aim for ~0.3–0.4.",
+    "SEMANTIC_WEIGHT": "In hybrid fusion, the weight for vector (dense) search. Often set between 0.5–0.8.",
+    "SPARSE_WEIGHT": "In hybrid fusion, the weight for keyword (sparse) search. Usually 1 − semantic weight.",
+    "PERFORM_DOMAIN_CHECK": "On/off flag for an initial vector check to make sure queries match your domain. Recommended=true.",
+    "PERFORM_TECHNICAL_VALIDATION": "Skip keyword-based filters and accept whatever our pipeline returns.",
+    "WEAVIATE_HOST": "Hostname or IP of your Weaviate instance. Make sure it’s reachable from this app.",
+    "WEAVIATE_HTTP_PORT": "HTTP port for Weaviate (default 8080 or 8090).",
+    "WEAVIATE_GRPC_PORT": "gRPC port for Weaviate (default 50051 or 50061).",
+    "retrieve_with_history": "If true, we include recent chat history when generating embeddings—good for context but may dilute focus.",
+
+    // --- Domain Vector Settings ---
+    "DOMAIN_CENTROID": "Path to your pre-computed domain vector (.npy). Used for quick relevance checks.",
+    "DOMAIN_KEYWORDS": "Your core, manually curated keywords for topic filtering.",
+    "AUTO_DOMAIN_KEYWORDS": "Keywords automatically generated by your build script. Overwrites on each rebuild.",
+    "USER_ADDED_KEYWORDS": "Extra keywords you’ve added via the UI or config. Supplements the auto list.",
 
     // Security Section
-    "SANITIZE_INPUT": "Enable basic input sanitization (potential security measure). Mitigates simple injection vectors. Recommended.",
-    "RATE_LIMIT": "Max requests/user/minute. Protects backend resources/APIs. Rec: ~20-60 req/min. Adjust based on load & capacity.",
-    "API_TIMEOUT": "Max seconds to wait for external LLM API response. Prevents indefinite hangs. Rec: 30-90s. Depends on model & task complexity.",
-    "CACHE_ENABLED": "Enable simple in-memory cache. Returns cached response for *identical* input queries (incl. history). Reduces latency/cost for repeats.",
+    "SANITIZE_INPUT": "Turn on basic input cleaning to block simple injection attacks. Recommended=true.",
+    "RATE_LIMIT": "Max requests per user per minute (e.g. 20–60). Prevents abuse and protects your backend.",
+    "API_TIMEOUT": "How many seconds to wait for an external LLM response before giving up. 30–90s is typical.",
+    "CACHE_ENABLED": "If enabled, identical queries (including history) are served from cache for faster replies.",
 
     // Document Section
-    "CHUNK_SIZE": "Max tokens per text chunk for indexing. Balance context vs retrieval precision & embedding model limits. Rec: 512-1024. Key param.",
-    "CHUNK_OVERLAP": "Token overlap between adjacent chunks. Maintains context across boundaries. Rec: 10-20% of Chunk Size (e.g., 50-150).",
-    "FILE_TYPES": "Allowed file extensions for ingestion (comma-sep, e.g., '.pdf,.txt,.md'). Filter for parser.",
-    "PARSE_TABLES": "Attempt structured table extraction during document parsing (e.g., via Unstructured). Useful for tabular data, adds processing time.",
-    "GENERATE_SUMMARY": "Generate LLM summary per document during ingestion (store as metadata?). Adds significant processing time/cost.",
-    // --- Added ---
-    "DOCUMENT_DIRECTORY": "Ingestion source path. App scans here for files (PDF, TXT...). Affects *what* gets ingested. Check server permissions.",
-    // --- End Added ---
+    "CHUNK_SIZE": "Maximum tokens in each text chunk when indexing. Balances context vs. precision. 512–1024 tokens is common.",
+    "CHUNK_OVERLAP": "How many tokens overlap between chunks (10–20% of chunk size) so context isn’t lost.",
+    "FILE_TYPES": "Which file extensions we’ll ingest (e.g. '.pdf,.txt,.md').",
+    "PARSE_TABLES": "If true, try to detect and extract tables during document parsing—useful for data-heavy docs.",
+    "GENERATE_SUMMARY": "If true, auto-create an LLM summary when ingesting each doc. Speeds up later previews but adds processing time.",
+    "DOCUMENT_DIRECTORY": "Local path where your files live for ingestion. Make sure the app can read this folder.",
 
     // Pipeline Section
-    "max_history_turns": "Max recent Q&A pairs from history included in LLM prompt. Balances conversational context vs token limit. Rec: 3-5 pairs.",
+    "max_history_turns": "How many recent Q&A pairs to include in prompts (keeps context but fits within token limits). 3–5 is a good rule of thumb.",
 
-    // Domain Keywords Extraction (Assuming these settings relate to the builder script UI/form)
-    "SENTENCE_TRANSFORMER_MODEL": "Alias for EMBEDDING_MODEL. Specifies model for keyword extraction vectorization (if used). Needs to match retrieval embedder for centroid use.",
-    "KEYWORDS_PER_DOCUMENT": "Max candidate keywords extracted *per document* before global filtering/ranking. Rec: 10-20. Based on content density.",
-    "FINAL_KEYWORDS_COUNT": "Target number of *unique* keywords across corpus after ranking/MMR. Limits final keyword set size. Rec: 500-5000+.",
-    "MINIMUM_DOCUMENT_FREQUENCY": "Min document frequency for keyword inclusion. Absolute count (e.g., 3) or float ratio (e.g., 0.01 = 1%). Filters rare/noisy terms. Rec: 2-5 or 0.005-0.01.",
-    "DIVERSITY": "MMR lambda for final keyword selection (0-1). Balances relevance vs diversity *among final keywords*. 0=most relevant, 1=max diverse. Rec: 0.5-0.8.",
-    "DISABLE_POS_FILTERING": "Disable filtering keywords by Part-of-Speech tags (e.g., nouns/adjectives). Enable if crucial domain terms (acronyms, codes) are missed."
+    // Keyword Extraction Section
+    "SENTENCE_TRANSFORMER_MODEL": "Alias for your embedding model used during keyword extraction. Should match your main embedding setting.",
+    "KEYWORDS_PER_DOCUMENT": "Max candidate keywords pulled from each doc before global filtering. Aim for 10–20.",
+    "FINAL_KEYWORDS_COUNT": "Target total unique keywords across the entire corpus. 100–5000+, depending on size.",
+    "MINIMUM_DOCUMENT_FREQUENCY": "Drop any keyword that appears in fewer than this many docs (absolute number or fraction, e.g. 3 or 0.01).",
+    "DIVERSITY": "In final keyword MMR, balance relevance vs. diversity (0 = pure relevance, 1 = pure diversity). 0.5–0.8 is typical.",
+    "DISABLE_POS_FILTERING": "Turn off part-of-speech filtering if you need to keep acronyms or codes that POS filters might drop."
 };

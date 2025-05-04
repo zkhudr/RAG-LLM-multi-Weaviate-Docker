@@ -104,6 +104,7 @@ class RetrievalConfig(BaseModel):
     SEMANTIC_WEIGHT: float = 0.7
     SPARSE_WEIGHT: float = 0.3
     PERFORM_DOMAIN_CHECK: bool = True
+    PERFORM_TECHNICAL_VALIDATION: bool = True
     WEAVIATE_HOST: str = os.getenv("WEAVIATE_DOCKER_HOST", "localhost") # Maybe a separate var for host
     WEAVIATE_HTTP_PORT: int = int(os.getenv("WEAVIATE_HOST_HTTP_PORT") or 8080) # Prioritize env
     WEAVIATE_GRPC_PORT: int = int(os.getenv("WEAVIATE_HOST_GRPC_PORT") or 50051) # Prioritize env
@@ -151,34 +152,31 @@ class PathConfig(BaseModel):
     DOMAIN_CENTROID_PATH: str = "./domain_centroid.npy"
 
 class EnvironmentConfig(BaseModel):
-    DOMAIN_KEYWORDS: List[str] = []
-    AUTO_DOMAIN_KEYWORDS: List[str] = []
-    USER_ADDED_KEYWORDS: List[str] = []
+    DOMAIN_KEYWORDS: List[str]       = Field(default_factory=list)
+    AUTO_DOMAIN_KEYWORDS: List[str]  = Field(default_factory=list)
+    USER_ADDED_KEYWORDS: List[str]   = Field(default_factory=list)
+    SELECTED_N_TOP: int              = Field(
+        10,
+        description="How many top terms to show by default"
+    )
 
     @property
     def merged_keywords(self) -> List[str]:
         domain = self.DOMAIN_KEYWORDS or []
-        auto = self.AUTO_DOMAIN_KEYWORDS or []
-        user = self.USER_ADDED_KEYWORDS or []
-        return sorted(list(set(domain + auto + user))) # Sort for consistency
+        auto   = self.AUTO_DOMAIN_KEYWORDS or []
+        user   = self.USER_ADDED_KEYWORDS or []
+        return sorted(list(set(domain + auto + user)))  # Sort for consistency
 
 # === Root Config Model ===
 class AppConfig(BaseModel):
-    security: SecurityConfig = Field(default_factory=SecurityConfig)
-    retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
-    model: ModelConfig = Field(default_factory=ModelConfig)
-    document: DocumentConfig = Field(default_factory=DocumentConfig)
-    paths: PathConfig = Field(default_factory=PathConfig)
-    env: EnvironmentConfig = Field(default_factory=EnvironmentConfig)
-    pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
+    security: SecurityConfig                   = Field(default_factory=SecurityConfig)
+    retrieval: RetrievalConfig                 = Field(default_factory=RetrievalConfig)
+    model: ModelConfig                         = Field(default_factory=ModelConfig)
+    document: DocumentConfig                   = Field(default_factory=DocumentConfig)
+    paths: PathConfig                          = Field(default_factory=PathConfig)
+    env: EnvironmentConfig                     = Field(default_factory=EnvironmentConfig)
+    pipeline: PipelineConfig                   = Field(default_factory=PipelineConfig)
     domain_keyword_extraction: DomainKeywordExtractionConfig = Field(default_factory=DomainKeywordExtractionConfig)
-
-    # Automatically update derived env fields after validation/loading
-    #@model_validator(mode='after')
-    #def update_derived_env_fields(self) -> 'AppConfig':
-     #   self.env.API_TIMEOUT = self.security.API_TIMEOUT
-     #   self.env.EMBEDDING_MODEL = self.model.EMBEDDING_MODEL
-     #   return self
 
     @classmethod
     def load_from_yaml(cls, path: Path = CONFIG_YAML_PATH) -> 'AppConfig':
@@ -187,8 +185,10 @@ class AppConfig(BaseModel):
             logger.warning(f"Configuration file {path} not found. Creating default config.")
             default_config = cls()
             try:
-                # Use model_dump with exclude_defaults=False? Or just dump? Exclude keys explicitly.
-                dump_data = default_config.model_dump(exclude={'security': {'DEEPSEEK_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'COHERE_API_KEY'}})
+                dump_data = default_config.model_dump(
+                    exclude={'security': {'DEEPSEEK_API_KEY', 'OPENAI_API_KEY', 
+                            'ANTHROPIC_API_KEY', 'COHERE_API_KEY'}}
+                )
                 save_yaml_config(dump_data, path)
             except Exception as save_e:
                 logger.error(f"Failed to save default config file {path}: {save_e}")
@@ -196,19 +196,29 @@ class AppConfig(BaseModel):
 
         try:
             with open(path, 'r', encoding='utf-8') as f:
+                # 1. Load raw data first
                 raw_config_data = yaml.safe_load(f) or {}
+                
+                # 2. Process domain keywords if exists
+                if 'env' in raw_config_data and 'DOMAIN_KEYWORDS' in raw_config_data['env']:
+                    raw_config_data['env']['DOMAIN_KEYWORDS'] = tuple(
+                        raw_config_data['env']['DOMAIN_KEYWORDS']
+                    )
 
-            # Validate raw data against the AppConfig model
-            # Pydantic automatically merges defaults for missing fields
-            instance = cls(**raw_config_data)
-
-            # Note: The @model_validator handles updating derived fields now.
+                # 3. Validate and create instance
+                instance = cls(**raw_config_data)
+                
+                # 4. Run model validators
+                instance.model_post_init(None)
 
             logger.info(f"Configuration loaded and validated from {path}")
             return instance
-        except Exception as e: # Catch YAML, Validation, and other errors
+            
+        except Exception as e:
             logger.error(f"Failed to load/validate configuration from {path}: {e}", exc_info=True)
             raise RuntimeError(f"Could not load/validate configuration from {path}") from e
+        
+        
 
     def update_and_save(self, updates: Dict[str, Any], path: Path = CONFIG_YAML_PATH):
         """Updates current config, validates, saves if changed."""
@@ -226,15 +236,23 @@ class AppConfig(BaseModel):
         potential_new_state_dict = original_dump.copy()
         for section_key, section_updates in updates.items():
             if section_key in potential_new_state_dict and isinstance(section_updates, dict):
-                 # Merge the update into the existing section dictionary
-                potential_new_state_dict[section_key] = {
-                     **potential_new_state_dict.get(section_key, {}),
-                     **section_updates
-                 }
+                # Merge the update into the existing section dictionary
+                # FIXED: Preserve existing keys not in the update
+                section_dict = potential_new_state_dict.get(section_key, {})
+                if isinstance(section_dict, dict):  # Ensure it's a dict before merging
+                    potential_new_state_dict[section_key] = {
+                        **section_dict,  # Start with ALL existing keys
+                        **section_updates  # Then apply updates (overwriting as needed)
+                    }
+                else:
+                    # Direct replacement if current value isn't a dict
+                    potential_new_state_dict[section_key] = section_updates
             elif section_key in potential_new_state_dict:
-                 # Handle cases where update is not a dict? Or log warning?
-                 logger.warning(f"Update for section '{section_key}' is not a dict, skipping merge.")
-            # else: section_key not in original, ignore?
+                # Handle cases where update is not a dict? Or log warning?
+                logger.warning(f"Update for section '{section_key}' is not a dict, skipping merge.")
+            else:
+                # NEW SECTION: Add it directly
+                potential_new_state_dict[section_key] = section_updates
 
         try:
             # --- *** VALIDATE THE FULL POTENTIAL DICT *** ---
@@ -242,7 +260,7 @@ class AppConfig(BaseModel):
             # --- *** END VALIDATION *** ---
 
             # Convert validated config back to dict for comparison and saving
-            validated_new_dump = validated_new_config.model_dump()
+            validated_new_dump = validated_new_config.model_dump() if hasattr(validated_new_config, 'model_dump') else validated_new_config.dict()
 
             # Compare the validated new dictionary state with the original one
             if original_dump != validated_new_dump:
@@ -252,8 +270,8 @@ class AppConfig(BaseModel):
                 # --- *** UPDATE SELF (CFG) FROM VALIDATED OBJECT *** ---
                 # Assign the validated nested objects back to self
                 for field_name in self.model_fields.keys():
-                     if hasattr(validated_new_config, field_name):
-                         setattr(self, field_name, getattr(validated_new_config, field_name))
+                    if hasattr(validated_new_config, field_name):
+                        setattr(self, field_name, getattr(validated_new_config, field_name))
                 # --- *** END UPDATE SELF *** ---
 
             else:
@@ -267,7 +285,8 @@ class AppConfig(BaseModel):
             logger.info("Configuration changed. Attempting save...")
             try:
                 # Dump the *validated* new state, excluding API keys
-                config_dict_to_save = validated_new_config.model_dump(exclude={'security': {'DEEPSEEK_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'COHERE_API_KEY'}})
+                dump_method = getattr(validated_new_config, 'model_dump', getattr(validated_new_config, 'dict', None))
+                config_dict_to_save = dump_method(exclude={'security': {'DEEPSEEK_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'COHERE_API_KEY'}})
                 save_yaml_config(config_dict_to_save, path) # Call utility save function
                 logger.info("Configuration save successful.")
             except Exception as e:
@@ -277,6 +296,7 @@ class AppConfig(BaseModel):
             logger.info("Skipping save as no changes were detected.")
 
         return config_changed
+
 
 # --- Initialize Singleton Configuration Instance ---
 # ... (keep cfg initialization as before) ...

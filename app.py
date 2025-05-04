@@ -24,7 +24,10 @@ from weaviate.exceptions import WeaviateConnectionError # Use for specific catch
 import urllib.parse
 from logging.handlers import RotatingFileHandler # Use rotating handler for safety
 import sys # For StreamHandler
-
+from config import save_yaml_config, CONFIG_YAML_PATH
+import threading, time
+import socket
+from threading import Thread
 
 load_dotenv()
 
@@ -38,6 +41,11 @@ if app.secret_key == 'fallback_secret_key_for_dev_only':
 
 log_level = logging.INFO # Or DEBUG based on needs
 log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+
+SAVE_LOCK = threading.Lock()
+
+
 
 # Use instance path for log file - NOW 'app' exists
 log_file_path = os.path.join(app.instance_path, 'app.log')
@@ -191,23 +199,65 @@ except Exception as e: logger.error(f"CRITICAL: Could not create required direct
 # --- Global Presets Variable ---
 presets = {}
 
-# --- Pipeline Initialization Function ---
+# At module scope, before your function definition:
+_pipeline_initializing = False
+
 def initialize_pipeline(app_context=None):
-    """Initializes or re-initializes the global pipeline object."""
-    global pipeline, pipeline_available
-    context = app_context if app_context else app.app_context()
-    with context:
-        logger.info("Attempting to initialize/re-initialize pipeline...")
-        if not pipeline_available: logger.error("Skip init: Pipeline module unavailable."); pipeline = None; return
-        if not config_available or not cfg: logger.error("Skip init: Config unavailable."); pipeline = None; return
-        try:
-            # ... (Close old client if exists) ...
-            pipeline = IndustrialAutomationPipeline() # Instantiate
-            logger.info("Pipeline initialized/re-initialized successfully.")
-            # ... (Log connection status checks) ...
-        except Exception as e:
-            pipeline = None
-            logger.error(f"Failed to initialize/re-initialize Pipeline: {e}", exc_info=True)
+    """Initializes or re-initializes the global pipeline object exactly once at a time,
+       but only if the configured Weaviate endpoint is reachable."""
+    global pipeline, pipeline_available, _pipeline_initializing
+
+    if _pipeline_initializing:
+        return
+    _pipeline_initializing = True
+
+    try:
+        # pick the right context
+        ctx = app_context or app.app_context()
+        with ctx:
+            logger.info("Initializing pipeline…")
+
+            # short-circuit if pipeline code or config missing
+            if not pipeline_available:
+                logger.error("Skip init: Pipeline module unavailable.")
+                pipeline = None
+                return
+            if not config_available or cfg is None:
+                logger.error("Skip init: Config unavailable.")
+                pipeline = None
+                return
+
+            # --- 1) probe Weaviate socket ---
+            host = cfg.retrieval.WEAVIATE_HOST
+            port = cfg.retrieval.WEAVIATE_HTTP_PORT
+            try:
+                sock = socket.create_connection((host, port), timeout=2)
+                sock.close()
+            except Exception as e:
+                logger.warning(f"Weaviate unreachable at {host}:{port}, skipping pipeline init: {e}")
+                pipeline = None
+                return
+
+            # --- 2) close any old client ---
+            try:
+                old = getattr(pipeline, "retriever", None)
+                if old and hasattr(old, "weaviate_client"):
+                    old.weaviate_client.close()
+                    logger.info("Closed existing Weaviate client.")
+            except Exception as close_err:
+                logger.warning(f"Error closing old client: {close_err}")
+
+            # --- 3) actually build the pipeline now that we know Weaviate is live ---
+            pipeline = IndustrialAutomationPipeline()
+            logger.info("Pipeline initialized successfully.")
+
+    except Exception as e:
+        pipeline = None
+        logger.error(f"Pipeline initialization failed: {e}", exc_info=True)
+
+    finally:
+        _pipeline_initializing = False
+
 
 # === Utility Functions ===
 
@@ -313,17 +363,19 @@ def save_config_to_yaml(config_dict: Dict[str, Any]) -> bool:
             dump_dict = validated_config.model_dump() if hasattr(validated_config, 'model_dump') else validated_config.dict()
 
             # Handle FlowStyleList for keywords before dumping
-            if FlowStyleList and 'env' in dump_dict:
-                for key in ['DOMAIN_KEYWORDS', 'AUTO_DOMAIN_KEYWORDS', 'USER_ADDED_KEYWORDS']:
-                    if key in dump_dict['env'] and isinstance(dump_dict['env'][key], list):
-                        dump_dict['env'][key] = FlowStyleList(dump_dict['env'][key])
+            #if FlowStyleList and 'env' in dump_dict:
+            #    for key in ['DOMAIN_KEYWORDS', 'AUTO_DOMAIN_KEYWORDS', 'USER_ADDED_KEYWORDS']:
+            #        if key in dump_dict['env'] and isinstance(dump_dict['env'][key], list):
+            #            dump_dict['env'][key] = FlowStyleList(dump_dict['env'][key])
 
 
             # 4. Atomic write to YAML using standard Dumper
             temp_path = f"{CONFIG_YAML_PATH}.tmp"
             with open(temp_path, 'w', encoding='utf-8') as f:
                 # Use default_flow_style=False for block style unless FlowStyleList is used
-                yaml.dump(dump_dict, f, indent=2, sort_keys=False, default_flow_style=None)
+                with open(CONFIG_YAML_PATH, 'w', encoding='utf-8') as f:
+                    yaml.dump(dump_dict, f, indent=2, sort_keys=False, default_flow_style=None)
+
             os.replace(temp_path, CONFIG_YAML_PATH)
             logging.info(f"Configuration saved successfully to {CONFIG_YAML_PATH}")
             return True
@@ -467,12 +519,6 @@ def get_config_api():
         logger.error(f"API /get_config error: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
-
-
-@app.route('/list_presets', methods=['GET'])
-def list_presets_api():
-    global presets
-    return jsonify(presets)
 
 @app.route('/delete_preset/<path:preset_name>', methods=['DELETE'])
 def delete_preset_api(preset_name):
@@ -658,45 +704,42 @@ def save_preset_api():
     except ValidationError as ve_preset: logger.error(f"Preset data validation failed: {ve_preset}"); details = "..."; return jsonify({"success": False, "error": f"Invalid preset data: {details}"}), 400
     except Exception as e: logger.error(f"Preset save API error: {str(e)}", exc_info=True); return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/save_config', methods=['POST'])
-def save_config_api():
-    """API Endpoint: Saves configuration received as JSON."""
-    logger = app.logger # Use app's logger
-    if not config_available or not cfg:
-        logger.error("API /save_config: Config system unavailable.")
-        return jsonify({"success": False, "error": "Configuration system not available."}), 503
 
+
+@app.route("/save_config", methods=["POST"])
+def save_config():
+    """Saves user config to YAML and kicks off a background pipeline reload."""
+    logger = app.logger
+
+    # 1) Parse & validate the incoming config payload (unchanged)…
+    data = request.get_json()
+    # … your existing validation & cfg.update() logic here …
+
+    # 2) Persist to YAML
     try:
-        updates_dict = request.get_json() # Get JSON data from request body
-        if not updates_dict:
-            logger.warning("API /save_config: No JSON data received.")
-            return jsonify({"success": False, "error": "No JSON data received."}), 400
+        with open(CONFIG_YAML_PATH, "r", encoding="utf-8") as f:
+            yaml_cfg = yaml.safe_load(f) or {}
+        # … merge in your updated retrieval/pipeline/whatever keys …
+        with open(CONFIG_YAML_PATH, "w", encoding="utf-8") as f:
+            yaml.dump(yaml_cfg, f, indent=2, sort_keys=False)
+        logger.info("API /save_config: Configuration updated and saved successfully.")
+    except Exception as e:
+        logger.error(f"API /save_config: Failed to write YAML: {e}", exc_info=True)
+        return jsonify({"error": "Failed to save configuration."}), 500
 
-        logger.info("API /save_config: Received config data via JSON. Attempting update and save...")
-        # Use update_and_save which includes validation within config.py
-        config_changed = cfg.update_and_save(updates_dict)
+    # 3) Kick off pipeline reload in background
+    Thread(
+        target=initialize_pipeline,
+        args=(app.app_context(),),
+        daemon=True
+    ).start()
 
-        if config_changed:
-            logger.info("API /save_config: Configuration updated and saved successfully.")
-            # Decide if pipeline needs re-init based on changes (optional, depends on config impact)
-            initialize_pipeline(app.app_context()) # Example: Re-init if needed
-            if pipeline and pipeline.retriever: # Basic check if pipeline object exists
-                logger.info("API /save_config: Pipeline re-initialized successfully.")
-            else:
-                 logger.error("API /save_config: Pipeline failed to re-initialize after config change!")
-            return jsonify({"success": True, "message": "Configuration saved successfully!"})
-        else:
-            logger.info("API /save_config: No configuration changes detected from received data.")
-        return jsonify({"success": True, "message": "No configuration changes detected."})
+    # 4) Return immediately
+    return jsonify({
+        "success": True,
+        "message": "Configuration saved — pipeline reload running in background."
+    }), 200
 
-    except ValidationError as e: # Catch Pydantic validation errors
-        logger.error(f"API /save_config: Validation Error saving config: {e}", exc_info=False) # Log concisely
-        # Format error details for user feedback
-        error_details = ". ".join([f"{'.'.join(map(str, err.get('loc', ['?'])))}: {err.get('msg', 'invalid')}" for err in e.errors()])
-        return jsonify({"success": False, "error": f"Invalid configuration values: {error_details}"}), 400
-    except Exception as e: # Catch other unexpected errors
-        logger.error(f"API /save_config: Unexpected error saving configuration: {e}", exc_info=True)
-        return jsonify({"success": False, "error": f"Failed to save configuration: {str(e)}"}), 500
 
 @app.route('/upload_files', methods=['POST'])
 def upload_files():
@@ -1027,7 +1070,12 @@ def run_keyword_builder():
             logger.info(f"Saved raw output to {output_file}")
         except Exception as save_error:
             logger.warning(f"Failed to save raw output: {save_error}")
-        
+
+        # sync auto_domain_keywords
+        if keywords:
+            keyword_terms = [kw["term"] for kw in keywords if "term" in kw]
+            update_auto_domain_keywords(keyword_terms)
+
         # Return successful response with extracted keywords
         return jsonify({
             "success": True,
@@ -1114,6 +1162,64 @@ def cleanup_resources():
         except Exception as e:
             logger.error(f"Error during additional Weaviate connection cleanup: {e}")
 atexit.register(cleanup_resources)
+
+
+def update_auto_domain_keywords(keywords: list):
+    """
+    Updates auto_domain_keywords.txt and the config's AUTO_DOMAIN_KEYWORDS field.
+    """
+    from pathlib import Path
+
+    # 1. Write to auto_domain_keywords.txt
+    output_file = Path("auto_domain_keywords.txt")
+    try:
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write(", ".join(keywords))
+        logger.info(f"Wrote {len(keywords)} keywords to {output_file}")
+    except Exception as e:
+        logger.error(f"Failed to write keywords to {output_file}: {e}")
+
+    # 2. Update config and save
+    try:
+        # Update in-memory config
+        if hasattr(cfg, "env"):
+            cfg.env.AUTO_DOMAIN_KEYWORDS = keywords
+        else:
+            logger.warning("cfg.env is missing; cannot update AUTO_DOMAIN_KEYWORDS")
+
+        # Prepare config dict for saving
+        dump_method = getattr(cfg, 'model_dump', getattr(cfg, 'dict', None))
+        config_dict = dump_method() if dump_method else {}
+
+        # Use your validated YAML save function (handles FlowStyleList)
+        save_config_to_yaml(config_dict)
+        logger.info("AUTO_DOMAIN_KEYWORDS updated and config saved.")
+    except Exception as e:
+        logger.error(f"Failed to update config with new keywords: {e}")
+
+
+        def save_yaml_config(data: Dict, path: Path):
+            temp_path = path.with_suffix(".tmp")
+            # ... dump to temp_path ...
+            with SAVE_LOCK:
+                for attempt in range(3):
+                    try:
+                        os.replace(temp_path, path)
+                        return True
+                    except OSError as e:
+                        logger.warning(f"save attempt {attempt+1} failed: {e}")
+                        time.sleep(0.1)
+                # last-ditch copy fallback
+                shutil.copyfile(str(temp_path), str(path))
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
+                return True
+    
+
+
+################## @app.route( from here on
    
 @app.route('/update_config_keywords', methods=['POST'])
 def update_config_keywords():
@@ -1368,398 +1474,260 @@ def create_weaviate_instance():
 def list_weaviate_instances():
     """Returns list of managed Weaviate instances with active instance properly labeled."""
     logger = app.logger
-    instances_details = []
-    
-    try:
-        # First, get default config details
-        default_instance = None
-        try:
-            with open(CONFIG_YAML_PATH, 'r', encoding='utf-8') as f:
-                yaml_config = yaml.safe_load(f) or {}
-            default_host = yaml_config.get('retrieval', {}).get('WEAVIATE_HOST', 'localhost')
-            try: default_http_port = int(yaml_config.get('retrieval', {}).get('WEAVIATE_HTTP_PORT', 8080))
-            except: default_http_port = 8080
-            try: default_grpc_port = int(yaml_config.get('retrieval', {}).get('WEAVIATE_GRPC_PORT', 50051))
-            except: default_grpc_port = 50051
-            
-            # Check if current runtime config matches this default
-            is_active = (cfg and cfg.retrieval.WEAVIATE_HOST == default_host and 
-                        cfg.retrieval.WEAVIATE_HTTP_PORT == default_http_port)
-            
-            default_instance = {
-                "name": "Active (from current config)", 
-                "host": default_host, 
-                "http_port": default_http_port,
-                "grpc_port": default_grpc_port, 
-                "status": "config_default", 
-                "container_id": None, 
-                "container_name": None,
-                "active": is_active
-            }
-        except Exception as cfg_read_err: 
-            logger.error(f"Could not read default config for listing: {cfg_read_err}")
-        
-        # Get all managed instances
-        managed_instances = []
-        instance_state = load_weaviate_state()
-        for name, details in instance_state.items():
-            container_status = details.get("status", "unknown")
-            container_id = details.get("container_id")
-            is_active = (cfg and cfg.retrieval.WEAVIATE_HOST == details.get('host') and 
-                        cfg.retrieval.WEAVIATE_HTTP_PORT == details.get('http_port'))
-            
-            if docker_available and container_id:
-                try:
-                    container = docker_client.containers.get(container_id)
-                    container_status = container.status
-                except DockerNotFound: 
-                    container_status = "not_found"
-                except Exception as docker_err: 
-                    logger.warning(f"Docker error checking status for {container_id}: {docker_err}")
-                    container_status = "check_error"
-            
-            managed_instances.append({
-                "name": name, 
-                "host": details.get("host", "?"), 
-                "http_port": details.get("http_port", "?"),
-                "grpc_port": details.get("grpc_port", "?"), 
-                "status": container_status, 
-                "container_id": container_id,
-                "container_name": details.get("container_name"),
-                "active": is_active
-            })
-        
-        # Combine default and managed instances
-        if default_instance:
-            # Find the active managed instance that matches the default config
-            # Find the active managed instance that matches the default config
-            active_managed_instance = None
-            for instance in managed_instances:
-                if (instance.get('host') == default_instance.get('host') and
-                    instance.get('http_port') == default_instance.get('http_port')):
-                    active_managed_instance = instance
-                    break
 
-            if active_managed_instance:
-                # Replace default instance name with active managed instance name
-                combined_instance = default_instance.copy()
-                combined_instance['name'] = f"Active: instance - \"{active_managed_instance['name']}\""
-                combined_instance['active'] = True
-                
-                # Remove the active managed instance from the list to avoid duplication
-                managed_instances = [inst for inst in managed_instances if inst != active_managed_instance]
-                
-                # Add combined instance to the beginning of the list
-                instances_details = [combined_instance] + managed_instances
+    try:
+        # ─── 1) Load default-from-config ─────────────────────────────────────────
+        with open(CONFIG_YAML_PATH, "r", encoding="utf-8") as f:
+            cfg_yaml = yaml.safe_load(f) or {}
+        cfg_host      = cfg_yaml.get("retrieval", {}).get("WEAVIATE_HOST", "localhost")
+        default_http  = int(cfg_yaml.get("retrieval", {}).get("WEAVIATE_HTTP_PORT", 8080) or 8080)
+        default_grpc  = int(cfg_yaml.get("retrieval", {}).get("WEAVIATE_GRPC_PORT", 50051) or 50051)
+        is_default_active = (
+            cfg
+            and cfg.retrieval.WEAVIATE_HOST == cfg_host
+            and cfg.retrieval.WEAVIATE_HTTP_PORT == default_http
+        )
+        default_instance = {
+            "name":       "Active (from current config)",
+            "host":       cfg_host,
+            "http_port":  default_http,
+            "grpc_port":  default_grpc,
+            "status":     "config_default",
+            "container_id":   None,
+            "container_name": None,
+            "active":     is_default_active
+        }
+
+        # ─── 2) Discover running containers ───────────────────────────────────────
+        running = []
+        if docker_available:
+            running = docker_client.containers.list(filters={"ancestor": "weaviate"})
+        # map port‐strings so we can filter default
+        running_ports = {
+            c.attrs["NetworkSettings"]["Ports"]["8080/tcp"][0]["HostPort"]
+            for c in running
+            if c.attrs.get("NetworkSettings", {}).get("Ports", {}).get("8080/tcp")
+        }
+
+        # ─── 3) Load your saved presets / managed instances ────────────────────────
+        managed = []
+        state = load_weaviate_state()
+        for name, details in state.items():
+            cid = details.get("container_id")
+            status = details.get("status", "unknown")
+            # if the container still exists, get its real status
+            if docker_available and cid:
+                try:
+                    status = docker_client.containers.get(cid).status
+                except Exception:
+                    status = "not_found"
+            managed.append({
+                "name":           name,
+                "host":           details.get("host", cfg_host),
+                "http_port":      details.get("http_port", default_http),
+                "grpc_port":      details.get("grpc_port", default_grpc),
+                "status":         status,
+                "container_id":   cid,
+                "container_name": details.get("container_name"),
+                "active":         (
+                    cfg
+                    and cfg.retrieval.WEAVIATE_HOST == details.get("host")
+                    and cfg.retrieval.WEAVIATE_HTTP_PORT == details.get("http_port")
+                )
+            })
+
+        # ─── 4) Auto-add any OTHER running containers not in your state ───────────
+        known_cids = {inst["container_id"] for inst in managed if inst["container_id"]}
+        for c in running:
+            if c.id in known_cids:
+                continue
+            # grab its port
+            try:
+                port_str = c.attrs["NetworkSettings"]["Ports"]["8080/tcp"][0]["HostPort"]
+                port = int(port_str)
+            except Exception:
+                continue
+            managed.append({
+                "name":           c.name,
+                "host":           cfg_host,
+                "http_port":      port,
+                "grpc_port":      default_grpc,
+                "status":         c.status,
+                "container_id":   c.id,
+                "container_name": c.name,
+                "active":         (cfg and cfg.retrieval.WEAVIATE_HTTP_PORT == port)
+            })
+
+        # ─── 5) Combine + filter out “default” when ghost ─────────────────────────
+        final_list = []
+        # only include the default entry if its port is actually running
+        if str(default_http) in running_ports:
+            # if one of our managed instances matches its port, rename it “Active: instance – X”
+            match = next(
+                (i for i in managed
+                 if i["http_port"] == default_http and i["host"] == cfg_host),
+                None
+            )
+            if match:
+                primary = default_instance.copy()
+                primary["name"]   = f'Active: instance - "{match["name"]}"'
+                primary["active"] = True
+                # drop that managed entry so we don’t duplicate
+                rest = [i for i in managed if i is not match]
+                final_list = [primary] + rest
             else:
-                # No active managed instance matches default, just use all instances
-                instances_details = [default_instance] + managed_instances
+                # no match → show default as-is
+                final_list = [default_instance] + managed
         else:
-            instances_details = managed_instances
-        
-        # Sort instances (ensure default/active is first)
-        return jsonify(sorted(instances_details, 
-                             key=lambda x: (not x.get('active', False), x.get('name', ''))))
-    
+            # default port isn’t live → skip default entirely
+            final_list = managed
+
+        # ─── 6) Sort & return ──────────────────────────────────────────────────────
+        final_list.sort(key=lambda i: (not i.get("active", False), i.get("name", "")))
+        return jsonify(final_list)
+
     except Exception as e:
-        logger.error(f"Error listing instances: {e}", exc_info=True)
+        logger.error("Error listing instances", exc_info=True)
         return jsonify({"error": "Failed to list instances"}), 500
 
 
 
-# UPDATED: Expects JSON { instance_name: "..." }
 @app.route("/select_weaviate_instance", methods=["POST"])
 def select_weaviate_instance():
-    """Activates selected instance by updating RUNTIME config, stops other instances, and saves to YAML."""
+    """Activates the selected Weaviate instance, stops others, updates YAML & runtime config, and re-initializes the pipeline."""
     logger = app.logger
+
+    # 1) Parse request
     try:
         data = request.get_json()
-        instance_name = data.get('instance_name')
-    except Exception as req_e: 
-        return jsonify({"error": "Invalid request."}), 400
-    
-    if not instance_name: 
-        return jsonify({"error": "Instance name required."}), 400
-    
-    if not config_available or not cfg: 
-        return jsonify({"error": "Config system unavailable."}), 503
-    
-    selected_host, selected_http_port, selected_grpc_port = None, None, None
-    
-    try:
-        # Get connection details for the selected instance
-        if instance_name == "Default (from config)":
-            # Reload from YAML
-            with open(CONFIG_YAML_PATH, 'r', encoding='utf-8') as f: 
-                yaml_config = yaml.safe_load(f) or {}
-            selected_host = yaml_config.get('retrieval', {}).get('WEAVIATE_HOST', 'localhost')
-            try: selected_http_port = int(yaml_config.get('retrieval', {}).get('WEAVIATE_HTTP_PORT', 8080))
-            except: selected_http_port = 8080
-            try: selected_grpc_port = int(yaml_config.get('retrieval', {}).get('WEAVIATE_GRPC_PORT', 50051))
-            except: selected_grpc_port = 50051
-            logger.info(f"Selecting default instance from config: {selected_host}:{selected_http_port}")
-        else:
-            # Find in state file
-            instance_state = load_weaviate_state()
-            if instance_name not in instance_state: 
-                return jsonify({"error": f"Instance '{instance_name}' not in state."}), 404
-            
-            details = instance_state[instance_name]
-            selected_host = details.get('host')
-            try: selected_http_port = int(details.get('http_port', -1))
-            except: selected_http_port = -1
-            try: selected_grpc_port = int(details.get('grpc_port', -1))
-            except: selected_grpc_port = -1
-            
-            if not selected_host or selected_http_port == -1 or selected_grpc_port == -1:
-                return jsonify({"error": f"Instance '{instance_name}' has invalid connection details."}), 400
-            
-            logger.info(f"Selecting managed instance '{instance_name}': {selected_host}:{selected_http_port}")
-        
-        # Stop all other instances regardless of which instance is being activated
-        if docker_available:  # Remove the instance_name != "Default (from config)" condition
-            instance_state = load_weaviate_state()
-            for name, details in instance_state.items():
-                if name != instance_name:  # Skip the instance we're activating
-                    container_id = details.get("container_id")
-                    if container_id:
-                        try:
-                            container = docker_client.containers.get(container_id)
-                            if container.status == "running":
-                                logger.info(f"Stopping inactive instance: {name}")
-                                container.stop(timeout=30)  # Give it 30 seconds to gracefully stop
-                                logger.info(f"Successfully stopped instance: {name}")
-                                
-                                # Update the instance state
-                                instance_state[name]["status"] = "exited"
-                        except DockerNotFound:
-                            logger.warning(f"Container for instance '{name}' not found.")
-                        except Exception as docker_err:
-                            logger.error(f"Error stopping container for '{name}': {docker_err}")
-            
-            # Save the updated instance state
-            save_weaviate_state(instance_state)
-
-            # Start the selected instance if it's not running
-            if instance_name != "Default (from config)":
-                try:
-                    selected_container_id = instance_state[instance_name].get("container_id")
-                    if selected_container_id:
-                        container = docker_client.containers.get(selected_container_id)
-                        if container.status != "running":
-                            logger.info(f"Starting selected instance: {instance_name}")
-                            container.start()
-                            logger.info(f"Successfully started instance: {instance_name}")
-                            
-                            # Update the instance state
-                            instance_state[instance_name]["status"] = "running"
-                            save_weaviate_state(instance_state)
-                except Exception as start_err:
-                    logger.error(f"Error starting selected instance '{instance_name}': {start_err}")
-        
-        # --- Update RUNTIME cfg object AND SAVE TO YAML ---
-        cfg.retrieval.WEAVIATE_HOST = selected_host
-        cfg.retrieval.WEAVIATE_HTTP_PORT = selected_http_port
-        cfg.retrieval.WEAVIATE_GRPC_PORT = selected_grpc_port
-        
-        # Save the updated configuration to YAML
-        try:
-            with open(CONFIG_YAML_PATH, 'r', encoding='utf-8') as f:
-                yaml_config = yaml.safe_load(f) or {}
-            
-            # Update the retrieval section with new values
-            if 'retrieval' not in yaml_config:
-                yaml_config['retrieval'] = {}
-            
-            yaml_config['retrieval']['WEAVIATE_HOST'] = selected_host
-            yaml_config['retrieval']['WEAVIATE_HTTP_PORT'] = selected_http_port
-            yaml_config['retrieval']['WEAVIATE_GRPC_PORT'] = selected_grpc_port
-            
-            # Write the updated config back to the file
-            with open(CONFIG_YAML_PATH, 'w', encoding='utf-8') as f:
-                yaml.dump(yaml_config, f, indent=2, sort_keys=False)
-            
-            logger.info(f"Updated YAML config with '{instance_name}' as default instance")
-        except Exception as yaml_err:
-            logger.error(f"Failed to update YAML config: {yaml_err}")
-            # Continue with runtime update even if YAML save fails
-        
-        logger.info(f"Runtime config updated for '{instance_name}'. Re-initializing pipeline...")
-        
-        # --- Re-initialize Pipeline ---
-        initialize_pipeline(app.app_context())
-        
-        # --- Verify Connection ---
-        if not pipeline or not pipeline.retriever or not pipeline.retriever.weaviate_client or not pipeline.retriever.weaviate_client.is_connected():
-            logger.error(f"Pipeline failed to re-initialize/connect after selecting '{instance_name}'.")
-            return jsonify({"error": "Failed to connect pipeline to selected instance."}), 500
-        else:
-            logger.info(f"Pipeline successfully connected to '{instance_name}'.")
-            
-            return jsonify({
-                "success": True, 
-                "message": f"Instance '{instance_name}' activated, set as default, and other instances stopped!", 
-                "active_host": selected_host, 
-                "active_http_port": selected_http_port
-            })
-    
-    except Exception as e:
-        logger.error(f"Error selecting instance '{instance_name}': {e}", exc_info=True)
-        return jsonify({"error": f"Failed to select instance: {e}"}), 500
-
-
-
-
-# UPDATED: Expects JSON { instance_name: "..." }
-@app.route('/remove_weaviate_instance', methods=['POST']) # Or DELETE if you prefer
-def remove_weaviate_instance():
-    if not docker_available:
-        return jsonify({"success": False, "error": "Docker client unavailable."}), 503
-    if not config_available or not cfg:
-         return jsonify({"success": False, "error": "Configuration system unavailable."}), 503
-
-    logger = app.logger
-    data = request.get_json()
-    instance_name = data.get('instance_name')
+        instance_name = data.get("instance_name")
+    except Exception:
+        return jsonify({"error": "Invalid JSON request."}), 400
 
     if not instance_name:
-        logger.warning("API /remove_weaviate_instance: No instance name provided.")
-        return jsonify({"success": False, "error": "Instance name required."}), 400
+        return jsonify({"error": "Instance name required."}), 400
+    if not config_available or not cfg:
+        return jsonify({"error": "Configuration unavailable."}), 503
 
-    logger.info(f"API /remove_weaviate_instance: Request received for '{instance_name}'.")
-
-    instance_state = load_weaviate_state()
-    instance_to_delete = instance_state.get(instance_name)
-
-    if not instance_to_delete:
-        logger.warning(f"API /remove_weaviate_instance: Instance '{instance_name}' not found in state file.")
-        # Return 404 even if container might exist, state file is the source of truth for managed instances
-        return jsonify({"success": False, "error": f"Instance '{instance_name}' not found."}), 404
-
-    container_id = instance_to_delete.get('container_id')
-    instance_http_port = instance_to_delete.get('http_port')
-    instance_host = instance_to_delete.get('host', 'localhost') # Assume localhost if host is missing
-
-    # --- Check if this is the currently active instance ---
-    is_active_instance = False
+    # 2) Determine host/ports for selection
     try:
-        # Compare ports (ensure types match)
-        if str(instance_host) == str(cfg.retrieval.WEAVIATE_HOST) and \
-           str(instance_http_port) == str(cfg.retrieval.WEAVIATE_HTTP_PORT):
-            is_active_instance = True
-            logger.info(f"Instance '{instance_name}' is the currently active instance.")
-    except Exception as e:
-        logger.error(f"Error comparing ports while checking active status for deletion: {e}")
-        # Proceed with caution, maybe don't attempt auto-switch
-
-    fallback_activated = False
-    fallback_message = ""
-
-    # --- Stop and Remove Container ---
-    if container_id:
-        try:
-            container = docker_client.containers.get(container_id)
-            logger.info(f"Stopping container {container_id} for instance '{instance_name}'...")
-            container.stop()
-            logger.info(f"Removing container {container_id}...")
-            container.remove()
-            logger.info(f"Container {container_id} removed.")
-            # Optionally remove associated volume if needed (use with caution!)
-            # volume_name = instance_to_delete.get('volume_name')
-            # if volume_name: try: docker_client.volumes.get(volume_name).remove() except DockerNotFound: pass
-        except DockerNotFound:
-            logger.warning(f"Container {container_id} for '{instance_name}' not found, maybe already removed.")
-        except DockerAPIError as e:
-            logger.error(f"Docker error stopping/removing container {container_id}: {e}")
-            # Decide if you should still proceed with removing from state
-            # Maybe return error here? For now, we proceed to remove from state.
-        except Exception as e:
-            logger.error(f"Unexpected error managing container {container_id}: {e}")
-            # Decide if you should still proceed with removing from state
-
-    # --- Update State File ---
-    if instance_name in instance_state:
-        del instance_state[instance_name]
-        save_weaviate_state(instance_state)
-        logger.info(f"Instance '{instance_name}' removed from state file.")
-    else:
-        # This case should be rare if we found it earlier, but good to log
-        logger.warning(f"Instance '{instance_name}' was already missing from state before saving.")
-
-
-    # --- Handle Fallback Activation if Active Instance was Deleted ---
-    if is_active_instance:
-        logger.info(f"Active instance '{instance_name}' deleted. Attempting to activate fallback...")
-        remaining_instances = instance_state # State is already updated
-
-        new_active_instance_name = None
-        new_active_details = None
-
-        if remaining_instances:
-            # Simple strategy: activate the first remaining instance alphabetically
-            first_remaining_name = sorted(remaining_instances.keys())[0]
-            new_active_instance_name = first_remaining_name
-            new_active_details = remaining_instances[new_active_instance_name]
-            logger.info(f"Selected '{new_active_instance_name}' as fallback active instance.")
+        if instance_name == "Default (from config)":
+            with open(CONFIG_YAML_PATH, "r", encoding="utf-8") as f:
+                yaml_cfg = yaml.safe_load(f) or {}
+            selected_host = yaml_cfg.get("retrieval", {}).get("WEAVIATE_HOST", "localhost")
+            selected_http_port = int(yaml_cfg.get("retrieval", {}).get("WEAVIATE_HTTP_PORT", 8080) or 8080)
+            selected_grpc_port = int(yaml_cfg.get("retrieval", {}).get("WEAVIATE_GRPC_PORT", 50051) or 50051)
+            logger.info(f"Selecting default-from-config: {selected_host}:{selected_http_port}")
         else:
-            # No instances left, potentially revert to a hardcoded default?
-            # Or leave config pointing to the deleted one (will cause errors later)?
-            # Let's revert to reasonable defaults if no instances left.
-            logger.warning("No remaining instances to activate. Reverting config to default ports.")
-            new_active_details = {
-                'host': 'localhost',
-                'http_port': 8080, # Or your chosen default
-                'grpc_port': 50051  # Or your chosen default
-            }
-            new_active_instance_name = "Default (no instances left)"
+            state = load_weaviate_state()
+            if instance_name not in state:
+                return jsonify({"error": f"Instance '{instance_name}' not found in state."}), 404
+            details = state[instance_name]
+            selected_host = details.get("host")
+            selected_http_port = int(details.get("http_port", -1))
+            selected_grpc_port = int(details.get("grpc_port", -1))
+            if not selected_host or selected_http_port < 0 or selected_grpc_port < 0:
+                return jsonify({"error": f"Invalid connection details for '{instance_name}'."}), 400
+            logger.info(f"Selecting managed instance '{instance_name}': {selected_host}:{selected_http_port}")
+    except Exception as e:
+        logger.error(f"Error reading instance details: {e}", exc_info=True)
+        return jsonify({"error": "Failed to determine instance connection details."}), 500
 
+    # 3) Stop all other managed containers
+    if docker_available:
+        try:
+            state = load_weaviate_state()
+            for name, details in state.items():
+                if name == instance_name:
+                    continue
+                cid = details.get("container_id")
+                if cid:
+                    try:
+                        ctr = docker_client.containers.get(cid)
+                        if ctr.status == "running":
+                            logger.info(f"Stopping instance '{name}'...")
+                            ctr.stop(timeout=30)
+                            state[name]["status"] = "exited"
+                    except DockerNotFound:
+                        logger.warning(f"Container '{name}' not found during stop.")
+                    except Exception as de:
+                        logger.error(f"Error stopping '{name}': {de}")
+            save_weaviate_state(state)
+        except Exception as e:
+            logger.error(f"Error during container shutdown: {e}", exc_info=True)
 
-        if new_active_details:
+        # 3a) Start selected container if managed
+        if instance_name != "Default (from config)":
             try:
-                # Prepare updates dictionary for config save
-                config_updates = {
-                    "retrieval": {
-                        "WEAVIATE_HOST": new_active_details.get('host', 'localhost'),
-                        "WEAVIATE_HTTP_PORT": int(new_active_details.get('http_port', 8080)),
-                        "WEAVIATE_GRPC_PORT": int(new_active_details.get('grpc_port', 50051))
-                    }
-                }
-                # Update config in memory AND save to YAML
-                cfg.update_and_save(config_updates)
-                logger.info(f"Configuration updated and saved to use fallback: {new_active_instance_name} ({config_updates['retrieval']})")
+                cid = state[instance_name].get("container_id")
+                if cid:
+                    ctr = docker_client.containers.get(cid)
+                    if ctr.status != "running":
+                        logger.info(f"Starting instance '{instance_name}'...")
+                        ctr.start()
+                        state[instance_name]["status"] = "running"
+                        save_weaviate_state(state)
+            except Exception as start_err:
+                logger.error(f"Error starting '{instance_name}': {start_err}", exc_info=True)
 
-                # Re-initialize the pipeline to use the new configuration
-                initialize_pipeline(app.app_context())
-                if not pipeline:
-                     logger.error(f"Pipeline failed re-initialization after activating fallback '{new_active_instance_name}'!")
-                     fallback_message = f" Instance '{instance_name}' deleted, but pipeline failed to switch to fallback."
-                     # Return error?
-                     return jsonify({"success": False, "error": fallback_message}), 500
-                else:
-                    fallback_activated = True
-                    fallback_message = f" Instance '{instance_name}' deleted. Pipeline now active on fallback: '{new_active_instance_name}'."
+    # 4) Update runtime cfg and YAML file
+    cfg.retrieval.WEAVIATE_HOST      = selected_host
+    cfg.retrieval.WEAVIATE_HTTP_PORT = selected_http_port
+    cfg.retrieval.WEAVIATE_GRPC_PORT = selected_grpc_port
 
-            except Exception as e:
-                logger.error(f"Failed to update config or re-initialize pipeline for fallback instance: {e}", exc_info=True)
-                fallback_message = f" Instance '{instance_name}' deleted, but failed to activate fallback automatically: {e}"
-                # Return error? The original instance IS deleted. Maybe return success=True but with error message?
-                # Let's return success but indicate the activation issue.
-                return jsonify({"success": True, "message": fallback_message}), 200 # 200 OK but with message indicating fallback issue
+    try:
+        with open(CONFIG_YAML_PATH, "r", encoding="utf-8") as f:
+            yaml_cfg = yaml.safe_load(f) or {}
+        yaml_cfg.setdefault("retrieval", {})
+        yaml_cfg["retrieval"].update({
+            "WEAVIATE_HOST":      selected_host,
+            "WEAVIATE_HTTP_PORT": selected_http_port,
+            "WEAVIATE_GRPC_PORT": selected_grpc_port
+        })
+        with open(CONFIG_YAML_PATH, "w", encoding="utf-8") as f:
+            yaml.dump(yaml_cfg, f, indent=2, sort_keys=False)
+        logger.info(f"YAML config updated for '{instance_name}'.")
+    except Exception as ye:
+        logger.error(f"Failed to write YAML config: {ye}", exc_info=True)
+
+    # 5) Probe new Weaviate endpoint before pipeline init
+    try:
+        sock = socket.create_connection((selected_host, selected_http_port), timeout=2)
+        sock.close()
+    except Exception as pe:
+        logger.error(f"Cannot reach Weaviate at {selected_host}:{selected_http_port}: {pe}")
+        return jsonify({"error": "Selected instance is not reachable."}), 502
+
+    # 6) Re-initialize pipeline under new settings
+    initialize_pipeline(app.app_context())
+
+    # 7) Verify pipeline retriever health
+    retriever = getattr(pipeline, "retriever", None)
+    if not retriever or not retriever.weaviate_client or not retriever.weaviate_client.is_ready():
+        logger.error(f"Pipeline failed to connect after selecting '{instance_name}'.")
+        return jsonify({"error": "Failed to connect pipeline to the selected instance."}), 500
+
+    logger.info(f"Pipeline successfully connected to '{instance_name}'.")
+    return jsonify({
+        "success": True,
+        "message": f"Instance '{instance_name}' activated and pipeline is live!",
+        "active_host": selected_host,
+        "active_http_port": selected_http_port
+    })
 
 
-    # --- Final Response ---
-    final_message = f"Instance '{instance_name}' removed successfully."
-    if fallback_message:
-        final_message += fallback_message
+@app.route('/list_presets', methods=['GET'])
+def list_presets_api():
+    """Return all saved presets as JSON for the frontend dropdown."""
+    try:
+        data = load_presets()  # loads from PRESETS_FILE and populates `presets` :contentReference[oaicite:2]{index=2}:contentReference[oaicite:3]{index=3}
+        return jsonify(data), 200
+    except Exception as e:
+        app.logger.error(f"API /list_presets error: {e}", exc_info=True)
+        # Return empty object so the frontend handles it gracefully
+        return jsonify({}), 500
 
-    return jsonify({"success": True, "message": final_message}), 200
 
-# --- END MODIFIED /remove_weaviate_instance ---
-
-
-# --- Make sure initialize_pipeline is called on startup ---
-
-# Optional Debug route
 @app.route("/list_routes")
 def list_routes():
     routes = []
@@ -1771,25 +1739,136 @@ def list_routes():
         })
     return jsonify({"routes": sorted(routes, key=lambda x: x["path"])})
 
-@app.before_request
-def ensure_pipeline_initialized():
-    logger.info("[Flask Hook] Running @app.before_request to initialize pipeline...")
-    initialize_pipeline()
+
+initialize_pipeline()
 
 @app.route('/get_auto_domain_keywords', methods=['GET'])
 def get_auto_domain_keywords():
+    keywords = []
+    # 1. Try config first
+    if hasattr(cfg, "env"):
+        raw = getattr(cfg.env, "AUTO_DOMAIN_KEYWORDS", [])
+        # Handle both formats: list of strings, or list with one comma-separated string
+        if isinstance(raw, list):
+            if len(raw) == 1 and isinstance(raw[0], str) and ',' in raw[0]:
+                # Split the single string into keywords
+                keywords = [kw.strip() for kw in raw[0].split(",") if kw.strip()]
+            else:
+                # Already a list of keywords
+                keywords = raw
+        elif isinstance(raw, str):
+            keywords = [kw.strip() for kw in raw.split(",") if kw.strip()]
+    # 2. Fallback: try file if config is empty
+    if not keywords:
+        try:
+            with open("auto_domain_keywords.txt", "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                if content:
+                    keywords = [kw.strip() for kw in content.split(",") if kw.strip()]
+        except Exception as e:
+            logger.error(f"Failed to read auto_domain_keywords.txt: {e}")
+
+    logger.info(f"Returning auto domain keywords: {keywords}")
+    return jsonify({"success": bool(keywords), "keywords": keywords})
+
+
+    
+    # app.py (add after other imports)
+from centroid_manager import CentroidManager
+centroid_manager = CentroidManager()
+
+@app.route("/api/centroid", methods=["GET"])
+def get_centroid_api():
+    centroid = centroid_manager.get_centroid()
+    meta = centroid_manager.get_metadata()
+    if centroid is None:
+        return jsonify({"error": "Centroid not available"}), 404
+    return jsonify({
+        "centroid": centroid.tolist(),
+        "meta": meta
+    })
+
+@app.route('/update_auto_domain_keywords', methods=['POST'])
+def update_auto_domain_keywords():
     try:
-        with open('auto_domain_keywords.txt', 'r') as file:
-            keywords = file.read().strip()  # Read keywords from the file
-            keyword_list = keywords.split(',')  # Split by comma to get an array
-        return jsonify({'success': True, 'keywords': keyword_list})
+        data = request.get_json()
+        keywords = data.get('keywords', [])
+        target_field = data.get('target_field', 'AUTO_DOMAIN_KEYWORDS')
+        
+        # Update the correct field in the config
+        if hasattr(cfg, "env"):
+            # Store current SELECTED_N_TOP value if it exists
+            selected_n_top = getattr(cfg.env, "SELECTED_N_TOP", None)
+            
+            if target_field == "AUTO_DOMAIN_KEYWORDS":
+                cfg.env.AUTO_DOMAIN_KEYWORDS = keywords
+            elif target_field == "DOMAIN_KEYWORDS":
+                cfg.env.DOMAIN_KEYWORDS = keywords
+            else:
+                return jsonify(success=False, error=f"Invalid target field: {target_field}"), 400
+            
+            # Restore SELECTED_N_TOP value if it existed
+            if selected_n_top is not None:
+                cfg.env.SELECTED_N_TOP = selected_n_top
+                
+        # Save to file
+        with open("auto_domain_keywords.txt", "w", encoding="utf-8") as f:
+            f.write(", ".join(keywords))
+            
+        # Update YAML config
+        dump_method = getattr(cfg, 'model_dump', getattr(cfg, 'dict', None))
+        config_dict = dump_method()
+        save_yaml_config(config_dict, CONFIG_YAML_PATH)
+        
+        return jsonify(success=True)
     except Exception as e:
-        return jsonify({'success': False, 'message': str(e)})
+        logger.error(f"Failed to update auto domain keywords: {e}")
+        return jsonify(success=False, error=str(e)), 500
+
+    
+
+@app.route('/update_topn_config', methods=['POST'])
+def update_topn_config():
+    """Updates the config with the selected TopN value."""
+    if not config_available or not cfg:
+        return jsonify({"success": False, "error": "Config system unavailable."}), 503
+    
+    try:
+        data = request.get_json()
+        top_n = data.get('topN')
+        
+        if top_n is None:
+            return jsonify({"success": False, "error": "No topN value provided"}), 400
+            
+        # Create updates dictionary for config
+        updates = {
+            'env': {
+                'SELECTED_N_TOP': top_n
+            }
+        }
+        
+        # Update config
+        config_changed = cfg.update_and_save(updates)
+        
+        return jsonify({
+            "success": True,
+            "message": f"Updated configuration with TopN: {top_n}"
+        })
+        
+    except Exception as e:
+        logger.error(f"Error updating config with TopN: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    
 
 
 # === Main Execution Block ===
 if __name__ == '__main__':
     logger.info("Application starting...")
+
+    with app.app_context():
+        initialize_pipeline()
+
     if not config_available or not cfg: logger.critical("CRITICAL: Config failed load."); exit(1) # Using exit() directly here, consider sys.exit(1)
 
     try: # Setup directories early
