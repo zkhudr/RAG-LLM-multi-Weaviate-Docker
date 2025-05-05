@@ -1859,7 +1859,45 @@ def update_topn_config():
         logger.error(f"Error updating config with TopN: {e}", exc_info=True)
         return jsonify({"success": False, "error": str(e)}), 500
 
-    
+@app.route('/get-doc-count', methods=['GET'])
+def get_doc_count():
+    try:
+        if not config_available or not cfg:
+            return jsonify({"total_docs": 0, "error": "Config unavailable"}), 503
+            
+        collection_name = cfg.retrieval.COLLECTION_NAME
+        host = cfg.retrieval.WEAVIATE_HOST
+        http_port = cfg.retrieval.WEAVIATE_HTTP_PORT
+        
+        # Connect with skip_init_checks to bypass gRPC health check
+        client = weaviate.connect_to_local(
+            host=host,
+            port=http_port,
+            skip_init_checks=True  # Add this parameter
+        )
+        
+        # Get collection and count
+        count = 0
+        if client.collections.exists(collection_name):
+            collection = client.collections.get(collection_name)
+            count = collection.aggregate.over_all(total_count=True).total_count
+            
+        client.close()
+        return jsonify({"total_docs": count})
+    except Exception as e:
+        logger.error(f"Error getting document count: {e}", exc_info=True)
+        return jsonify({"total_docs": 0, "error": str(e)}), 500
+
+@app.route('/clear-chat', methods=['POST'])
+def clear_chat():
+    # Clear chat history from session if you're storing it there
+    if 'chat_history' in session:
+        session['chat_history'] = []
+        
+    # Return success response
+    return jsonify({"success": True})
+
+   
 
 
 # === Main Execution Block ===

@@ -3567,7 +3567,7 @@
       "DOMAIN_CENTROID_PATH": "./domain_centroid.npy"
     },
     "env": {
-      "SELECTED_N_TOP": 155,
+      "SELECTED_N_TOP": 10000,
       "DOMAIN_KEYWORDS": [
         "Industrial Automation",
         "Honeywell",

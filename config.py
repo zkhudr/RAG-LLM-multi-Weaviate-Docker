@@ -156,7 +156,7 @@ class EnvironmentConfig(BaseModel):
     AUTO_DOMAIN_KEYWORDS: List[str]  = Field(default_factory=list)
     USER_ADDED_KEYWORDS: List[str]   = Field(default_factory=list)
     SELECTED_N_TOP: int              = Field(
-        10,
+        10000,
         description="How many top terms to show by default"
     )
 

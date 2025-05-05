@@ -426,7 +426,7 @@
                 
                     <!-- Auto Domain Keywords -->
                     <div class="mb-4">
-                        <label class="block text-sm font-medium mb-1">Auto Domain Keywords</label>
+                        <label class="block text-sm font-medium mb-1">Auto Domain Keywords (Rank Sorted)</label>
                     <pre id="autoDomainKeywords" x-html="coloredAutoDomainKeywords"
                         class="w-full p-2 border rounded bg-gray-100 whitespace-pre-wrap"
                         style="min-height: 5rem; max-height: 20rem; overflow-y:auto;"></pre>
@@ -434,13 +434,12 @@
                 
                     <!-- Controls: Show Top N, Restore, Toggle -->
                     <label class="flex items-center space-x-2">
-                        <span class="text-sm">Show Top</span>
+                        <span class="text-sm">Show Top Keywords</span>
                         <select x-model.number="selectedTopN" @change="applyTopNKeywords()" class="p-1 border rounded">
                             <template x-for="n in topNOptions" :key="n">
                                 <option :value="n" x-text="n"></option>
                             </template>
                         </select>
-                        <span class="text-sm">Keywords</span>
                     </label>
 
                 
@@ -625,13 +624,27 @@
                                             max="500" class="col-span-2 p-1 border border-slate-300 rounded text-xs">
                                     </div>
                                     <!-- Minimum Document Frequency -->
-                                    <div class="grid grid-cols-3 items-center gap-x-2">
-                                        <label for="minDocFreq" class="col-span-1 font-medium text-slate-600"
-                                            data-tooltip="MINIMUM_DOCUMENT_FREQUENCY">Minimum Document
-                                            Frequency:</label>
-                                        <input type="number" id="minDocFreq" name="min_doc_freq"
-                                            x-model.number="formConfig.domain_keyword_extraction.min_doc_freq" min="1"
-                                            max="10" class="col-span-2 p-1 border border-slate-300 rounded text-xs">
+                                    <div x-data>
+                                        <label>
+                                            <input type="radio" name="docFreqMode" x-model="docFreqMode" value="absolute">
+                                            Absolute
+                                        </label>
+                                        <label>
+                                            <input type="radio" name="docFreqMode" x-model="docFreqMode" value="fraction">
+                                            Fraction
+                                        </label>
+                                    
+                                        <div x-show="docFreqMode === 'absolute'">
+                                            <input type="number" name="min_doc_freq_abs"
+                                                x-model.number="formConfig.domain_keyword_extraction.min_doc_freq_abs" placeholder="e.g. 3">
+                                            <span x-text="totalDocs ? `${(computedAbs || 0)} docs` : ''"></span>
+                                        </div>
+                                    
+                                        <div x-show="docFreqMode === 'fraction'">
+                                            <input type="number" step="0.001" name="min_doc_freq_frac"
+                                                x-model.number="formConfig.domain_keyword_extraction.min_doc_freq_frac" placeholder="e.g. 0.01">
+                                            <span x-text="totalDocs ? `${(computedFrac || 0)} fraction` : ''"></span>
+                                        </div>
                                     </div>
                                     <!-- Diversity (0-1) -->
                                     <div class="grid grid-cols-3 items-center gap-x-2">

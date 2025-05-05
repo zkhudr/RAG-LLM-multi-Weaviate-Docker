@@ -129,6 +129,24 @@ document.addEventListener('alpine:init', () => {
             // === Spread in all reactiveState fields ===
             ...reactiveState,
 
+            
+            // === Max word Frequency 
+            docFreqMode: 'absolute',   // or 'fraction'
+            totalDocs: null,
+
+
+            get computedAbs() {
+                if (this.formConfig.domain_keyword_extraction.min_doc_freq_frac != null && this.totalDocs)
+                    return Math.ceil(this.formConfig.domain_keyword_extraction.min_doc_freq_frac * this.totalDocs);
+                return null;
+            },
+            get computedFrac() {
+                if (this.formConfig.domain_keyword_extraction.min_doc_freq_abs != null && this.totalDocs)
+                    return (this.formConfig.domain_keyword_extraction.min_doc_freq_abs / this.totalDocs).toFixed(3);
+                return null;
+            },
+
+
             // === Additional state ===
             autoDomainKeywordsList: [],        // Currently active auto keywords
             allAutoDomainKeywordsList: [],     // Full fetched list
@@ -136,7 +154,7 @@ document.addEventListener('alpine:init', () => {
             activeAutoDomainKeywordsSet: new Set(),
             autoKeywordsEnabled: true,
             topNOptions: [],                   // e.g. [10, 20, …]
-            selectedTopN: 10,
+            selectedTopN: 10000,
 
             // === Computed getters ===
             get topNOptionsHtml() {
@@ -162,8 +180,9 @@ document.addEventListener('alpine:init', () => {
                     this.initCalled = true;
                     this.loadInitialConfig()
                         .then(() => this.fetchAutoDomainKeywords())
+                        .then(() => this.fetchCentroidStats())
                         .catch(e => console.error("Initial config load error:", e));
-                }
+                    }
             },
             applyTopNKeywords() {
                 this.autoDomainKeywordsList = this.allAutoDomainKeywordsList.slice(0, this.selectedTopN);
@@ -286,6 +305,7 @@ document.addEventListener('alpine:init', () => {
         console.log("[Component Init] Initializing ragApp component");
         if (!this.initCalled) {
             this.loadInitialData();
+            
         }
         this.$watch('statusMessage', (value) => {
             console.log('[Status Change]', value);
@@ -421,7 +441,22 @@ document.addEventListener('alpine:init', () => {
                                         console.error("[Init API] loadInitialConfig FAILED:", e);
                                         throw e;
                                     }
+                                    // Add this new async block for doc count
+                                
                                 })(),
+
+                                (async () => {
+                                    console.log("[Init API] Fetching document count...");
+                                    try {
+                                        const response = await fetch('/get-doc-count');
+                                        const data = await response.json();
+                                        this.totalDocs = data.total_docs;
+                                        console.log("[Init API] Document count loaded:", this.totalDocs);
+                                    } catch (e) {
+                                        console.warn("[Init API] Could not fetch doc count", e);
+                                    }
+                                })(),
+                                
                                 (async () => {
                                     console.log("[Init API] Starting checkApiKeys...");
                                     try {
@@ -471,6 +506,7 @@ document.addEventListener('alpine:init', () => {
                                     catch (e) {
                                         console.error("[Init API] fetchAutoDomainKeywords FAILED:", e);
                                     }
+
                                 })(),
 
                             ]);
@@ -565,7 +601,11 @@ document.addEventListener('alpine:init', () => {
                                 else if (key === 'diversity') {
                                     jsonData[key] = parseFloat(value);
                                 }
-                                else if (['top_n_per_doc', 'final_top_n', 'min_doc_freq'].includes(key)) {
+                                else if (key === 'min_doc_freq_abs') {
+                                    jsonData.min_doc_freq_abs = parseInt(value, 10) || null;
+                                }
+                                else if (key === 'min_doc_freq_frac') {
+                                    jsonData.min_doc_freq_frac = parseFloat(value) || null;
                                     // Ensure conversion to number, handle potential NaN
                                     const numValue = parseInt(value, 10);
                                     jsonData[key] = isNaN(numValue) ? null :
@@ -1900,6 +1940,11 @@ document.addEventListener('alpine:init', () => {
                                 }
                             }
 
+                            // Explicitly update UI state variables from the new config
+                            if (result.config.retrieval && result.config.retrieval.SELECTED_N_TOP !== undefined) {
+                                this.selectedNTop = result.config.retrieval.SELECTED_N_TOP;
+                            }
+
                             // Add this block to refresh auto domain keywords
                             if (this.formConfig.env && Array.isArray(this.formConfig.env.AUTO_DOMAIN_KEYWORDS)) {
                                 // Update the auto domain keywords lists
@@ -2119,10 +2164,18 @@ document.addEventListener('alpine:init', () => {
 
                     
                     async fetchCentroidStats() {
-                        const resp = await fetch('/api/centroid');
-                        this.centroidStats = await resp.json();
-                        if (resp.ok) this.centroidStats = await resp.json();
+                        try {
+                            const resp = await fetch('/api/centroid');
+                            if (resp.ok) {
+                                this.centroidStats = await resp.json();
+                            } else {
+                                console.error("Failed to fetch centroid stats:", await resp.text());
+                            }
+                        } catch (error) {
+                            console.error("Error fetching centroid stats:", error);
+                        }
                     },
+
 
                     async fetchQueryCentroidInsight(queryEmbedding) {
                         const resp = await fetch('/api/centroid/query_insight', {
@@ -2191,12 +2244,29 @@ document.addEventListener('alpine:init', () => {
                     console.error("Sync error:", e);
                     this.showToast(`Failed to update keywords: ${e.message}`, "error");
                 }
+            },
+            clearChatWithConfirmation() {
+                if (confirm('Are you sure you want to clear the chat history?')) {
+                    this.chatHistory = []; // Change from this.messages to this.chatHistory
+
+                    // If saving to localStorage
+                    localStorage.removeItem('chatMessages');
+
+                    // If using server-side storage, add an API call
+                    fetch('/clear-chat', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                }
             }
 
+
                          
-        }; // ✅ Close return
-    }); // ✅ Close Alpine.data
-}); // ✅ Close 'alpine:init' listener
+        }; // Close return
+    }); // Close Alpine.data
+}); // Close 'alpine:init' listener
 
 
 

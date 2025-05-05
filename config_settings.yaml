@@ -1,32 +1,33 @@
-security: {SANITIZE_INPUT: false, RATE_LIMIT: 20, API_TIMEOUT: 30, CACHE_ENABLED: false}
+security: {SANITIZE_INPUT: true, RATE_LIMIT: 20, API_TIMEOUT: 30, CACHE_ENABLED: true}
 retrieval:
   COLLECTION_NAME: Industrial_tech
-  K_VALUE: 0
-  SCORE_THRESHOLD: 0.0
+  K_VALUE: 6
+  SCORE_THRESHOLD: 0.6
   LAMBDA_MULT: 0.6
-  SEARCH_TYPE: similarity
-  DOMAIN_SIMILARITY_THRESHOLD: 0.0
-  SPARSE_RELEVANCE_THRESHOLD: 0.0
-  FUSED_RELEVANCE_THRESHOLD: 0.0
-  SEMANTIC_WEIGHT: 0.5
-  SPARSE_WEIGHT: 0.5
-  PERFORM_DOMAIN_CHECK: false
-  PERFORM_TECHNICAL_VALIDATION: false
+  SEARCH_TYPE: mmr
+  DOMAIN_SIMILARITY_THRESHOLD: 0.65
+  SPARSE_RELEVANCE_THRESHOLD: 0.15
+  FUSED_RELEVANCE_THRESHOLD: 0.45
+  SEMANTIC_WEIGHT: 0.7
+  SPARSE_WEIGHT: 0.3
+  PERFORM_DOMAIN_CHECK: true
+  PERFORM_TECHNICAL_VALIDATION: true
   WEAVIATE_HOST: localhost
   WEAVIATE_HTTP_PORT: 8091
   WEAVIATE_GRPC_PORT: 51002
   retrieve_with_history: false
   WEAVIATE_TIMEOUT: [10, 120]
-model: {LLM_TEMPERATURE: 1.0, MAX_TOKENS: 2048, OLLAMA_MODEL: deepseek-r1, EMBEDDING_MODEL: nomic-embed-text,
-  TOP_P: 0.9, FREQUENCY_PENALTY: 0.2, SYSTEM_MESSAGE: Answer freely using your vast
-    knowledge. No context document retrieval is necessary. Be creative and engaging.,
-  EXTERNAL_API_PROVIDER: deepseek, EXTERNAL_API_MODEL_NAME: null}
+model: {LLM_TEMPERATURE: 0.6, MAX_TOKENS: 1024, OLLAMA_MODEL: deepseek-r1, EMBEDDING_MODEL: nomic-embed-text,
+  TOP_P: 0.9, FREQUENCY_PENALTY: 0.1, SYSTEM_MESSAGE: You are a helpful AI assistant
+    for industrial automation. Use the provided context and conversation history to
+    answer accurately and clearly. Provide sufficient detail but remain focused on
+    the question., EXTERNAL_API_PROVIDER: deepseek, EXTERNAL_API_MODEL_NAME: null}
 document:
-  CHUNK_SIZE: 512
-  CHUNK_OVERLAP: 0
+  CHUNK_SIZE: 345
+  CHUNK_OVERLAP: 56
   FILE_TYPES: [pdf, txt, csv, docx, md]
-  PARSE_TABLES: false
-  GENERATE_SUMMARY: false
+  PARSE_TABLES: true
+  GENERATE_SUMMARY: true
 paths: {DOCUMENT_DIR: ./data, DOMAIN_CENTROID_PATH: ./domain_centroid.npy}
 env:
   DOMAIN_KEYWORDS: [Industrial Automation, Honeywell, SCADA, PLC, IoT, Honeywell Digital
@@ -74,7 +75,7 @@ env:
     hidden markov model, 2018 honeywell international, honeywellprocess com 2019,
     honeywell trademark]
   USER_ADDED_KEYWORDS: [Emerson, competitors, SLB, VSD]
-  SELECTED_N_TOP: 10
+  SELECTED_N_TOP: 10000
 pipeline: {max_history_turns: 5}
 domain_keyword_extraction: {keybert_model: all-MiniLM-L6-v2, top_n_per_doc: 50, final_top_n: 200,
   min_doc_freq: 3, diversity: 0.3, no_pos_filter: true}

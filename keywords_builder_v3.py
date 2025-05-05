@@ -59,7 +59,8 @@ def parse_arguments():
     parser.add_argument("--min_len", type=int, default=DEFAULT_MIN_KEYWORD_LENGTH, help="Minimum character length for final keywords")
     parser.add_argument("--diversity", type=float, default=DEFAULT_DIVERSITY, help="Diversity setting (0-1) for KeyBERT's MMR")
     parser.add_argument("--pos_tags", type=lambda s: set(s.split(',')), default=DEFAULT_POS_TAGS, help="Comma-separated POS tags to keep (e.g., 'NOUN,PROPN')")
-    parser.add_argument("--min_doc_freq", type=int, default=DEFAULT_MIN_DOC_FREQ, help="Minimum number of documents a keyword must appear in")
+    parser.add_argument( "--min_doc_freq_abs", type=int, default=None, help="Absolute min-doc-frequency (overrides fraction if set)" )
+    parser.add_argument("--min_doc_freq_frac", type=float, default=None, help="Fractional min-doc-frequency (0.0–1.0). Rounded up * total_docs"  )
     parser.add_argument("--no_pos_filter", action='store_true', help="Disable POS tag filtering")
     #parser.add_argument("--weaviate_host", default=DEFAULT_WEAVIATE_HOST, help="Weaviate host")
     #parser.add_argument("--weaviate_http_port", type=int, default=DEFAULT_WEAVIATE_HTTP_PORT, help="Weaviate HTTP port")
@@ -356,6 +357,39 @@ if __name__ == "__main__":
     args = parse_arguments()
     client = None
     nlp_model = None
+    # 1. Load ingested_docs.json
+    docs_file = Path(cfg.paths.DOCUMENT_DIR) / "ingested_docs.json"
+    if docs_file.exists():
+        with open(docs_file, "r", encoding="utf-8") as f:
+            all_files = json.load(f)
+        total_docs = len(all_files)
+    else:
+        # fallback to whatever you actually loaded from Weaviate
+        total_docs = len(all_texts) if 'all_texts' in locals() else 0
+    
+    # 2. Decide which threshold to use
+    if args.min_doc_freq_abs is not None:
+        min_doc_freq = args.min_doc_freq_abs
+        mode = "absolute"
+    elif args.min_doc_freq_frac is not None:
+        min_doc_freq = math.ceil(args.min_doc_freq_frac * total_docs)
+        mode = "fraction"
+    else:
+        # fallback to your old arg
+        min_doc_freq = args.min_doc_freq
+        mode = "absolute"
+    
+    # 3. Log both forms
+    computed_frac = min_doc_freq / total_docs if total_docs > 0 else 0
+    logger.info(
+        f"Using min_doc_freq={min_doc_freq} "
+        f"({computed_frac:.2%} of {total_docs} docs) "
+        f"mode={mode}"
+    )
+    # ====== END OF ADDED CODE ======
+    
+    client = None
+    nlp_model = None
 
     if not cfg or not cfg.retrieval or not cfg.model:
         logger.critical("CRITICAL: Central configuration (cfg) not loaded or incomplete. Cannot proceed.")
@@ -432,13 +466,13 @@ if __name__ == "__main__":
             if aggregated_keywords_scores:
                 logger.info("Applying final filters to aggregated keywords...") # Added log
                 final_keywords_with_scores = apply_final_filters(
-                    aggregated_keywords_scores,
-                    keyword_frequencies,
-                    nlp_model,
-                    args.pos_tags,
-                    args.min_len,
-                    args.min_doc_freq,
-                    apply_pos_filter=not args.no_pos_filter
+                        aggregated_keywords_scores,
+                        keyword_frequencies,
+                        nlp_model,
+                        args.pos_tags,
+                        args.min_len,
+                        min_doc_freq,  # Using our calculated threshold
+                        apply_pos_filter=not args.no_pos_filter
                 )
 
                 # Select final Top N from filtered list
@@ -485,7 +519,7 @@ if __name__ == "__main__":
 
     except Exception as e:
         logger.critical(f"An unexpected error occurred in the main execution block: {str(e)}", exc_info=True)
-        print(f"❌ Failure: {str(e)}")
+        print(f" Failure: {str(e)}")
         sys.exit(1)
 
     finally:
