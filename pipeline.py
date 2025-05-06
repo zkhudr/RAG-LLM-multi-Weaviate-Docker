@@ -11,14 +11,27 @@ import json
 import os
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
-from centroid_manager import CentroidManager
-centroid_manager = CentroidManager()
+
+# Initialize logger
+logger = logging.getLogger(__name__)
 
 # Assuming these are correctly importable from your project structure
 try:
     from langchain_ollama import OllamaLLM
     from config import cfg # Use 'cfg' directly if it's the loaded instance
     from retriever import TechnicalRetriever
+    
+    # Try to import CentroidManager
+    try:
+        from centroid_manager import CentroidManager
+        centroid_manager = CentroidManager()
+        centroid_available = True
+        logger.info("CentroidManager initialized successfully")
+    except ImportError:
+        logger.warning("CentroidManager not available, centroid features disabled")
+        centroid_manager = None
+        centroid_available = False
+        
     imports_ok = True
 except ImportError as e:
     logging.critical(f"CRITICAL: Failed to import core pipeline dependencies: {e}", exc_info=True)
@@ -32,6 +45,7 @@ except ImportError as e:
         class retrieval: PERFORM_DOMAIN_CHECK=False; DOMAIN_SIMILARITY_THRESHOLD=0.6; SPARSE_RELEVANCE_THRESHOLD=0.1; FUSED_RELEVANCE_THRESHOLD=0.4; SEMANTIC_WEIGHT=0.7; SPARSE_WEIGHT=0.3
         class paths: DOMAIN_CENTROID_PATH="./dummy_centroid.npy"
         class env: merged_keywords=[]
+    centroid_manager = None
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -155,12 +169,15 @@ class IndustrialAutomationPipeline:
             query_embedding = self.embeddings.embed_query(query)
             query_vector = np.array(query_embedding).reshape(1, -1)
             centroid_feedback = centroid_manager.query_insight(query_vector.flatten())
-            similarity = cosine_similarity(query_vector, self.domain_centroid)[0][0]
-            similarity = max(0.0, min(1.0, similarity)) # Clip
-            return float(similarity), centroid_feedback
+            if centroid_feedback and "similarity" in centroid_feedback:
+                similarity = centroid_feedback["similarity"]
+            else:
+                similarity = cosine_similarity(query_vector, self.domain_centroid)[0][0]
+            similarity = max(0.0, min(1.0, float(similarity)))
+            return similarity, centroid_feedback
         except Exception as e:
             logger.error(f"Error calculating semantic score: {e}", exc_info=True)
-            return 0.0, {}
+            return 0.0, {}    
 
 
     def _calculate_sparse_score(self, query_terms: List[str]) -> float:

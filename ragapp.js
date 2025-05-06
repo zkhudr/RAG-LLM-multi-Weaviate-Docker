@@ -1944,6 +1944,10 @@ document.addEventListener('alpine:init', () => {
                             if (result.config.retrieval && result.config.retrieval.SELECTED_N_TOP !== undefined) {
                                 this.selectedNTop = result.config.retrieval.SELECTED_N_TOP;
                             }
+                            
+                            if (result.config.paths) {
+                                this.formConfig.paths = { ...result.config.paths };
+                            }
 
                             // Add this block to refresh auto domain keywords
                             if (this.formConfig.env && Array.isArray(this.formConfig.env.AUTO_DOMAIN_KEYWORDS)) {

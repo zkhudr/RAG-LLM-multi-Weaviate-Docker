@@ -91,6 +91,16 @@ class SecurityConfig(BaseModel):
 
     # Note: exclude=True prevents these fields from being included in model_dump()
     # which prevents them from being saved back to YAML.
+    @model_validator(mode='after')
+    def check_api_keys(self) -> 'SecurityConfig':
+        # Set EXTERNAL_API_PROVIDER to 'none' if no key exists for selected provider
+        if self.EXTERNAL_API_PROVIDER != 'none':
+            key_var = f"{self.EXTERNAL_API_PROVIDER.upper()}_API_KEY"
+            key_value = getattr(self, key_var, "")
+            if not key_value:
+                logger.warning(f"Selected provider {self.EXTERNAL_API_PROVIDER} has no API key. Setting to 'none'")
+                self.EXTERNAL_API_PROVIDER = 'none'
+        return self
 
 class RetrievalConfig(BaseModel):
     COLLECTION_NAME: str = "Industrial_tech"
@@ -150,6 +160,7 @@ class DocumentConfig(BaseModel):
 class PathConfig(BaseModel):
     DOCUMENT_DIR: str = "./data"
     DOMAIN_CENTROID_PATH: str = "./domain_centroid.npy"
+
 
 class EnvironmentConfig(BaseModel):
     DOMAIN_KEYWORDS: List[str]       = Field(default_factory=list)

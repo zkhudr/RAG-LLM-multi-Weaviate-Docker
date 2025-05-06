@@ -102,6 +102,7 @@ class TechnicalRetriever:
             raise RuntimeError("Failed to initialize Weaviate connection") from e
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    
     def get_context(self, query: str) -> str:
         """Retrieves context from Weaviate based on the query and config settings."""
         if not self.vectorstore:
@@ -167,6 +168,71 @@ class TechnicalRetriever:
             self.logger.error(f"Retrieval failed during invoke/format: {str(e)}", exc_info=True)
             return "" # Return empty string on general failure
 
+    
+    # Add to TechnicalRetriever class:
+    def hybrid_search(self, query: str, k: int = 5, alpha: float = 0.5) -> List[Document]:
+        """Performs hybrid search combining BM25 and vector similarity"""
+        if not self.vectorstore:
+            return []
+        
+        # Get BM25 results
+        bm25_results = self.vectorstore._collection.query.bm25(
+            query=query,
+            limit=k,
+            return_properties=["content", "source", "page"]
+        ).objects
+        
+        # Get vector results
+        vector_results = self.vectorstore._collection.query.near_text(
+            query=query,
+            limit=k,
+            return_properties=["content", "source", "page"]
+        ).objects
+        
+        # Combine results with score normalization and weighting
+        combined_results = {}
+        
+        # Process BM25 results
+        for obj in bm25_results:
+            doc_id = f"{obj.properties.get('source')}:{obj.properties.get('page')}"
+            combined_results[doc_id] = {
+                "content": obj.properties.get("content"),
+                "metadata": {
+                    "source": obj.properties.get("source"),
+                    "page": obj.properties.get("page")
+                },
+                "bm25_score": obj.metadata.score,
+                "vector_score": 0
+            }
+        
+        # Process vector results
+        for obj in vector_results:
+            doc_id = f"{obj.properties.get('source')}:{obj.properties.get('page')}"
+            if doc_id in combined_results:
+                combined_results[doc_id]["vector_score"] = obj.metadata.certainty
+            else:
+                combined_results[doc_id] = {
+                    "content": obj.properties.get("content"),
+                    "metadata": {
+                        "source": obj.properties.get("source"),
+                        "page": obj.properties.get("page")
+                    },
+                    "bm25_score": 0,
+                    "vector_score": obj.metadata.certainty
+                }
+        
+        # Calculate hybrid scores
+        results = []
+        for doc_id, data in combined_results.items():
+            # Normalize scores to [0,1] if needed
+            hybrid_score = (1-alpha) * data["bm25_score"] + alpha * data["vector_score"]
+            results.append((Document(page_content=data["content"], metadata=data["metadata"]), hybrid_score))
+        
+        # Sort by hybrid score and return top k
+        results.sort(key=lambda x: x[1], reverse=True)
+        return [doc for doc, _ in results[:k]]
+
+    
     def _format_docs(self, docs: List[Any]) -> str:
         # ... (Same as before) ...
         formatted_docs = []

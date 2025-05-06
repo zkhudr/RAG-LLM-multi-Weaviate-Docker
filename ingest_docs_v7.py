@@ -327,10 +327,30 @@ class RobustPDFLoaderV4:
 
     def _format_table(self, table_data) -> str:
         try:
-            df = pd.DataFrame(table_data[1:], columns=table_data[0])
-            return f"TABLE:\n{df.to_markdown(index=False)}"
+            # Filter out None values before creating DataFrame
+            cleaned_data = []
+            for row in table_data:
+                if row:  # Check if row exists
+                    cleaned_row = ['' if cell is None else str(cell) for cell in row]
+                    cleaned_data.append(cleaned_row)
+            
+            if not cleaned_data:
+                return ""
+                
+            # Use cleaned data for DataFrame
+            if len(cleaned_data) > 1:  # Ensure we have header and data
+                df = pd.DataFrame(cleaned_data[1:], columns=cleaned_data[0])
+                return f"TABLE:\n{df.to_markdown(index=False)}"
+            else:
+                return "TABLE:\n" + "\n".join("|".join(row) for row in cleaned_data)
         except Exception as e:
-            return "TABLE:\n" + "\n".join("|".join(row) for row in table_data)
+            # Fallback to basic string joining with None protection
+            safe_data = []
+            for row in table_data:
+                if row:
+                    safe_row = ['' if cell is None else str(cell) for cell in row]
+                    safe_data.append(safe_row)
+            return "TABLE:\n" + "\n".join("|".join(row) for row in safe_data)
 
     def _load_fallback(self) -> List[Document]:
         try:
@@ -360,7 +380,7 @@ class DocumentProcessor:
         self._init_collection()
 
     def _init_collection(self):
-        """Initialize Weaviate collection with v4 settings"""
+        """Initialize Weaviate collection with optimized HNSW settings"""
         collection_name = PipelineConfig.VECTORSTORE_COLLECTION
         if not self.weaviate_client.collections.exists(collection_name):
             logger.info(f"Collection '{collection_name}' does not exist. Creating...")
@@ -381,7 +401,36 @@ class DocumentProcessor:
                     vectorizer_config=Configure.Vectorizer.none(), # Correct for external embeddings
                     vector_index_config=Configure.VectorIndex.hnsw(
                         distance_metric=VectorDistances.COSINE, # Use the enum
-                        quantizer=Configure.VectorIndex.Quantizer.pq() # Keep if desired
+                        ef=128,  # Higher ef increases recall at cost of query time
+                        max_connections=64,  # Higher max_connections increases recall and index size
+                        dynamic_ef_min=100,
+                        dynamic_ef_max=500,
+                        vector_cache_max_objects=1000000,  # Cache vectors in memory for faster retrieval
+                        flat_search_cutoff=40000,  # Use flat search for small collections
+                        
+                        #This configuration balances compression and accuracy by dividing vectors into 8 segments with 8 bits per component.
+                        # For larger embeddings (768+ dimensions), you might increase segments to 16 or 32. For more aggressive compression,
+                        # reduce bits_per_component to 6 or 4, but this will decrease search accuracy. 
+                        # The training_limit parameter controls how many vectors are used to train the PQ model - higher values give better quantization but slower initialization.
+                        # note to self: add to UI
+
+                        vector_index_config=Configure.VectorIndex.hnsw(
+                        distance_metric=VectorDistances.COSINE,
+                        ef=128,  # Higher ef increases recall at cost of query time
+                        max_connections=64,  # Higher max_connections increases recall and index size
+                        dynamic_ef_min=100,
+                        dynamic_ef_max=500,
+                        vector_cache_max_objects=1000000,  # Cache vectors in memory for faster retrieval
+                        flat_search_cutoff=40000,  # Use flat search for small collections
+                        quantizer=Configure.VectorIndex.Quantizer.pq(
+                            segments=8,  # Number of segments to divide vectors into (higher = more compression)
+                            bits_per_component=8,  # Bits per component (8 is standard, lower = more compression)
+                            centroids=256,  # Number of centroids per segment (2^bits_per_component)
+                            training_limit=100000  # Maximum vectors to use for training
+    )
+)
+
+
                     ),
                     inverted_index_config=Configure.inverted_index(
                         bm25_b=0.75,

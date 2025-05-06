@@ -523,15 +523,12 @@ def get_config_api():
 @app.route('/delete_preset/<path:preset_name>', methods=['DELETE'])
 def delete_preset_api(preset_name):
     """API Endpoint: Deletes a specified preset."""
-    global presets # Still need global access to potentially update it
+    global presets
     logger = app.logger
-
-    # Decode the preset name
     try:
         decoded_preset_name = urllib.parse.unquote(preset_name)
     except Exception as decode_err:
         logger.error(f"API /delete_preset: Error decoding preset name '{preset_name}': {decode_err}")
-        # Send JSON 400 (ensure browser doesn't get HTML here)
         return jsonify({"success": False, "error": "Invalid preset name encoding."}), 400
 
     logger.info(f"API /delete_preset: Request received for preset '{decoded_preset_name}'.")
@@ -1291,7 +1288,7 @@ def save_chat():
         return jsonify({"success": False, "error": f"Database error: {e}"}), 500
 
 
-@app.route('/load_chat/<int:chat_id>', methods=['GET']) # Corrected route param type
+@app.route('/load_chat/<int:chat_id>', methods=['GET'])
 def load_chat(chat_id):
     """Loads a specific chat history into the current session."""
     logger = app.logger
@@ -1300,13 +1297,13 @@ def load_chat(chat_id):
         if chat:
             session['chat_history'] = chat.history
             logger.info(f"Loaded chat '{chat.name}' (ID: {chat_id}) into session.")
-            # Return the loaded data for frontend confirmation/use
             return jsonify({"success": True, "id": chat.id, "name": chat.name, "history": chat.history})
         else:
             return jsonify({"success": False, "error": "Chat not found."}), 404
     except Exception as e:
         logger.error(f"Error loading chat ID {chat_id}: {e}", exc_info=True)
         return jsonify({"success": False, "error": f"Database error: {e}"}), 500
+
 
 
 @app.route('/list_chats', methods=['GET'])
