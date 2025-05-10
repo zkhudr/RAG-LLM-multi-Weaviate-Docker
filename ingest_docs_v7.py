@@ -56,22 +56,24 @@ class PipelineConfig:
     MIN_CONTENT_LENGTH = 50
     VECTORSTORE_COLLECTION = "industrial_tech"
     # Weaviate connection - NOW USING VALUES FROM YOUR config.py
-    WEAVIATE_HOST = cfg.retrieval.WEAVIATE_HOST
-    WEAVIATE_HTTP_PORT = cfg.retrieval.WEAVIATE_HTTP_PORT
-    WEAVIATE_GRPC_PORT = cfg.retrieval.WEAVIATE_GRPC_PORT
-    WEAVIATE_TIMEOUT = (30, 300)
-    # Embedding configuration
-    EMBEDDING_MODEL = cfg.model.EMBEDDING_MODEL
-    EMBEDDING_TIMEOUT = 30
-    EMBEDDING_BASE_URL = "http://localhost:11434"
-    # Document processing
-    PDF_TABLE_EXTRACTION = cfg.document.PARSE_TABLES
-    CHUNK_SIZE = cfg.document.CHUNK_SIZE
-    CHUNK_OVERLAP = cfg.document.CHUNK_OVERLAP
-    # Retry configuration
-    RETRY_ATTEMPTS = 3
-    RETRY_WAIT_MULTIPLIER = 2
-    RETRY_MAX_WAIT = 30
+
+    if cfg is not None and hasattr(cfg, 'retrieval'):
+        WEAVIATE_HOST = cfg.retrieval.WEAVIATE_HOST
+        WEAVIATE_HTTP_PORT = cfg.retrieval.WEAVIATE_HTTP_PORT
+        WEAVIATE_GRPC_PORT = cfg.retrieval.WEAVIATE_GRPC_PORT
+        WEAVIATE_TIMEOUT = (30, 300)
+        # Embedding configuration
+        EMBEDDING_MODEL = cfg.model.EMBEDDING_MODEL
+        EMBEDDING_TIMEOUT = 30
+        EMBEDDING_BASE_URL = "http://localhost:11434"
+        # Document processing
+        PDF_TABLE_EXTRACTION = cfg.document.PARSE_TABLES
+        CHUNK_SIZE = cfg.document.CHUNK_SIZE
+        CHUNK_OVERLAP = cfg.document.CHUNK_OVERLAP
+        # Retry configuration
+        RETRY_ATTEMPTS = 3
+        RETRY_WAIT_MULTIPLIER = 2
+        RETRY_MAX_WAIT = 30
 
     @classmethod
     def get_client(cls): # Signature remains correct (only cls)

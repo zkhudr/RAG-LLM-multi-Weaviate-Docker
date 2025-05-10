@@ -72,6 +72,11 @@ class DomainKeywordExtractionConfig(BaseModel):
     keybert_model: str = "all-MiniLM-L6-v2"
     top_n_per_doc: int = 10
     final_top_n: int = 100
+    # persisted user choice: use absolute count or fraction
+    min_doc_freq_mode: Literal['absolute','fraction'] = 'absolute'
+    # the two inputs (may be null if not used)
+    min_doc_freq_abs:  Optional[int]   = None
+    min_doc_freq_frac: Optional[float] = None
     min_doc_freq: int = 2
     diversity: float = 0.7
     no_pos_filter: bool = False
@@ -91,16 +96,7 @@ class SecurityConfig(BaseModel):
 
     # Note: exclude=True prevents these fields from being included in model_dump()
     # which prevents them from being saved back to YAML.
-    @model_validator(mode='after')
-    def check_api_keys(self) -> 'SecurityConfig':
-        # Set EXTERNAL_API_PROVIDER to 'none' if no key exists for selected provider
-        if self.EXTERNAL_API_PROVIDER != 'none':
-            key_var = f"{self.EXTERNAL_API_PROVIDER.upper()}_API_KEY"
-            key_value = getattr(self, key_var, "")
-            if not key_value:
-                logger.warning(f"Selected provider {self.EXTERNAL_API_PROVIDER} has no API key. Setting to 'none'")
-                self.EXTERNAL_API_PROVIDER = 'none'
-        return self
+
 
 class RetrievalConfig(BaseModel):
     COLLECTION_NAME: str = "Industrial_tech"
@@ -149,6 +145,22 @@ class ModelConfig(BaseModel):
     def validate_provider(cls, value):
         # Simple lowercase validation, Literal handles allowed values
         return value.lower()
+    @model_validator(mode='after')
+    def check_api_keys(self) -> 'ModelConfig':
+        # Only check if provider is set and has a corresponding key
+        if self.EXTERNAL_API_PROVIDER != 'none':
+            # Map provider to environment variable name
+            provider_to_env = {
+                'deepseek': 'DEEPSEEK_API_KEY',
+                'openai': 'OPENAI_API_KEY',
+                'anthropic': 'ANTHROPIC_API_KEY',
+                'cohere': 'COHERE_API_KEY'
+            }
+            env_var = provider_to_env.get(self.EXTERNAL_API_PROVIDER)
+            if env_var and not os.getenv(env_var):
+                # No key found in environment, set to 'none'
+                self.EXTERNAL_API_PROVIDER = 'none'
+        return self
 
 class DocumentConfig(BaseModel):
     CHUNK_SIZE: int = 768

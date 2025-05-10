@@ -1,4 +1,8 @@
-security: {SANITIZE_INPUT: false, RATE_LIMIT: 20, API_TIMEOUT: 30, CACHE_ENABLED: false}
+security:
+  SANITIZE_INPUT: false
+  RATE_LIMIT: 20
+  API_TIMEOUT: 30
+  CACHE_ENABLED: false
 retrieval:
   COLLECTION_NAME: Industrial_tech
   K_VALUE: 0
@@ -16,65 +20,218 @@ retrieval:
   WEAVIATE_HTTP_PORT: 8091
   WEAVIATE_GRPC_PORT: 51002
   retrieve_with_history: false
-  WEAVIATE_TIMEOUT: [10, 120]
-model: {LLM_TEMPERATURE: 1.0, MAX_TOKENS: 2048, OLLAMA_MODEL: deepseek-r1, EMBEDDING_MODEL: nomic-embed-text,
-  TOP_P: 0.9, FREQUENCY_PENALTY: 0.2, SYSTEM_MESSAGE: Answer freely using your vast
-    knowledge. No context document retrieval is necessary. Be creative and engaging.,
-  EXTERNAL_API_PROVIDER: deepseek, EXTERNAL_API_MODEL_NAME: null}
+  WEAVIATE_TIMEOUT:
+  - 10
+  - 120
+model:
+  LLM_TEMPERATURE: 1.0
+  MAX_TOKENS: 2048
+  OLLAMA_MODEL: deepseek-r1
+  EMBEDDING_MODEL: nomic-embed-text
+  TOP_P: 0.9
+  FREQUENCY_PENALTY: 0.2
+  SYSTEM_MESSAGE: Answer freely using your vast knowledge. No context document retrieval
+    is necessary. Be creative and engaging.
+  EXTERNAL_API_PROVIDER: deepseek
+  EXTERNAL_API_MODEL_NAME: null
 document:
   CHUNK_SIZE: 1024
   CHUNK_OVERLAP: 104
-  FILE_TYPES: [pdf, txt, csv, docx, md]
+  FILE_TYPES:
+  - pdf
+  - txt
+  - csv
+  - docx
+  - md
   PARSE_TABLES: false
   GENERATE_SUMMARY: false
-paths: {DOCUMENT_DIR: ./data2, DOMAIN_CENTROID_PATH: ./domain_centroid2.npy}
+paths:
+  DOCUMENT_DIR: ./data2
+  DOMAIN_CENTROID_PATH: ./domain_centroid2.npy
 env:
-  DOMAIN_KEYWORDS: [Industrial Automation, Honeywell, SCADA, PLC, IoT, Honeywell Digital
-      Transformation, Process Automation, Manufacturing Automation, Industrial Internet
-      of Things (IIoT), Automation Systems, Distributed Control System (DCS), Real-time
-      Data, Industrial Networks, Machine Learning in Automation, Predictive Maintenance,
-    Edge Computing, Control Systems Engineering, Digital Twin, Industrial Control
-      Systems (ICS), Process Control, Smart Factories, Advanced Process Control (APC),
-    Remote Monitoring, Industrial Sensors, SCADA Software, Honeywell Experion, IoT
-      Sensors, Automation Solutions, Honeywell Process Solutions, Distributed Automation,
-    PLC Programming, SCADA Integration, Industrial Safety, Automation Architecture,
-    Manufacturing Execution Systems (MES), IIoT Connectivity, Smart Manufacturing,
-    Cloud-based Automation, Industrial Data Analytics, Energy Management Systems,
-    Predictive Analytics, Automated Control Loops, SCADA Security, Process Optimization,
-    Industrial Robotics, Industrial Wireless Communication, Edge Analytics, Supervisory
-      Control, Data Acquisition Systems, Data Visualization Tools, Honeywell Connected
-      Plant, Cybersecurity in Automation, Process Control Optimization, Automated
-      Refineries, Advanced Control Systems, Autonomous Manufacturing, PLC-based Automation,
-    SCADA Data Collection, Industrial PLC Systems, Remote Automation, Machine Vision
-      Systems, Data-Driven Insights, Industrial Automation Software, Control Panel
-      Design, Industrial Automation Integration, System Integration, Industrial Ethernet,
-    Refineries Control Systems, Distributed Sensors, Control System Architecture,
-    Industrial IoT Devices, Wireless IoT Networks, Real-time Monitoring, Process Data
-      Analytics, Honeywell Safety Systems, Industrial Control Panel, Automation Services
-      for Refineries, Advanced Industrial Automation, Oil and Gas Automation, Refineries
-      Digital Transformation, Automated Manufacturing Systems, Control and Monitoring
-      Systems, Process Flow Automation, Honeywell Smart Industry, System Fault Detection,
-    Factory Automation Solutions, Process Monitoring Solutions, SCADA Control Systems,
-    PLC Diagnostics, Smart Manufacturing Solutions, Refineries Automation Solutions,
-    Operational Technology (OT), Digital Control Systems, PLC-based Control Systems,
-    Honeywell Industrial Solutions, Industry 4.0 Automation, Data-Driven Process Control,
-    Process Simulation Software, Industrial Process Systems, Honeywell Industrial
-      IoT, Experion PKS, Safety Manager, MasterLogic PLC, HC900 Hybrid Controller,
-    SmartLine Transmitters, C300 Controller, TotalFlow, OneWireless, Enraf, FlexTech
-      Controllers, Genetec, Field Device Manager, Process Historian, TDC 3000, ControlEdge,
-    LCA (Lifecycle Automation), PMA, Experion LX, ProView, Smart Automation, Web HMI,
-    Vibration Monitoring, Field Instruments, HMI Systems, Cloud Control, Product Simulation,
-    WorkStation, 3D Visualization, Power Systems, ControlRoom Management, DeviceNet,
-    Control Hardware, RTAC, SCADA Solutions, Asset Performance, FieldBus, Equipment
-      Performance Monitoring, E-Stop Systems, Variable Frequency Drives, HART Communicators,
-    Smart Devices, Thermal Imaging, Industrial Robots, ControlEdge PLC, Process Automation
-      Servers, Gas Detection Systems]
-  AUTO_DOMAIN_KEYWORDS: [2018 www honeywellprocess, lcn honeywell confidential, honeywell
-      portfolio update, 2018 2018 honeywell, q4000 frame scanner, glossary term 119,
-    hidden markov model, 2018 honeywell international, honeywellprocess com 2019,
-    honeywell trademark]
-  USER_ADDED_KEYWORDS: [Emerson, competitors, SLB, VSD]
+  DOMAIN_KEYWORDS:
+  - Industrial Automation
+  - Honeywell
+  - SCADA
+  - PLC
+  - IoT
+  - Honeywell Digital Transformation
+  - Process Automation
+  - Manufacturing Automation
+  - Industrial Internet of Things (IIoT)
+  - Automation Systems
+  - Distributed Control System (DCS)
+  - Real-time Data
+  - Industrial Networks
+  - Machine Learning in Automation
+  - Predictive Maintenance
+  - Edge Computing
+  - Control Systems Engineering
+  - Digital Twin
+  - Industrial Control Systems (ICS)
+  - Process Control
+  - Smart Factories
+  - Advanced Process Control (APC)
+  - Remote Monitoring
+  - Industrial Sensors
+  - SCADA Software
+  - Honeywell Experion
+  - IoT Sensors
+  - Automation Solutions
+  - Honeywell Process Solutions
+  - Distributed Automation
+  - PLC Programming
+  - SCADA Integration
+  - Industrial Safety
+  - Automation Architecture
+  - Manufacturing Execution Systems (MES)
+  - IIoT Connectivity
+  - Smart Manufacturing
+  - Cloud-based Automation
+  - Industrial Data Analytics
+  - Energy Management Systems
+  - Predictive Analytics
+  - Automated Control Loops
+  - SCADA Security
+  - Process Optimization
+  - Industrial Robotics
+  - Industrial Wireless Communication
+  - Edge Analytics
+  - Supervisory Control
+  - Data Acquisition Systems
+  - Data Visualization Tools
+  - Honeywell Connected Plant
+  - Cybersecurity in Automation
+  - Process Control Optimization
+  - Automated Refineries
+  - Advanced Control Systems
+  - Autonomous Manufacturing
+  - PLC-based Automation
+  - SCADA Data Collection
+  - Industrial PLC Systems
+  - Remote Automation
+  - Machine Vision Systems
+  - Data-Driven Insights
+  - Industrial Automation Software
+  - Control Panel Design
+  - Industrial Automation Integration
+  - System Integration
+  - Industrial Ethernet
+  - Refineries Control Systems
+  - Distributed Sensors
+  - Control System Architecture
+  - Industrial IoT Devices
+  - Wireless IoT Networks
+  - Real-time Monitoring
+  - Process Data Analytics
+  - Honeywell Safety Systems
+  - Industrial Control Panel
+  - Automation Services for Refineries
+  - Advanced Industrial Automation
+  - Oil and Gas Automation
+  - Refineries Digital Transformation
+  - Automated Manufacturing Systems
+  - Control and Monitoring Systems
+  - Process Flow Automation
+  - Honeywell Smart Industry
+  - System Fault Detection
+  - Factory Automation Solutions
+  - Process Monitoring Solutions
+  - SCADA Control Systems
+  - PLC Diagnostics
+  - Smart Manufacturing Solutions
+  - Refineries Automation Solutions
+  - Operational Technology (OT)
+  - Digital Control Systems
+  - PLC-based Control Systems
+  - Honeywell Industrial Solutions
+  - Industry 4.0 Automation
+  - Data-Driven Process Control
+  - Process Simulation Software
+  - Industrial Process Systems
+  - Honeywell Industrial IoT
+  - Experion PKS
+  - Safety Manager
+  - MasterLogic PLC
+  - HC900 Hybrid Controller
+  - SmartLine Transmitters
+  - C300 Controller
+  - TotalFlow
+  - OneWireless
+  - Enraf
+  - FlexTech Controllers
+  - Genetec
+  - Field Device Manager
+  - Process Historian
+  - TDC 3000
+  - ControlEdge
+  - LCA (Lifecycle Automation)
+  - PMA
+  - Experion LX
+  - ProView
+  - Smart Automation
+  - Web HMI
+  - Vibration Monitoring
+  - Field Instruments
+  - HMI Systems
+  - Cloud Control
+  - Product Simulation
+  - WorkStation
+  - 3D Visualization
+  - Power Systems
+  - ControlRoom Management
+  - DeviceNet
+  - Control Hardware
+  - RTAC
+  - SCADA Solutions
+  - Asset Performance
+  - FieldBus
+  - Equipment Performance Monitoring
+  - E-Stop Systems
+  - Variable Frequency Drives
+  - HART Communicators
+  - Smart Devices
+  - Thermal Imaging
+  - Industrial Robots
+  - ControlEdge PLC
+  - Process Automation Servers
+  - Gas Detection Systems
+  AUTO_DOMAIN_KEYWORDS: []
+  USER_ADDED_KEYWORDS:
+  - Siemens
+  - Emerson
+  - Rockwell Automation
+  - ABB Ltd
+  - General Electric
+  - Honeywell
+  - Johnson Controls
+  - SAP
+  - Schneider Electric
+  - AVEVA
+  - 3M
+  - Eaton Corporation
+  - Oracle
+  - Aptean
+  - Bosch
+  - DELMIA Apriso
+  - Hitachi
+  - "K\xF6rber Pharma GmbH"
+  - Mitsubishi Electric
+  - Aspen Technology
+  - Dow Inc
+  - DuPont de Nemours Inc
+  - Lockheed Martin Corporation
+  - Abb Ability Manufacturing Operations Management Suite
   SELECTED_N_TOP: 10
-pipeline: {max_history_turns: 5}
-domain_keyword_extraction: {keybert_model: all-MiniLM-L6-v2, top_n_per_doc: 50, final_top_n: 200,
-  min_doc_freq: 3, diversity: 0.5, no_pos_filter: true}
+pipeline:
+  max_history_turns: 5
+domain_keyword_extraction:
+  keybert_model: all-MiniLM-L6-v2
+  top_n_per_doc: 50
+  final_top_n: 200
+  min_doc_freq_mode: absolute
+  min_doc_freq_abs: 1
+  min_doc_freq_frac: 0.006
+  min_doc_freq: 1
+  diversity: 0.5
+  no_pos_filter: true

@@ -28,6 +28,11 @@ from config import save_yaml_config, CONFIG_YAML_PATH
 import threading, time
 import socket
 from threading import Thread
+from flask import render_template, request, jsonify
+from ingest_block import centroid_exists
+from centroid_manager import CentroidManager
+
+
 
 load_dotenv()
 
@@ -138,13 +143,51 @@ config_available = False
 cfg = None
 AppConfig = None
 FlowStyleList = list
+
+# Add this detailed config validation check after the config import
 try:
     from config import cfg, AppConfig, FlowStyleList
     config_available = True
     logger.info("Successfully imported configuration (cfg, AppConfig).")
-except ImportError:
-    logger.error("CRITICAL: Failed to import configuration (cfg, AppConfig, FlowStyleList). Check config.py.", exc_info=True)
-    exit(1)
+except ImportError as config_import_error:
+    logger.critical(f"CRITICAL: Failed to import configuration: {config_import_error}", exc_info=True)
+    config_available = False
+    exit(1)  # Exit immediately with error code
+
+# Add this detailed config validation check
+if not cfg:
+    logger.critical("CRITICAL: Configuration loaded but 'cfg' is None. Diagnosing issue...")
+    # Check each section that might have failed
+    try:
+        temp_cfg = AppConfig()  # Try to create default config
+        logger.critical("Default config created successfully. Issue is with loading from YAML.")
+        
+        # Try loading raw YAML to identify problematic section
+        import yaml
+        try:
+            with open(CONFIG_YAML_PATH, 'r', encoding='utf-8') as f:
+                raw_config = yaml.safe_load(f)
+                logger.critical(f"Raw YAML loaded. Checking sections...")
+                
+                # Check each section individually
+                for section in ['security', 'retrieval', 'model', 'document', 'paths', 'env', 'pipeline']:
+                    if section not in raw_config:
+                        logger.critical(f"Missing section in YAML: '{section}'")
+                    else:
+                        try:
+                            # Try to validate just this section
+                            section_class = getattr(AppConfig, section).annotation
+                            section_class(**raw_config[section])
+                            logger.critical(f"Section '{section}' validates correctly")
+                        except Exception as section_error:
+                            logger.critical(f"ERROR in section '{section}': {section_error}")
+        except Exception as yaml_error:
+            logger.critical(f"Failed to load raw YAML: {yaml_error}")
+    except Exception as default_cfg_error:
+        logger.critical(f"Failed to create default config: {default_cfg_error}")
+    
+    logger.critical("Configuration diagnosis complete. Exiting application.")
+    exit(1)  # Exit with error code
 
 pipeline_available = False
 pipeline = None
@@ -157,7 +200,7 @@ except ImportError:
     logger.error("Failed to import IndustrialAutomationPipeline. Check pipeline.py.", exc_info=True)
 
 
-# --- CORRECTED Ingestion Script Imports ---
+# ---  Ingestion Script Imports ---
 ingest_full_available = False
 ingest_block_available = False
 DocumentProcessor = None
@@ -713,15 +756,12 @@ def save_config():
     # … your existing validation & cfg.update() logic here …
 
     # 2) Persist to YAML
+    # 2) Deep-merge, validate, and write ALL updated fields (incl. abs+frac)
     try:
-        with open(CONFIG_YAML_PATH, "r", encoding="utf-8") as f:
-            yaml_cfg = yaml.safe_load(f) or {}
-        # … merge in your updated retrieval/pipeline/whatever keys …
-        with open(CONFIG_YAML_PATH, "w", encoding="utf-8") as f:
-            yaml.dump(yaml_cfg, f, indent=2, sort_keys=False)
-        logger.info("API /save_config: Configuration updated and saved successfully.")
+        changed = cfg.update_and_save(data)
+        logger.info(f"API /save_config: cfg.update_and_save returned {changed}")
     except Exception as e:
-        logger.error(f"API /save_config: Failed to write YAML: {e}", exc_info=True)
+        logger.error(f"API /save_config: Failed to save config via update_and_save: {e}", exc_info=True)
         return jsonify({"error": "Failed to save configuration."}), 500
 
     # 3) Kick off pipeline reload in background
@@ -756,29 +796,44 @@ def upload_files():
 
 @app.route('/start_ingestion', methods=['POST'])
 def start_ingestion():
-    """(Corrected) Triggers FULL document ingestion using available components."""
+    """Triggers FULL document ingestion using available components, ensuring centroid exists before proceeding."""
     logger = app.logger
-    # Check if the necessary components were imported
+
+    # --- 1. Check for required imports/components ---
     if not ingest_full_available or not DocumentProcessor or not PipelineConfig:
         logger.error("/start_ingestion: Required ingestion components missing due to import errors (or failed import).") 
         return jsonify({'success': False, 'error': 'Full ingestion components unavailable (Import Error)'}), 503
     if not config_available or not cfg:
         return jsonify({'success': False, 'error': 'Configuration system not available.'}), 500
 
+    # --- 2. Get user input ---
+    data_folder = request.form.get('data_folder')
+    centroid_path = request.form.get('centroid_path')
+
+    # --- 3. Check centroid existence ---
+    if not centroid_exists(centroid_path):
+        logger.warning(f"Centroid file not found at {centroid_path}. Prompting user for action.")
+        return jsonify({
+            "status": "centroid_missing",
+            "message": f"Centroid file not found at {centroid_path}. Please create or select a centroid file."
+        })
+
+    # --- 4. Check data folder existence ---
+    if not data_folder or not Path(data_folder).is_dir():
+        logger.error(f"Data folder not found or invalid: {data_folder}")
+        return jsonify({'success': False, 'error': f'Data folder not found: {data_folder}'}), 404
+
+    # --- 5. Proceed with ingestion ---
     weaviate_client = None
     try:
         logger.info(f"Full Ingest: Getting client via PipelineConfig for {cfg.retrieval.WEAVIATE_HOST}:{cfg.retrieval.WEAVIATE_HTTP_PORT}")
-        # --- Use PipelineConfig.get_client ---
         weaviate_client = PipelineConfig.get_client()
 
-        # Check connection (is_ready/is_live)
-        if not weaviate_client.is_ready(): # Adapt if needed for client version
-            raise WeaviateConnectionError(f"Failed connect Weaviate at {cfg.retrieval.WEAVIATE_HOST}:{cfg.retrieval.WEAVIATE_HTTP_PORT}")
+        if not weaviate_client.is_ready():  # Adapt if needed for client version
+            raise WeaviateConnectionError(f"Failed to connect to Weaviate at {cfg.retrieval.WEAVIATE_HOST}:{cfg.retrieval.WEAVIATE_HTTP_PORT}")
         logger.info("Weaviate connected for full ingestion.")
 
-        doc_dir = Path(cfg.paths.DOCUMENT_DIR).resolve()
-        if not doc_dir.is_dir(): raise FileNotFoundError(f"Ingestion dir not found: {doc_dir}")
-
+        doc_dir = Path(data_folder).resolve()
         logger.info(f"Starting full ingestion process for directory: {doc_dir}")
         processor = DocumentProcessor(data_dir=str(doc_dir), client=weaviate_client)
         processor.execute()
@@ -787,21 +842,33 @@ def start_ingestion():
         logger.info(f"Full ingestion process finished. Stats: {stats}")
         return jsonify({'success': True, 'message': 'Full document ingestion successful', 'stats': stats})
 
-    except FileNotFoundError as fnf_e: logger.error(f"Ingestion failed: {fnf_e}"); return jsonify({'success': False, 'error': str(fnf_e)}), 404
-    except (WeaviateConnectionError, ConnectionError) as conn_e: logger.error(f"Ingestion Weaviate conn failed: {conn_e}"); return jsonify({'success': False, 'error': str(conn_e)}), 503
-    except NameError as ne: logger.error(f"Ingestion failed due to missing component: {ne}"); return jsonify({'success': False, 'error': f'Missing Component: {ne}'}), 503
-    except Exception as e: logger.error(f"Ingestion failed: {str(e)}", exc_info=True); return jsonify({'success': False, 'error': f"Ingestion process failed: {str(e)}"}), 500
+    except FileNotFoundError as fnf_e:
+        logger.error(f"Ingestion failed: {fnf_e}")
+        return jsonify({'success': False, 'error': str(fnf_e)}), 404
+    except (WeaviateConnectionError, ConnectionError) as conn_e:
+        logger.error(f"Ingestion Weaviate conn failed: {conn_e}")
+        return jsonify({'success': False, 'error': str(conn_e)}), 503
+    except NameError as ne:
+        logger.error(f"Ingestion failed due to missing component: {ne}")
+        return jsonify({'success': False, 'error': f'Missing Component: {ne}'}), 503
+    except Exception as e:
+        logger.error(f"Ingestion failed: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'error': f"Ingestion process failed: {str(e)}"}), 500
     finally:
         # Close client connection
         if weaviate_client and hasattr(weaviate_client, 'close') and callable(weaviate_client.close):
-            try: weaviate_client.close(); logger.info("Weaviate client closed after full ingestion.")
-            except Exception as close_e: logger.error(f"Error closing Weaviate client: {close_e}")
-        elif weaviate_client: logger.info("Weaviate client has no close method.")
+            try:
+                weaviate_client.close()
+                logger.info("Weaviate client closed after full ingestion.")
+            except Exception as close_e:
+                logger.error(f"Error closing Weaviate client: {close_e}")
+        elif weaviate_client:
+            logger.info("Weaviate client has no close method.")
+
 
 
 @app.route("/ingest_block", methods=["POST"])
 def ingest_block_route():
-    """(Corrected) Triggers INCREMENTAL ingestion using available components."""
     logger = app.logger
     if not ingest_block_available or not run_incremental_ingestion:
         logger.error("/ingest_block: Required 'run_incremental_ingestion' component missing")
@@ -810,13 +877,40 @@ def ingest_block_route():
         return jsonify({"success": False, "error": "Configuration system not available."}), 500
 
     try:
-        # Get document directory from config
-        document_dir = cfg.paths.DOCUMENT_DIR
+        # Get parameters from request (use defaults if not present)
+        document_dir = request.form.get('data_folder', cfg.paths.DOCUMENT_DIR)
+        centroid_path = request.form.get('centroid_path', cfg.paths.DOMAIN_CENTROID_PATH)
+        centroid_update_mode = request.form.get('centroid_update_mode', 'auto')
+        
+        _raw = request.form.get('centroid_auto_threshold', None)
+        try:
+            centroid_auto_threshold = float(_raw)
+        except (TypeError, ValueError):
+            # fallback default if missing, non-numeric, or 'undefined'
+            centroid_auto_threshold = 0.05
+
         logger.info(f"Starting incremental ingestion for folder: {document_dir}")
-        
-        # Call run_ingestion with the folder path
+
+        # Call your incremental ingestion function (should return info about new_vectors, all_vectors, old_centroid)
         result = run_incremental_ingestion(document_dir)
-        
+
+        # Example: get these from your result or pipeline
+        new_vectors = result.get("new_vectors", [])
+        all_vectors = result.get("all_vectors", [])
+        old_centroid = result.get("old_centroid", None)
+
+        # Centroid update logic
+        if centroid_update_mode == 'always':
+            centroid_manager.update_centroid(all_vectors)
+        elif centroid_update_mode == 'never':
+            pass
+        elif centroid_update_mode == 'auto':
+            if should_recalculate_centroid(
+                new_vectors, all_vectors, old_centroid,
+                threshold=centroid_auto_threshold
+            ):
+                centroid_manager.update_centroid(all_vectors)
+
         logger.info(f"Incremental ingestion finished. Result: {result}")
         return jsonify({
             "success": True,
@@ -1768,7 +1862,6 @@ def get_auto_domain_keywords():
     logger.info(f"Returning auto domain keywords: {keywords}")
     return jsonify({"success": bool(keywords), "keywords": keywords})
 
-
     
     # app.py (add after other imports)
 from centroid_manager import CentroidManager
@@ -1784,6 +1877,20 @@ def get_centroid_api():
         "centroid": centroid.tolist(),
         "meta": meta
     })
+
+
+@app.route('/create_centroid', methods=['POST'])
+def create_centroid():
+    centroid_path = request.form.get('centroid_path')
+    data_folder = request.form.get('data_folder')
+    try:
+        # Your logic to create centroid file from data_folder
+        create_centroid_from_data(data_folder, centroid_path)
+        return jsonify({"status": "created", "message": "Centroid file created."})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+    
+
 
 @app.route('/update_auto_domain_keywords', methods=['POST'])
 def update_auto_domain_keywords():

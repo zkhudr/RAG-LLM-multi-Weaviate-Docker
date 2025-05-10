@@ -1,153 +1,168 @@
 // --- START static/ragapp.js ---
-// Use alpine:init to ensure ragApp is defined before Alpine scans
+// Define Alpine component at the right time, no global ragApp, no DOMContentLoaded flag
 
-let domContentLoadedFired = false; // <-- Add this flag outside listeners
+// ragapp.js
 document.addEventListener('alpine:init', () => {
     console.log('[Alpine Event] alpine:init fired. Defining ragApp component...');
+    Alpine.data('ragApp', () => ({
+        
 
-    Alpine.data('ragApp', () => {
-        // Create reactive stores for complex objects
-        const reactiveState = Alpine.reactive({
-            // === CORE STATE ===
-            initCalled: false,
-            statusMessage: 'Initializing...',
-            userInput: '',
-            isStreaming: false,
-            newPresetName: '',
-            newInstanceName: '',
-            selectedPresetName: '',
-           
+        envUserKeywordsString: '',
+        // ─── CORE STATE ───
+        docFreqMode: 'absolute',   // which mode is active
+        totalDocs: 0,              // fetched from server
+        initCalled: false,
+        statusMessage: 'Initializing...',
+        userInput: '',
+        isStreaming: false,
+        newPresetName: '',
+        newInstanceName: '',
+        selectedPresetName: '',
+        chatHistory: [],
+        filesToUpload: [],
+        selectedFileNames: [],
+        weaviateInstances: [],
+        savedChats: [],
+        presets: {},
+        apiKeyStatus: { deepseek: false, openai: false, anthropic: false, cohere: false },
+        toast: { show: false, message: '', type: 'info', timeout: null },
+        confirmationModal: { show: false, title: '', message: '', onConfirm: () => { }, onCancel: () => { }, confirmButtonClass: '' },
+        autoDomainKeywords: '',
+        lastAutoDomainKeywordsList: [],
+        centroidStats: {},
+        queryCentroidInsight: {},
+        centroidUpdateMode: 'auto',
+        centroidAutoThreshold: 5,
 
-            // === COLLECTIONS ===
-            chatHistory: [],
-            filesToUpload: [],
-            selectedFileNames: [],
-            weaviateInstances: [],
-            savedChats: [],
-            presets: {},
+        // ─── CONFIGURATION ───
+        formConfig: {
 
-            // === COMPLEX OBJECTS ===
-            apiKeyStatus: {
-                deepseek: false,
-                openai: false,
-                anthropic: false,
-                cohere: false
+            pipeline: {},
+
+            paths: {
+                DOCUMENT_DIR: '',           // default or loaded from server
+                DOMAIN_CENTROID_PATH: ''    // default or loaded from server
             },
-
-            toast: {
-                show: false,
-                message: '',
-                type: 'info',
-                timeout: null
+        
+            domain_keyword_extraction: {
+                min_doc_freq_abs: null,
+                min_doc_freq_frac: null,
             },
-
-            confirmationModal: {
-                show: false,
-                title: '',
-                message: '',
-                onConfirm: () => { },
-                onCancel: () => { },
-                confirmButtonClass: ''
-            },
+            env: {
+                DOMAIN_KEYWORDS: [],
+                AUTO_DOMAIN_KEYWORDS: [],
+                USER_ADDED_KEYWORDS: [],
+                // if you use it in the template, you can also default SELECTED_N_TOP here
+                SELECTED_N_TOP: null
+              },
             
-            autoDomainKeywords: '',
-            lastAutoDomainKeywordsList: [],
+            security: {
+                SANITIZE_INPUT: true,
+                RATE_LIMIT: 100,
+                API_TIMEOUT: 30,
+                CACHE_ENABLED: true,
+            },
+            retrieval: {
+                COLLECTION_NAME: '',
+                K_VALUE: 5,
+                SCORE_THRESHOLD: 0.5,
+                LAMBDA_MULT: 0.5,
+                SEARCH_TYPE: 'mmr',
+                DOMAIN_SIMILARITY_THRESHOLD: 0.6,
+                SPARSE_RELEVANCE_THRESHOLD: 0.1,
+                FUSED_RELEVANCE_THRESHOLD: 0.4,
+                SEMANTIC_WEIGHT: 0.6,
+                SPARSE_WEIGHT: 0.4,
+                PERFORM_DOMAIN_CHECK: true,
+                WEAVIATE_HOST: '',
+                WEAVIATE_HTTP_PORT: 0,
+                WEAVIATE_GRPC_PORT: 0,
+            },
+            model: {
+                LLM_TEMPERATURE: 0.7,
+                MAX_TOKENS: 1024,
+                OLLAMA_MODEL: '',
+                EMBEDDING_MODEL: '',
+                TOP_P: 1.0,
+                FREQUENCY_PENALTY: 0.0,
+                SYSTEM_MESSAGE: '',
+                EXTERNAL_API_PROVIDER: 'none',
+                EXTERNAL_API_MODEL_NAME: null,
+            },
+            document: {
+                CHUNK_SIZE: 1000,
+                CHUNK_OVERLAP: 100,
+                FILE_TYPES: [],
+                PARSE_TABLES: true,
+                GENERATE_SUMMARY: false,
+            },
+            // …any other config sections…
+        },
 
-            // === Centroid ===
-            centroidStats: {},
-            queryCentroidInsight: {},
+        // ─── LIFECYCLE METHODS ───
+        init() {
+            if (this.initCalled) return;
+            this.initCalled = true;
 
-            // === CONFIGURATION ===
-            formConfig: {
-                security: {
-                    SANITIZE_INPUT: true,
-                    RATE_LIMIT: 100,
-                    API_TIMEOUT: 30,
-                    CACHE_ENABLED: true
-                },
-                retrieval: {
-                    COLLECTION_NAME: '',
-                    K_VALUE: 5,
-                    SCORE_THRESHOLD: 0.5,
-                    LAMBDA_MULT: 0.5,
-                    SEARCH_TYPE: 'mmr',
-                    DOMAIN_SIMILARITY_THRESHOLD: 0.6,
-                    SPARSE_RELEVANCE_THRESHOLD: 0.1,
-                    FUSED_RELEVANCE_THRESHOLD: 0.4,
-                    SEMANTIC_WEIGHT: 0.6,
-                    SPARSE_WEIGHT: 0.4,
-                    PERFORM_DOMAIN_CHECK: true,
-                    WEAVIATE_HOST: '',
-                    WEAVIATE_HTTP_PORT: 0,
-                    WEAVIATE_GRPC_PORT: 0
-                },
-                model: {
-                    LLM_TEMPERATURE: 0.7,
-                    MAX_TOKENS: 1024,
-                    OLLAMA_MODEL: '',
-                    EMBEDDING_MODEL: '',
-                    TOP_P: 1.0,
-                    FREQUENCY_PENALTY: 0.0,
-                    SYSTEM_MESSAGE: '',
-                    EXTERNAL_API_PROVIDER: 'none',
-                    EXTERNAL_API_MODEL_NAME: null
-                },
-                document: {
-                    CHUNK_SIZE: 1000,
-                    CHUNK_OVERLAP: 100,
-                    FILE_TYPES: [],
-                    PARSE_TABLES: true,
-                    GENERATE_SUMMARY: false
-                },
-                paths: {
-                    DOCUMENT_DIR: '',
-                    DOMAIN_CENTROID_PATH: ''
-                },
-                env: {
-                    DOMAIN_KEYWORDS: [],
-                    AUTO_DOMAIN_KEYWORDS: [],
-                    USER_ADDED_KEYWORDS: []
-                },
-                domain_keyword_extraction: {
-                    keybert_model: "all-MiniLM-L6-v2",
-                    top_n_per_doc: 10,
-                    final_top_n: 100,
-                    min_doc_freq: 2,
-                    diversity: 0.7,
-                    no_pos_filter: false,
-                },
-                pipeline: {
-                    max_history_turns: 5,
-                },  
-                savedConfig: null,
-                configDirtyExplicitlySet: false,
+            // Watch abs → update frac if in absolute mode
+            this.$watch(
+                'formConfig.domain_keyword_extraction.min_doc_freq_abs',
+                abs => {
+                    console.log('ABS watcher', abs);
+                    if (this.docFreqMode === 'absolute' && this.totalDocs) {
+                        this.formConfig.domain_keyword_extraction.min_doc_freq_frac =
+                            +(abs / this.totalDocs).toFixed(3);
+                    }
+                }
+            );
+
+            // Watch frac → update abs if in fraction mode
+            this.$watch(
+                'formConfig.domain_keyword_extraction.min_doc_freq_frac',
+                frac => {
+                    console.log('FRAC watcher', frac);
+                    if (this.docFreqMode === 'fraction' && this.totalDocs) {
+                        this.formConfig.domain_keyword_extraction.min_doc_freq_abs =
+                            Math.ceil(frac * this.totalDocs);
+                    }
+                }
+            );
+
+            // Kick off data load
+            this.loadInitialData();
+        },
+
+        async loadInitialData() {
+            // Fetch totalDocs
+            console.log("[Init API] Fetching document count...");
+            try {
+                const res = await fetch('/get-doc-count');
+                const json = await res.json();
+                this.totalDocs = json.total_docs;
+                console.log("[Init API] Document count loaded:", this.totalDocs);
+            } catch (e) {
+                console.warn("[Init API] Could not fetch doc count", e);
+                this.totalDocs = 0;
             }
-             });
 
-        // Return the component definition
-        return {
-            // === Spread in all reactiveState fields ===
-            ...reactiveState,
+            // Initialize both abs ↔ frac from whichever the server provided
+            const dke = this.formConfig.domain_keyword_extraction;
+            if (dke.min_doc_freq_abs != null) {
+                dke.min_doc_freq_frac = this.totalDocs
+                    ? +(dke.min_doc_freq_abs / this.totalDocs).toFixed(3)
+                    : 0;
+            } else if (dke.min_doc_freq_frac != null) {
+                dke.min_doc_freq_abs = this.totalDocs
+                    ? Math.ceil(dke.min_doc_freq_frac * this.totalDocs)
+                    : 0;
+            } else {
+                dke.min_doc_freq_abs = 0;
+                dke.min_doc_freq_frac = 0;
+            }
+        },
 
-            
-            // === Max word Frequency 
-            docFreqMode: 'absolute',   // or 'fraction'
-            totalDocs: null,
+        // === Auto Domain Keywords Controls ===
 
-
-            get computedAbs() {
-                if (this.formConfig.domain_keyword_extraction.min_doc_freq_frac != null && this.totalDocs)
-                    return Math.ceil(this.formConfig.domain_keyword_extraction.min_doc_freq_frac * this.totalDocs);
-                return null;
-            },
-            get computedFrac() {
-                if (this.formConfig.domain_keyword_extraction.min_doc_freq_abs != null && this.totalDocs)
-                    return (this.formConfig.domain_keyword_extraction.min_doc_freq_abs / this.totalDocs).toFixed(3);
-                return null;
-            },
-
-
-            // === Additional state ===
             autoDomainKeywordsList: [],        // Currently active auto keywords
             allAutoDomainKeywordsList: [],     // Full fetched list
             lastAutoDomainKeywordsList: [],    // Backup for “restore”
@@ -163,104 +178,96 @@ document.addEventListener('alpine:init', () => {
                     .join('');
             },
 
-            get coloredAutoDomainKeywords() {
-                return this.allAutoDomainKeywordsList
-                    .map((kw, idx) => {
-                        const cls = idx < this.selectedTopN
-                            ? 'text-blue-600'
-                            : 'text-red-600';
-                        return `<span class="${cls}">${kw}</span>`;
-                    })
-                    .join(', ');
-            },
+        get coloredAutoDomainKeywords() {
+            // Show all candidates, blue if within Top N & enabled, red otherwise
+            return (this.allAutoDomainKeywordsList || []).map((term, idx) => {
+                const css = (!this.autoKeywordsEnabled)
+                    ? 'text-gray-400'
+                    : (idx < this.selectedTopN ? 'text-blue-600' : 'text-red-600');
+                return `<span class="${css}">${term}</span>`;
+            }).join(', ');
+              },
 
-            // === Lifecycle hook ===
-            init() {
-                if (!this.initCalled) {
-                    this.initCalled = true;
-                    this.loadInitialConfig()
-                        .then(() => this.fetchAutoDomainKeywords())
-                        .then(() => this.fetchCentroidStats())
-                        .catch(e => console.error("Initial config load error:", e));
-                    }
-            },
-            applyTopNKeywords() {
-                this.autoDomainKeywordsList = this.allAutoDomainKeywordsList.slice(0, this.selectedTopN);
-                this._updateActiveSet();
-                this.syncActiveKeywordsToBackend();
 
-                // Add this block to save the selectedTopN to config
-                this.saveTopNToConfig(this.selectedTopN);
-            },
+        applyTopNKeywords() {
+            console.log(`[TopN] Applying top ${this.selectedTopN} keywords`);
+            // Save current for restore
+            this.lastAutoDomainKeywordsList = [...this.autoDomainKeywordsList];
+            // Truncate to Top N
+            this.autoDomainKeywordsList = this.allAutoDomainKeywordsList.slice(0, this.selectedTopN);
+            this._updateActiveSet();
+            this.syncActiveKeywordsToBackend();
+            // Persist selection
+            this.saveTopNToConfig(this.selectedTopN);
+              },
 
-            async saveTopNToConfig(topN) {
-                try {
-                    const response = await fetch('/update_topn_config', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            topN: topN
-                        })
-                    });
-                    const result = await response.json();
-                    if (!result.success) {
-                        console.error("Failed to save TopN to config:", result.error);
-                    }
-                } catch (e) {
-                    console.error("Error saving TopN to config:", e);
+        async saveTopNToConfig(topN) {
+            try {
+                console.log(`[Config] Saving TopN=${topN} to config`);
+                const response = await fetch('/update_topn_config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ topN })
+                });
+                const result = await response.json();
+                if (!result.success) {
+                    console.error("[Config] Failed to save TopN:", result.error);
+                } else {
+                    console.log("[Config] TopN saved successfully");
                 }
-            },
+            } catch (e) {
+                console.error("[Config] Error saving TopN to config:", e);
+            }
+              },
 
             // === Toggle / Restore ===
-            toggleAutoKeywords() {
-                this.autoKeywordsEnabled = !this.autoKeywordsEnabled;
-                console.log("Auto keywords enabled:", this.autoKeywordsEnabled);
+        toggleAutoKeywords() {
+            this.autoKeywordsEnabled = !this.autoKeywordsEnabled;
+            console.log("[AutoKeywords] Enabled:", this.autoKeywordsEnabled);
 
-                if (this.autoKeywordsEnabled) {
-                    // Re-enable: restore last set
-                    if (this.lastAutoDomainKeywordsList.length > 0) {
-                        this.autoDomainKeywordsList = [...this.lastAutoDomainKeywordsList];
-                        this._updateActiveSet();
-                        this.syncActiveKeywordsToBackend();
-                        this.showToast("Auto keywords enabled and restored.", "success");
-                    } else {
-                        // If no saved list, reload from backend
-                        this.fetchAutoDomainKeywords().then(() => {
-                            this.showToast("Auto keywords enabled.", "success");
-                        });
-                    }
-                } else {
-                    // Disable: save current then clear
-                    this.lastAutoDomainKeywordsList = [...this.autoDomainKeywordsList];
-                    this.autoDomainKeywordsList = [];
-                    this._updateActiveSet();
-                    this.syncActiveKeywordsToBackend();
-                    this.showToast("Auto keywords disabled.", "info");
-                }
-            },
-
-
-            restoreAutoDomainKeywords() {
-                if (this.lastAutoDomainKeywordsList.length) {
+            if (this.autoKeywordsEnabled) {
+                // Re-enable: restore or refetch
+                if (this.lastAutoDomainKeywordsList.length > 0) {
                     this.autoDomainKeywordsList = [...this.lastAutoDomainKeywordsList];
                     this._updateActiveSet();
                     this.syncActiveKeywordsToBackend();
-                    this.showToast("Restored last auto keywords set.", "success");
+                    this.showToast("Auto keywords enabled and restored.", "success");
                 } else {
-                    // Try to fetch from backend if no saved list
                     this.fetchAutoDomainKeywords().then(() => {
-                        if (this.allAutoDomainKeywordsList.length > 0) {
-                            this.showToast("Fetched keywords from backend.", "success");
-                        } else {
-                            this.showToast("No previous set to restore and none on backend.", "info");
-                        }
-
-                        console.log("Current list:", this.autoDomainKeywordsList);
-                        console.log("Last saved list:", this.lastAutoDomainKeywordsList);
+                        this.showToast("Auto keywords enabled.", "success");
                     });
                 }
-            },
+            } else {
+                // Disable: stash current then clear
+                this.lastAutoDomainKeywordsList = [...this.autoDomainKeywordsList];
+                this.autoDomainKeywordsList = [];
+                this._updateActiveSet();
+                this.syncActiveKeywordsToBackend();
+                this.showToast("Auto keywords disabled.", "info");
+            }
+              },
 
+
+        restoreAutoDomainKeywords() {
+            if (this.lastAutoDomainKeywordsList.length) {
+                console.log("[AutoKeywords] Restoring last list");
+                this.autoDomainKeywordsList = [...this.lastAutoDomainKeywordsList];
+                this._updateActiveSet();
+                this.syncActiveKeywordsToBackend();
+                this.showToast("Restored last auto keywords set.", "success");
+            } else {
+                console.log("[AutoKeywords] No last list; fetching from backend");
+                this.fetchAutoDomainKeywords().then(() => {
+                    if (this.allAutoDomainKeywordsList.length > 0) {
+                        this.showToast("Fetched keywords from backend.", "success");
+                    } else {
+                        this.showToast("No previous set to restore and none on backend.", "info");
+                    }
+                    console.log("Current list:", this.autoDomainKeywordsList);
+                    console.log("Last saved list:", this.lastAutoDomainKeywordsList);
+                });
+                }
+            },
 
             _updateActiveSet() {
                 this.activeAutoDomainKeywordsSet = new Set(this.autoDomainKeywordsList);
@@ -298,19 +305,7 @@ document.addEventListener('alpine:init', () => {
                 clearTimeout(this.toast.timeout);
                 this.toast.timeout = setTimeout(() => this.toast.show = false, duration);
             },
-
-
-    // === LIFECYCLE METHODS ===
-    init() {
-        console.log("[Component Init] Initializing ragApp component");
-        if (!this.initCalled) {
-            this.loadInitialData();
-            
-        }
-        this.$watch('statusMessage', (value) => {
-            console.log('[Status Change]', value);
-        })
-    },
+        
 
     // === UTILITY METHODS ===
     isLoading() {
@@ -368,183 +363,186 @@ document.addEventListener('alpine:init', () => {
                 // …
             },        
 
-    async saveConfig() {
-        if (this.isLoading()) {
-            console.warn('[Button Click] Save Config ignored, already loading:', this.statusMessage);
-            if (this.showToast) this.showToast("Please wait for the current operation to finish.", "info");
-            return false;
-        }
-
-        console.log("Saving configuration via /save_config...");
-        this.statusMessage = 'Saving Config...';
-
-        try {
-            const response = await fetch('/save_config', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(this.formConfig)
-            });
-
-            const result = await response.json();
-
-            if (!response.ok || !result.success) {
-                const errorMsg = result.error || result.message || `HTTP error ${response.status}`;
-                throw new Error(errorMsg);
+        async saveConfig() {
+            // Prevent double‐submit
+            if (this.isLoading()) {
+                console.warn('[Button Click] Save Config ignored, already loading:', this.statusMessage);
+                if (this.showToast) this.showToast("Please wait for the current operation to finish.", "info");
+                return false;
             }
 
-            if (result.config) {
-                console.log("[saveConfig] Merging validated config from backend");
-                this.deepMerge(this.formConfig, result.config);
+            console.log("Saving configuration via /save_config...");
+            this.statusMessage = 'Saving Config...';
+
+            // ── 1) Sync doc‐freq mode & compute the one true min_doc_freq ──
+            const dke = this.formConfig.domain_keyword_extraction;
+            // Persist the chosen mode
+            dke.min_doc_freq_mode = this.docFreqMode;
+
+            // Compute canonical min_doc_freq
+            if (this.docFreqMode === 'absolute') {
+                // Use the absolute input (or fall back to existing min_doc_freq)
+                dke.min_doc_freq = dke.min_doc_freq_abs ?? dke.min_doc_freq;
+            } else {
+                // Fraction mode → compute count from totalDocs
+                dke.min_doc_freq = (this.totalDocs && dke.min_doc_freq_frac != null)
+                    ? Math.ceil(dke.min_doc_freq_frac * this.totalDocs)
+                    : dke.min_doc_freq;
             }
 
-            this.showToast(result.message || 'Configuration saved successfully!', 'success');
-            this._markConfigClean();
-            return true;
+            // (Optional) Remove UI‐only helpers so backend only sees the one field
+            //delete dke.min_doc_freq_abs;
+            //delete dke.min_doc_freq_frac;
 
-        } catch (error) {
-            console.error('Configuration Save Error:', error);
-            this.statusMessage = 'Save Error';
-            this.showToast(`Error saving config: ${error.message}`, 'error');
-            return false;
-        } finally {
-            if (this.statusMessage === 'Saving Config...') {
-                this.statusMessage = 'Idle';
-            } else if (this.statusMessage === 'Save Error') {
-                setTimeout(() => {
-                    if (this.statusMessage === 'Save Error') this.statusMessage = 'Idle';
-                }, 2000);
+            try {
+                // ── 2) POST to backend ──
+                const response = await fetch('/save_config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(this.formConfig)
+                });
+                const result = await response.json();
+
+                // 3) Error handling
+                if (!response.ok || !result.success) {
+                    const errorMsg = result.error || result.message || `HTTP error ${response.status}`;
+                    throw new Error(errorMsg);
+                }
+
+                // 4) Merge back any validated defaults from server
+                if (result.config) {
+                    console.log("[saveConfig] Merging validated config from backend");
+                    this.deepMerge(this.formConfig, result.config);
+                }
+
+                // 5) Notify & mark clean
+                this.showToast(result.message || 'Configuration saved successfully!', 'success');
+                this._markConfigClean();
+                return true;
+
+            } catch (error) {
+                console.error('Configuration Save Error:', error);
+                this.statusMessage = 'Save Error';
+                this.showToast(`Error saving config: ${error.message}`, 'error');
+                return false;
+
+            } finally {
+                // Reset status
+                if (this.statusMessage === 'Saving Config...') {
+                    this.statusMessage = 'Idle';
+                } else if (this.statusMessage === 'Save Error') {
+                    setTimeout(() => {
+                        if (this.statusMessage === 'Save Error') this.statusMessage = 'Idle';
+                    }, 2000);
+                }
             }
-        }
-    },
+        },
+              
 
 
                     // === INITIALIZATION METHOD (Called manually below) ===
-                    async loadInitialData() {
-                        if (this.initCalled) {
-                            console.warn("[Init Method] init() called again, skipping.");
-                            return;
-                        }
-                        this.initCalled = true;
-                        console.log("[Init Method] init() explicitly called (First Run).");
-                        this.statusMessage = 'Loading UI data...';
-                        try {
-                            console.log("[Init Method] Starting API calls in Promise.all...");
-                            // Fetch initial data using Promise.all
-                            await Promise.all([
-                                (async () => {
-                                    console.log("[Init API] Starting loadInitialConfig...");
-                                    try {
-                                        await this.loadInitialConfig();
-                                        console.log("[Init API] Finished loadInitialConfig.");
-                                    }
-                                    catch (e) {
-                                        console.error("[Init API] loadInitialConfig FAILED:", e);
-                                        throw e;
-                                    }
-                                    // Add this new async block for doc count
-                                
-                                })(),
-
-                                (async () => {
-                                    console.log("[Init API] Fetching document count...");
-                                    try {
-                                        const response = await fetch('/get-doc-count');
-                                        const data = await response.json();
-                                        this.totalDocs = data.total_docs;
-                                        console.log("[Init API] Document count loaded:", this.totalDocs);
-                                    } catch (e) {
-                                        console.warn("[Init API] Could not fetch doc count", e);
-                                    }
-                                })(),
-                                
-                                (async () => {
-                                    console.log("[Init API] Starting checkApiKeys...");
-                                    try {
-                                        await this.checkApiKeys();
-                                        console.log("[Init API] Finished checkApiKeys.");
-                                    }
-                                    catch (e) {
-                                        console.error("[Init API] checkApiKeys FAILED:", e);
-                                    }
-                                })(),
-                                (async () => {
-                                    console.log("[Init API] Starting fetchPresets...");
-                                    try {
-                                        await this.fetchPresets();
-                                        console.log("[Init API] Finished fetchPresets.");
-                                    }
-                                    catch (e) {
-                                        console.error("[Init API] fetchPresets FAILED:", e);
-                                    }
-                                })(),
-                                (async () => {
-                                    console.log("[Init API] Starting fetchWeaviateInstances...");
-                                    try {
-                                        await this.fetchWeaviateInstances();
-                                        console.log("[Init API] Finished fetchWeaviateInstances.");
-                                    }
-                                    catch (e) {
-                                        console.error("[Init API] fetchWeaviateInstances FAILED:", e);
-                                    }
-                                })(),
-                                (async () => {
-                                    console.log("[Init API] Starting fetchSavedChats...");
-                                    try {
-                                        await this.fetchSavedChats();
-                                        console.log("[Init API] Finished fetchSavedChats.");
-                                    }
-                                    catch (e) {
-                                        console.error("[Init API] fetchSavedChats FAILED:", e);
-                                    }
-                                })(),
-                                (async () => {
-                                    console.log("[Init API] Starting fetchAutoDomainKeywords...");
-                                    try {
-                                        await this.fetchAutoDomainKeywords();
-                                        console.log("[Init API] Finished fetchAutoDomainKeywords.");
-                                    }
-                                    catch (e) {
-                                        console.error("[Init API] fetchAutoDomainKeywords FAILED:", e);
-                                    }
-
-                                })(),
-
-                            ]);
-
-                            console.log("[Init Method] Promise.all finished.");
-
-                            // Add welcome message
-                            if (this.chatHistory.length === 0) {
-                                console.log("[Init Method] Adding welcome message.");
-                                this.chatHistory.push(
-                                    {
-                                        role: 'assistant',
-                                        text: 'Hello! Ask me anything.',
-                                        timestamp: new Date().toISOString()
-                                    });
+            async loadInitialData() {
+                console.log("[Init Method] loadInitialData() called.");
+                this.statusMessage = 'Loading UI data...';
+                try {
+                    console.log("[Init Method] Starting API calls in Promise.all...");
+                    await Promise.all([
+                        (async () => {
+                            console.log("[Init API] Starting loadInitialConfig...");
+                            try {
+                                await this.loadInitialConfig();
+                                console.log("[Init API] Finished loadInitialConfig.");
+                            } catch (e) {
+                                console.error("[Init API] loadInitialConfig FAILED:", e);
+                                throw e;
                             }
-                            else {
-                                console.log("[Init Method] Skipping welcome message (history already present).");
+                        })(),
+                        (async () => {
+                            console.log("[Init API] Fetching document count...");
+                            try {
+                                const response = await fetch('/get-doc-count');
+                                const data = await response.json();
+                                this.totalDocs = data.total_docs;
+                                console.log("[Init API] Document count loaded:", this.totalDocs);
+                            } catch (e) {
+                                console.warn("[Init API] Could not fetch doc count", e);
                             }
+                        })(),
+                        (async () => {
+                            console.log("[Init API] Starting checkApiKeys...");
+                            try {
+                                await this.checkApiKeys();
+                                console.log("[Init API] Finished checkApiKeys.");
+                            } catch (e) {
+                                console.error("[Init API] checkApiKeys FAILED:", e);
+                            }
+                        })(),
+                        (async () => {
+                            console.log("[Init API] Starting fetchPresets...");
+                            try {
+                                await this.fetchPresets();
+                                console.log("[Init API] Finished fetchPresets.");
+                            } catch (e) {
+                                console.error("[Init API] fetchPresets FAILED:", e);
+                            }
+                        })(),
+                        (async () => {
+                            console.log("[Init API] Starting fetchWeaviateInstances...");
+                            try {
+                                await this.fetchWeaviateInstances();
+                                console.log("[Init API] Finished fetchWeaviateInstances.");
+                            } catch (e) {
+                                console.error("[Init API] fetchWeaviateInstances FAILED:", e);
+                            }
+                        })(),
+                        (async () => {
+                            console.log("[Init API] Starting fetchSavedChats...");
+                            try {
+                                await this.fetchSavedChats();
+                                console.log("[Init API] Finished fetchSavedChats.");
+                            } catch (e) {
+                                console.error("[Init API] fetchSavedChats FAILED:", e);
+                            }
+                        })(),
+                        (async () => {
+                            console.log("[Init API] Starting fetchAutoDomainKeywords...");
+                            try {
+                                await this.fetchAutoDomainKeywords();
+                                console.log("[Init API] Finished fetchAutoDomainKeywords.");
+                            } catch (e) {
+                                console.error("[Init API] fetchAutoDomainKeywords FAILED:", e);
+                            }
+                        })(),
+                    ]);
 
-                            this.statusMessage = 'Idle';
-                            console.log("[Init Method] init() finished successfully.");
-                            this.scrollToBottom();
-                            // Focus input after UI updates
-                            this.$nextTick(() => {
-                                console.log("[Init Method] Focusing input area.");
-                                this.$refs.inputArea?.focus();
-                            });
+                    console.log("[Init Method] Promise.all finished.");
 
-                        }
-                        catch (error) {
-                            // This catches errors specifically re-thrown from critical API calls (like loadInitialConfig)
-                            console.error("[Init Method] CRITICAL Error during init:", error);
-                            this.statusMessage = 'Initialization Error!';
-                            this.showToast(`Initialization failed: ${error.message}. Check console & backend.`,
-                                'error', 10000);
-                        }
-                    }, // End of loadInitialData() method
+                    if (this.chatHistory.length === 0) {
+                        console.log("[Init Method] Adding welcome message.");
+                        this.chatHistory.push({
+                            role: 'assistant',
+                            text: 'Hello! Ask me anything.',
+                            timestamp: new Date().toISOString()
+                        });
+                    } else {
+                        console.log("[Init Method] Skipping welcome message (history already present).");
+                    }
+
+                    this.statusMessage = 'Idle';
+                    console.log("[Init Method] init() finished successfully.");
+                    this.scrollToBottom();
+                    this.$nextTick(() => {
+                        console.log("[Init Method] Focusing input area.");
+                        this.$refs.inputArea?.focus();
+                    });
+
+                } catch (error) {
+                    console.error("[Init Method] CRITICAL Error during init:", error);
+                    this.statusMessage = 'Initialization Error!';
+                    this.showToast(`Initialization failed: ${error.message}. Check console & backend.`, 'error', 10000);
+                }
+            },
+
 
 
                     // ADD THIS METHOD: Called by the button click in index.html
@@ -819,17 +817,22 @@ document.addEventListener('alpine:init', () => {
                         el.style.height = 'auto';
                         el.style.height = `${Math.min(el.scrollHeight, maxH)}px`;
                     },
-                    renderMarkdown(text) {
-                        if (!text) return '';
-                        // Basic: escape HTML, convert newlines to <br>, basic bold/italic
-                        let safeText = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-                        safeText = safeText.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>'); // Bold
-                        safeText = safeText.replace(/\*(.*?)\*/g, '<em>$1</em>'); // Italic
-                        safeText = safeText.replace(/`([^`]+)`/g, '<code>$1</code>'); // Inline code
-                        safeText = safeText.replace(/\n/g, '<br>'); // Newlines
-                        // Add <pre><code> for blocks if needed, requires more complex regex or library
-                        return safeText;
-                    }, // Make sure comma is present if other methods follow
+
+            safeRenderMarkdown(text) {
+                if (!text) return '';
+                // Fallback: if libs aren’t available, HTML-escape the text
+                if (!window.marked || !window.DOMPurify) {
+                    return text
+                        .replace(/&/g, '&amp;')
+                        .replace(/</g, '&lt;')
+                        .replace(/>/g, '&gt;')
+                        .replace(/\n/g, '<br>');
+                }
+                // 1) Full Markdown → HTML
+                const html = window.marked.parse(text);
+                // 2) Sanitize HTML
+                return DOMPurify.sanitize(html);
+            },
 
                     showToast(message, type = 'info', duration = 3000) {
                         console.log(`[Toast (${type})] ${message}`);
@@ -1589,23 +1592,31 @@ document.addEventListener('alpine:init', () => {
                                 throw new Error(errorDetail); // Throw to be caught by the catch block
                             }
 
+                            // --- Response Handling ---
+                            if (result.status === 'centroid_missing') {
+                                // Show popup for user to enter/select centroid path
+                                let newPath = prompt(result.message + "\nEnter new centroid file path (or select):", this.formConfig.paths.DOMAIN_CENTROID_PATH);
+                                if (newPath) {
+                                    await this._createCentroidFile(newPath, this.formConfig.paths.DOCUMENT_DIR);
+                                    // Optionally, retry ingestion after centroid creation:
+                                    await this._performStartIngestion();
+                                }
+                                return; // Don't proceed further
+                            }
+
                             // --- Success Path ---
-                            // Process successful response, include stats in the message if available
                             let successMsg = result.message || 'Full ingestion finished.';
                             if (result.stats) {
-                                // Construct a more detailed message using stats
                                 const stats = result.stats;
                                 const processed = stats.processed_chunks !== undefined ? stats.processed_chunks :
-                                    stats.processed_files !== undefined ? stats.processed_files :
-                                        'N/A'; // Adapt based on what your script returns
+                                    stats.processed_files !== undefined ? stats.processed_files : 'N/A';
                                 const inserted = stats.inserted !== undefined ? stats.inserted : 'N/A';
                                 const errors = stats.errors !== undefined ? stats.errors : 0;
                                 successMsg +=
                                     ` (Processed: ${processed}, Inserted: ${inserted}, Errors: ${errors})`;
                             }
-                            if (this.showToast) this.showToast(successMsg, 'success',
-                                8000); // Show success toast for longer
-                            this.statusMessage = 'Ingestion Complete'; // Indicate completion
+                            if (this.showToast) this.showToast(successMsg, 'success', 8000);
+                            this.statusMessage = 'Ingestion Complete';
 
                         }
                         catch (error) {
@@ -1632,6 +1643,28 @@ document.addEventListener('alpine:init', () => {
                         }
                     }, // End of _performStartIngestion
 
+            async _createCentroidFile(centroidPath, dataFolder) {
+                try {
+                    const response = await fetch('/create_centroid', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: `centroid_path=${encodeURIComponent(centroidPath)}&data_folder=${encodeURIComponent(dataFolder)}`
+                    });
+                    const data = await response.json();
+                    if (data.status === 'created') {
+                        alert("Centroid file created successfully. Starting ingestion...");
+                    } else {
+                        alert("Failed to create centroid file: " + data.message);
+                    }
+                } catch (err) {
+                    alert("AJAX error: " + err);
+                }
+            
+                    if(data.status === 'created') {
+                alert("Centroid file created successfully. Starting ingestion...");
+                await this._performStartIngestion();
+            }
+            },
 
                     // --- File Handling & Ingestion ---
 
@@ -1645,75 +1678,96 @@ document.addEventListener('alpine:init', () => {
                             ._performStartIncrementalIngestion.bind(this));
                     },
 
-                    async _performStartIncrementalIngestion() { // Contains the original incremental ingestion logic
-                        // Check loading state *inside* the core logic as well
-                        if (this.isLoading()) {
-                            console.warn('[Button Click - Core] Incremental Ingestion ignored, already loading:',
-                                this.statusMessage);
-                            // if (this.showToast) this.showToast("Operation already in progress.", "info"); // Optional toast
-                            return;
+            async _performStartIncrementalIngestion() {
+                // Prevent double execution
+                if (this.isLoading()) {
+                    console.warn('[Button Click - Core] Incremental Ingestion ignored, already loading:', this.statusMessage);
+                    return;
+                }
+
+                console.log("[API Call] Starting incremental ingestion via /ingest_block...");
+                this.statusMessage = 'Starting Incremental Ingestion...';
+
+                // Get config values (adapt to your model/Alpine structure)
+                const dataFolder = this.formConfig.paths.DOCUMENT_DIR;
+                const centroidPath = this.formConfig.paths.DOMAIN_CENTROID_PATH;
+                const centroidUpdateMode = this.formConfig.centroidUpdateMode; // 'always', 'never', or 'auto'
+
+                try {
+                    // Send all necessary params to backend
+                    // Build params safely, coerce undefined → default 0.05
+                    const params = new URLSearchParams();
+                    params.append('data_folder', dataFolder);
+                    params.append('centroid_path', centroidPath);
+                    params.append('centroid_update_mode', centroidUpdateMode);
+                    // If formConfig.centroidAutoThreshold is missing or not a number, use 0.05
+                    const rawThreshold = this.formConfig.centroidAutoThreshold;
+                    const thresholdNum = typeof rawThreshold === 'number'
+                        ? rawThreshold
+                        : parseFloat(rawThreshold);
+                    params.append(
+                        'centroid_auto_threshold',
+                        (Number.isFinite(thresholdNum) ? thresholdNum : 0.05).toString()
+                    );
+
+                    const response = await fetch('/ingest_block', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: params.toString()
+                    });
+
+                    const result = await response.json();
+
+                    // Handle centroid missing (same as full ingestion)
+                    if (result.status === 'centroid_missing') {
+                        let newPath = prompt(result.message + "\nEnter new centroid file path (or select):", centroidPath);
+                        if (newPath) {
+                            await this._createCentroidFile(newPath, dataFolder);
+                            await this._performStartIncrementalIngestion();
                         }
+                        return;
+                    }
 
-                        console.log("[API Call] Starting incremental ingestion via /ingest_block...");
-                        this.statusMessage = 'Starting Incremental Ingestion...'; // User feedback
+                    // Check for HTTP errors
+                    if (!response.ok) {
+                        let errorDetail = result.error || `HTTP error! Status: ${response.status}`;
+                        if (result.traceback) console.error("Ingestion Traceback:\n", result.traceback);
+                        throw new Error(errorDetail);
+                    }
 
-                        try {
-                            // Call the Flask backend endpoint for incremental ingestion
-                            const response = await fetch('/ingest_block',
-                                {
-                                    method: 'POST'
-                                }); // Ensure Flask endpoint exists
+                    // Success path: show stats if available
+                    let successMsg = result.message || 'Incremental ingestion finished.';
+                    if (result.stats) {
+                        const stats = result.stats;
+                        const processed = stats.processed_files !== undefined ? stats.processed_files :
+                            stats.processed_chunks !== undefined ? stats.processed_chunks : 'N/A';
+                        const inserted = stats.inserted !== undefined ? stats.inserted : 'N/A';
+                        const errors = stats.errors !== undefined ? stats.errors : 0;
+                        successMsg += ` (Processed: ${processed}, Inserted: ${inserted}, Errors: ${errors})`;
+                    }
+                    if (this.showToast) this.showToast(successMsg, 'success', 6000);
+                    this.statusMessage = 'Ingestion Complete';
 
-                            // Always try to parse the response
-                            const result = await response.json();
+                } catch (error) {
+                    // Error path
+                    console.error('[API Error] Start Incremental Ingestion FAILED:', error);
+                    this.statusMessage = 'Ingestion Error';
+                    if (this.showToast) this.showToast(`Incremental ingestion failed: ${error.message}`, 'error', 10000);
 
-                            // Check for HTTP errors first
-                            if (!response.ok) {
-                                let errorDetail = result.error || `HTTP error! Status: ${response.status}`;
-                                if (result.traceback) console.error("Ingestion Traceback:\n", result.traceback);
-                                throw new Error(errorDetail); // Throw to be caught by the catch block
-                            }
-
-                            // --- Success Path ---
-                            // Process successful response, include stats if available
-                            let successMsg = result.message || 'Incremental ingestion finished.';
-                            if (result.stats) { // Check if stats exist in the result
-                                const stats = result.stats;
-                                // Adapt based on what your incremental script actually returns in stats
-                                const processed = stats.processed_files !== undefined ? stats.processed_files :
-                                    stats.processed_chunks !== undefined ? stats.processed_chunks : 'N/A';
-                                const inserted = stats.inserted !== undefined ? stats.inserted : 'N/A';
-                                const errors = stats.errors !== undefined ? stats.errors : 0;
-                                successMsg +=
-                                    ` (Processed: ${processed}, Inserted: ${inserted}, Errors: ${errors})`;
-                            }
-                            if (this.showToast) this.showToast(successMsg, 'success',
-                                6000); // Slightly shorter toast than full
-                            this.statusMessage = 'Ingestion Complete'; // Indicate completion
-
+                } finally {
+                    // Reset status after a delay
+                    setTimeout(() => {
+                        if (
+                            this.statusMessage === 'Starting Incremental Ingestion...' ||
+                            this.statusMessage === 'Ingestion Complete' ||
+                            this.statusMessage === 'Ingestion Error'
+                        ) {
+                            this.statusMessage = 'Idle';
                         }
-                        catch (error) {
-                            // --- Error Path ---
-                            console.error('[API Error] Start Incremental Ingestion FAILED:', error);
-                            this.statusMessage = 'Ingestion Error'; // Set error status
-                            // Show detailed error toast
-                            if (this.showToast) this.showToast(`Incremental ingestion failed: ${error.message}`,
-                                'error', 10000);
+                    }, 4000);
+                }
+            },
 
-                        }
-                        finally {
-                            // --- Finally Block ---
-                            // Reset status after a delay, unless another operation started
-                            setTimeout(() => {
-                                if (this.statusMessage === 'Starting Incremental Ingestion...' || this
-                                    .statusMessage === 'Ingestion Complete' || this.statusMessage ===
-                                    'Ingestion Error') {
-                                    this.statusMessage = 'Idle';
-                                }
-                            }, 4000); // 4-second delay before resetting status
-                            // --- END Finally Block ---
-                        }
-                    }, // End of _performStartIncrementalIngestion
 
 
             async loadInitialConfig() {
@@ -1821,7 +1875,9 @@ document.addEventListener('alpine:init', () => {
                     } catch (e) {
                         console.error("Error updating TopN options:", e);
                     }
-
+                    
+                    // this.envUserKeywordsString = this.formConfig.env.USER_ADDED_KEYWORDS.join(', ');
+                    this.envUserKeywordsString = (this.formConfig.env.USER_ADDED_KEYWORDS || []).join(', ');
                     this._markConfigClean();
                     console.log("Config loaded, keywords populated, and state marked clean");
 
@@ -2262,17 +2318,12 @@ document.addEventListener('alpine:init', () => {
                         headers: {
                             'Content-Type': 'application/json'
                         }
-                    });
+                    
+                });
                 }
-            }
 
-
-                         
-        }; // Close return
-    }); // Close Alpine.data
-}); // Close 'alpine:init' listener
-
-
+}}) // <-- End of Alpine.data object
+)}); // <-- End of event listener
 
 function addTooltips() {
     // Create a function to add tooltips to labels
@@ -2312,7 +2363,9 @@ function addTooltips() {
         const key = label.getAttribute('data-tooltip');
         createTooltip(label, key);
     });
+
 }
+
 
 
 // Consolidated listener for non-Alpine DOM setup
@@ -2324,14 +2377,6 @@ document.addEventListener('DOMContentLoaded', function () {
         return;
     }
     domContentLoadedFired_setup = true;
-    console.log('[DOM Setup] Consolidated listener running...');
-
-    // --- NOTE on Keyword Update ---
-    // The logic to call updateConfigWithKeywords should NOT be here.
-    // It needs to be called *after* the keyword builder API call SUCCEEDS
-    // and provides the keywords. This likely needs modification inside
-    // the _performRunKeywordBuilder method.
-    console.log('[DOM Setup] Consolidated listener finished.');
 });
 
 // Final log to confirm script parsing

@@ -5,18 +5,31 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>RAG Orchestration Studio</title>
+
+    <!-- Tailwind first -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Register your Alpine component first -->
     <script src="{{ url_for('static', filename='ragapp.js') }}" defer></script>
+        <!-- Then Alpine.js fires alpine:init *after* your listener is attached -->
     <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
 
-    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='styles.css') }}">
-    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='tooltip.css') }}">
+  
+    <!-- 1) Markdown parser -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js" integrity="sha384-+someHashHere"
+        crossorigin="anonymous" defer></script>
+    <!-- 2) XSS sanitizer -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/2.4.0/purify.min.js" integrity="sha384-+someHashHere"
+        crossorigin="anonymous" defer></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='tooltip.css') }}">
     <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
+
+    <!-- Tooltip scripts (can stay after your app) -->
     <script src="{{ url_for('static', filename='tooltipContent.js') }}"></script>
     <script src="{{ url_for('static', filename='tooltip.js') }}"></script>
 </head>
 
-<body x-data="ragApp()" x-init="init()" id="rootAppComponent" class="bg-white font-sans flex flex-col min-h-screen relative text-sm">
+<body x-data="ragApp()" x-init="init()" x-cloak id="rootAppComponent" class="bg-white font-sans flex flex-col min-h-screen relative text-sm">
     <!-- Header -->
     <header
         class="bg-slate-100 text-slate-800 p-3 sm:p-4 flex justify-between items-center shadow-sm sticky top-0 z-30 border-b border-slate-200">
@@ -25,8 +38,7 @@
             <!-- API Key Status  and Toast Area -->
             <div class="flex items-center space-x-2 text-xs border-l border-slate-300 pl-3 ml-3">
                 <!-- Toast Message - Positioned Before API Keys -->
-                <span x-show="toast.show" class="text-green-600 font-medium text-xs" x-text="toast.message" x-transition
-                    style="display: none; margin-right: 10px;">
+                <span x-show="toast.show" class="text-green-600 font-medium text-xs" x-text="toast.message" x-transition>
                 </span>
                 <!-- API Keys Status -->
                 <span class="font-medium">API Keys:</span>
@@ -248,16 +260,16 @@
                                     x-text="formConfig.retrieval.SPARSE_WEIGHT.toFixed(2)"></span>
                             </div>
                             <div class="flex items-center justify-between">
-                                <label for="retDomainCheck" class="font-medium text-slate-600"
+                                <label for="performDomainCheck" class="font-medium text-slate-600"
                                     data-tooltip="PERFORM_DOMAIN_CHECK">Perform Domain
                                     Check</label>
-                                <input type="checkbox" id="retDomainCheck"
+                                <input type="checkbox" id="performDomainCheck"
                                     x-model="formConfig.retrieval.PERFORM_DOMAIN_CHECK" class="toggle-checkbox">
                             </div>
                             <div class="flex items-center justify-between">
-                                <label for="retDomainCheck" class="font-medium text-slate-600" data-tooltip="PERFORM_TECHNICAL_VALIDATION">Perform Technical Validation
+                                <label for="performTechnicalValidation" class="font-medium text-slate-600" data-tooltip="PERFORM_TECHNICAL_VALIDATION">Perform Technical Validation
                                     </label>
-                                <input type="checkbox" id="retDomainCheck" x-model="formConfig.PERFORM_TECHNICAL_VALIDATION"
+                                <input type="checkbox" id="performTechnicalValidation" x-model="formConfig.PERFORM_TECHNICAL_VALIDATION"
                                     class="toggle-checkbox">
                             </div>
                         </div>
@@ -402,8 +414,32 @@
                             </div>
                         </div>
                     </div>
-                <!-- Place this inside your Alpine root (e.g. <div x-data="ragApp()">) -->
-                
+                    <!-- Centroid Update Settings -->                  
+                    <div class="mt-4">
+                        <h3 class="text-sm font-semibold mb-2 text-sky-500">Centroid Update</h3>
+                        <div class="space-y-2 pl-2">
+                            <div class="flex gap-4 mb-2">
+                                <label>
+                                    <input type="radio" x-model="formConfig.centroidUpdateMode" value="always">
+                                    Always recalculate
+                                </label>
+                                <label>
+                                    <input type="radio" x-model="formConfig.centroidUpdateMode" value="never">
+                                    Never recalculate
+                                </label>
+                                <label>
+                                    <input type="radio" x-model="formConfig.centroidUpdateMode" value="auto">
+                                    Auto
+                                </label>
+                            </div>
+                            <div x-show="formConfig.centroidUpdateMode === 'auto'" class="flex items-center gap-2">
+                                <label for="centroidAutoThreshold" class="text-xs text-slate-600">Auto Threshold (% new vectors):</label>
+                                <input type="number" min="0" max="100" step="0.1" x-model.number="formConfig.centroidAutoThreshold"
+                                    id="centroidAutoThreshold" class="w-16 p-1 border border-slate-300 rounded text-xs">
+                                <span class="text-xs text-slate-400">%</span>
+                            </div>
+                        </div>
+                    </div>
                     <!-- Settings Header Row -->
                 <div class="flex items-center justify-between mb-4">
                     <button @click="saveConfig" :disabled="isLoading()" class="w-full bg-gray-700 hover:bg-gray-800 text-white px-3 py-1.5 rounded text-xs
@@ -411,75 +447,72 @@
                         Save Configuration
                     </button>
                 </div>
-
-
-
-                <fieldset class="card p-4 mb-6" style="border:1px solid #D1D5DB; border-radius:8px;">
+                <fieldset class="card p-4 mb-6 border border-slate-200 rounded">
                     <legend class="px-2 text-lg font-semibold text-blue-600">Environment Keywords</legend>
                 
-                    <!-- Domain Keywords (read-only) -->
+                    <!-- Domain Keywords (readonly) -->
                     <div class="mb-4">
-                        <label class="block text-sm font-medium mb-1">Domain Keywords</label>
-                        <textarea readonly rows="3" class="w-full p-2 border rounded resize-none bg-gray-100 text-gray-700"  style="resize: vertical;"
-                            x-text= "formConfig.env.DOMAIN_KEYWORDS.join(', ')"></textarea>
+                        <label for="envDomainKeywords" class="block text-sm font-medium mb-1">Domain Keywords</label>
+                        <textarea id="envDomainKeywords" readonly rows="3"
+                            class="w-full p-2 border rounded resize-y font-sans text-sm bg-gray-50 text-gray-800"
+                            x-text="formConfig.env.DOMAIN_KEYWORDS.join(', ')"></textarea>
                     </div>
                 
-                    <!-- Auto Domain Keywords -->
+                    <!-- Auto Domain Keywords (colored, readonly) -->
                     <div class="mb-4">
-                        <label class="block text-sm font-medium mb-1">Auto Domain Keywords (Rank Sorted)</label>
-                    <pre id="autoDomainKeywords" x-html="coloredAutoDomainKeywords"
-                        class="w-full p-2 border rounded bg-gray-100 whitespace-pre-wrap"
-                        style="min-height: 5rem; max-height: 20rem; overflow-y:auto;"></pre>
+                        <label for="envAutoKeywords" class="block text-sm font-medium mb-1">Auto Domain Keywords</label>
+                        <pre id="envAutoKeywords"
+                            class="w-full p-2 border rounded resize-y font-sans text-sm whitespace-pre-wrap bg-gray-50"
+                            x-html="coloredAutoDomainKeywords" style="min-height:4rem; max-height:12rem; overflow-y:auto;"></pre>
                     </div>
                 
-                    <!-- Controls: Show Top N, Restore, Toggle -->
-                    <label class="flex items-center space-x-2">
-                        <span class="text-sm">Show Top Keywords</span>
-                        <select x-model.number="selectedTopN" @change="applyTopNKeywords()" class="p-1 border rounded">
-                            <template x-for="n in topNOptions" :key="n">
-                                <option :value="n" x-text="n"></option>
-                            </template>
-                        </select>
-                    </label>
-
+                    <!-- Controls: Show Top N, Enable/Disable, Restore -->
+                    <div class="mb-4 flex flex-wrap items-center gap-4">
+                        <label class="flex items-center space-x-2">
+                            <span class="text-sm">Show Top</span>
+                            <select x-model.number="selectedTopN" @change="applyTopNKeywords()" class="p-1 border rounded text-sm">
+                                <template x-for="n in topNOptions" :key="n">
+                                    <option :value="n" x-text="n"></option>
+                                </template>
+                            </select>
+                            <span class="text-sm">keywords</span>
+                        </label>
                 
-                        <!-- Restore Last Set button  and Enable/Disable Auto Keywords-->
-                        <div class="flex items-center space-x-4 mb-4">
-                            <button @click="toggleAutoKeywords()"
-                                :class="autoKeywordsEnabled ? 'bg-blue-500 text-white' : 'bg-gray-300 text-gray-700'"
-                                class="px-3 py-1 rounded transition-colors">
-                                <span x-text="autoKeywordsEnabled ? 'Disable' : 'Enable'"></span> Auto Keywords
-                            </button>
-                        
-                            <button @click="restoreAutoDomainKeywords()" class="px-3 py-1 bg-green-500 text-white rounded"
-                                :disabled="!lastAutoDomainKeywordsList.length"
-                                :class="{'opacity-50 cursor-not-allowed': !lastAutoDomainKeywordsList.length}">
-                                Restore Last List
-                            </button>
-                        </div>
-
+                        <button @click="toggleAutoKeywords()" :class="autoKeywordsEnabled
+                                          ? 'bg-blue-500 text-white'
+                                          : 'bg-gray-300 text-gray-700'" class="px-3 py-1 rounded transition-colors text-sm">
+                            <span x-text="autoKeywordsEnabled ? 'Disable' : 'Enable'"></span> Auto
+                        </button>
+                
+                        <button @click="restoreAutoDomainKeywords()" class="px-3 py-1 bg-green-500 text-white rounded text-sm"
+                            :disabled="!lastAutoDomainKeywordsList.length"
+                            :class="{ 'opacity-50 cursor-not-allowed': !lastAutoDomainKeywordsList.length }">
+                            Restore Last
+                        </button>
+                    </div>
+                
+                    <!-- User-Added Keywords (editable) -->
+                    <div class="mb-4">
+                        <label for="envUserKeywords" class="block text-sm font-medium mb-1">
+                            User-Added Keywords
+                        </label>
+                        <textarea id="envUserKeywords" rows="3" class="w-full p-2 border rounded resize-y font-sans text-sm"
+                            x-model="envUserKeywordsString" @input="
+                                          formConfig.env.USER_ADDED_KEYWORDS =
+                                            envUserKeywordsString.split(',').map(s => s.trim()).filter(Boolean)
+                                        " placeholder="e.g. custom1, custom2"></textarea>
                     </div>
                 </fieldset>
-
-                            <!-- User-Added Keywords -->
-                            <div>
-                                <label for="envUserKeywords" class="block mb-1 font-medium text-slate-600"
-                                    data-tooltip="USER_ADDED_KEYWORDS">
-                                    User Added Keywords (comma-separated)
-                                </label>
-                                <input id="envUserKeywords" type="text"
-                                    :value="formConfig.env.USER_ADDED_KEYWORDS.join(', ')"
-                                    @input="formConfig.env.USER_ADDED_KEYWORDS = $event.target.value.split(',').map(s => s.trim()).filter(Boolean)"
-                                    class="w-full p-1 border border-slate-300 rounded text-xs">
-                            </div>
+                  
+                  
+                                             
                         </div>
                     </div>
-
-                   
+              
                 </form>
             </div>
             <!-- End Config Scrollable Area -->
-        </div>
+        
             <!-- Cell 2: Chat & Saved Chats - Top Right -->
             <div class="bg-slate-50 p-4 rounded-lg shadow-md flex flex-col overflow-hidden relative border border-slate-200 md:order-2"
                 :class="{ 'loading-active loading-overlay': isLoadingChat() }">
@@ -495,7 +528,7 @@
                             <div :class="message.role === 'user' ? 'flex justify-end' : 'flex justify-start'">
                                 <div class="max-w-xl p-2.5 rounded-lg shadow-sm"
                                     :class="message.role === 'user' ? 'bg-blue-500 text-white' : 'bg-slate-200 text-slate-900'">
-                                    <div x-html="renderMarkdown(message.text)" class="prose prose-sm max-w-none"></div>
+                                    <div x-html="safeRenderMarkdown(message.text)" class="prose prose-sm max-w-none"></div>
                                 </div>
                             </div>
                         </template>
@@ -521,7 +554,7 @@
                             Clear Chat
                         </button>
                     </div>
-                </div>
+                
                 <!-- Saved Chats Area -->
                 <div class="mt-4 pt-4 border-t border-slate-300 flex-shrink-0 max-h-48 overflow-y-auto">
                     <div class="flex justify-between items-center mb-2">
@@ -624,28 +657,31 @@
                                             max="500" class="col-span-2 p-1 border border-slate-300 rounded text-xs">
                                     </div>
                                     <!-- Minimum Document Frequency -->
-                                    <div x-data>
-                                        <label>
+                                    <!-- after -->
+                                    <!-- Minimum Document Frequency -->
+                                    <div>
+                                        <label class="inline-flex items-center mr-4">
                                             <input type="radio" name="docFreqMode" x-model="docFreqMode" value="absolute">
-                                            Absolute
+                                            <span class="ml-1">Absolute</span>
                                         </label>
-                                        <label>
+                                        <label class="inline-flex items-center">
                                             <input type="radio" name="docFreqMode" x-model="docFreqMode" value="fraction">
-                                            Fraction
+                                            <span class="ml-1">Fraction</span>
                                         </label>
                                     
-                                        <div x-show="docFreqMode === 'absolute'">
+                                        <div class="mt-2 grid grid-cols-2 gap-4">
+                                            <!-- Absolute input -->
                                             <input type="number" name="min_doc_freq_abs"
-                                                x-model.number="formConfig.domain_keyword_extraction.min_doc_freq_abs" placeholder="e.g. 3">
-                                            <span x-text="totalDocs ? `${(computedAbs || 0)} docs` : ''"></span>
-                                        </div>
+                                                x-model.number="formConfig.domain_keyword_extraction.min_doc_freq_abs" placeholder="e.g. 3"
+                                                :disabled="docFreqMode !== 'absolute'" class="p-1 border rounded text-xs" />
                                     
-                                        <div x-show="docFreqMode === 'fraction'">
+                                            <!-- Fraction input -->
                                             <input type="number" step="0.001" name="min_doc_freq_frac"
-                                                x-model.number="formConfig.domain_keyword_extraction.min_doc_freq_frac" placeholder="e.g. 0.01">
-                                            <span x-text="totalDocs ? `${(computedFrac || 0)} fraction` : ''"></span>
+                                                x-model.number="formConfig.domain_keyword_extraction.min_doc_freq_frac" placeholder="e.g. 0.01"
+                                                :disabled="docFreqMode !== 'fraction'" class="p-1 border rounded text-xs" />
                                         </div>
                                     </div>
+
                                     <!-- Diversity (0-1) -->
                                     <div class="grid grid-cols-3 items-center gap-x-2">
                                         <label for="diversity" class="col-span-1 font-medium text-slate-600"
@@ -790,7 +826,6 @@
                                 </template>
                             </ul>
                         </div>
-
                     </div>
                 </div>
                 <!-- End Weaviate Cell -->
@@ -823,7 +858,7 @@
                 </button>
             </div>
         </div>
-    </div>
+    
 
 
 </body>

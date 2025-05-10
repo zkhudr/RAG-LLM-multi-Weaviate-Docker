@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 from sklearn.feature_extraction.text import TfidfVectorizer
 from collections import Counter
+import numpy as np
     
 
 
@@ -50,6 +51,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from langchain_core.documents import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_ollama import OllamaEmbeddings
+from langchain_community.embeddings import OllamaEmbeddings
 
 # Weaviate v4 imports
 import weaviate
@@ -62,10 +64,14 @@ from weaviate.classes.data import DataObject
 from config import cfg
 # Import specific components needed from v7
 from ingest_docs_v7 import PipelineConfig, RobustPDFLoaderV4
+from calculate_centroid import should_recalculate_centroid
+
 
 # Setup logging
 logger = logging.getLogger(__name__)
 
+def centroid_exists(centroid_path):
+    return os.path.exists(centroid_path)
 
 
 # Accepts an optional, already connected Weaviate client instance
@@ -128,6 +134,17 @@ def extract_text(filepath: Path, client_instance: Optional[weaviate.Client] = No
     else:
         # logger.warning(f"Unsupported file type for extraction: {filepath.name}") # Already logged by caller
         return ""
+
+class CleanableOllamaEmbeddings(OllamaEmbeddings):
+    def __del__(self):
+        """Ensure client is closed when object is garbage collected"""
+        self.close()
+        
+    def close(self):
+        """Close the underlying HTTP client"""
+        if hasattr(self, 'client') and self.client:
+            self.client.close()
+            logger.info("Closed Ollama embeddings client")
 
 # --- Incremental Ingestion Class ---
 class IncrementalDocumentProcessorBlock:
@@ -379,16 +396,30 @@ class IncrementalDocumentProcessorBlock:
         logger.info(f"Prepared {len(quality_filtered_docs)} valid document chunks for insertion")
         self.save_metadata()
         
-        # Update centroid after processing
+        # --- Centroid significance check and update ---
         try:
-            if quality_filtered_docs and centroid_manager and hasattr(centroid_manager, 'update_centroid'):
-                vectors = []
+            if quality_filtered_docs and centroid_manager:
+                # 1. Collect new vectors as numpy arrays
+                new_vectors = []
                 for doc in quality_filtered_docs:
                     embedding = embeddings.embed_query(doc.page_content)
-                    vectors.append(embedding)
-                if vectors:
-                    centroid_manager.update_centroid(vectors)
-                    logger.info(f"Updated domain centroid with {len(vectors)} new vectors")
+                    new_vectors.append(np.array(embedding))
+
+                # 2. Fetch all vectors and old centroid
+                all_vectors = centroid_manager.get_all_vectors(client_instance, cfg.retrieval.COLLECTION_NAME)
+                old_centroid = centroid_manager.get_centroid()
+                
+                # 3. Get thresholds from config
+                threshold = getattr(cfg.ingestion, 'CENTROID_AUTO_THRESHOLD', 0.05)
+                diversity_threshold = getattr(cfg.ingestion, 'CENTROID_DIVERSITY_THRESHOLD', 0.01)
+                
+                # 4. Decide and update
+                if new_vectors:
+                    if should_recalculate_centroid(new_vectors, all_vectors, old_centroid, threshold, diversity_threshold):
+                        centroid_manager.update_centroid(all_vectors)
+                        logger.info(f"Centroid recalculated and updated.")
+                    else:
+                        logger.info("Centroid update skipped (change not significant).")
         except Exception as e:
             logger.warning(f"Failed to update centroid: {e}")
         
@@ -455,10 +486,18 @@ class IncrementalDocumentProcessorBlock:
             return None
 
         
+    # Enhance _calculate_optimal_batch_size in ingest_block.py:
     def _calculate_optimal_batch_size(self, files_to_process):
-        """Calculate optimal batch size based on file types and sizes."""
+        """Calculate optimal batch size based on file types, sizes, and system resources"""
         if not files_to_process:
-            return 10  # Default batch size
+            return 10
+            
+        # Get system memory info
+        try:
+            import psutil
+            available_memory = psutil.virtual_memory().available / (1024 * 1024 * 1024)  # GB
+        except ImportError:
+            available_memory = 8  # Default assumption: 8GB
             
         # Analyze file sizes and types
         total_size = 0
@@ -471,19 +510,26 @@ class IncrementalDocumentProcessorBlock:
             except OSError:
                 pass
                 
-        # Adjust batch size based on average file size
-        avg_size = total_size / len(files_to_process) if files_to_process else 0
-        
-        # PDF files are more resource-intensive
+        # Adjust batch size based on average file size and available memory
+        avg_size_mb = (total_size / len(files_to_process)) / (1024 * 1024) if files_to_process else 0
         pdf_ratio = file_types.get('.pdf', 0) / len(files_to_process) if files_to_process else 0
         
-        # Calculate batch size - smaller for larger files or more PDFs
-        if avg_size > 10 * 1024 * 1024 or pdf_ratio > 0.7:  # > 10MB avg or mostly PDFs
-            return max(3, min(os.cpu_count() or 4, 4))
-        elif avg_size > 1 * 1024 * 1024 or pdf_ratio > 0.3:  # > 1MB avg or some PDFs
-            return max(5, min(os.cpu_count() or 4, 6))
-        else:
-            return max(8, min(os.cpu_count() or 4, 10))
+        # Memory-based calculation
+        if available_memory < 2:  # Less than 2GB available
+            base_size = 2
+        elif available_memory < 4:  # 2-4GB available
+            base_size = 4
+        else:  # More than 4GB available
+            base_size = 8
+            
+        # Adjust for file characteristics
+        if avg_size_mb > 10 or pdf_ratio > 0.7:  # Large files or mostly PDFs
+            return max(2, base_size // 2)
+        elif avg_size_mb > 1 or pdf_ratio > 0.3:  # Medium files or some PDFs
+            return max(4, base_size)
+        else:  # Small files, few PDFs
+            return max(6, base_size * 2)
+
         
     def _create_batches(self, files, batch_size):
         """Create batches of files for processing."""
@@ -665,7 +711,7 @@ def run_ingestion(folder: str) -> dict:
                 logger.warning(f"run_ingestion: Failed to update centroid: {centroid_err}")
 
 
-                return {
+        return {
                     "processed": num_processed_chunks,
                     "message": "Incremental ingestion completed successfully."
         }
@@ -673,7 +719,7 @@ def run_ingestion(folder: str) -> dict:
     except Exception as e:
         logger.critical(f"run_ingestion: Error during ingestion: {e}", exc_info=True)
         return {
-            "processed": num_processed_chunks, # Report chunks processed before error
+            "processed": num_processed_chunks,  # Report chunks processed before error
             "message": f"Incremental ingestion failed: {str(e)}"
         }
     finally:
@@ -686,6 +732,14 @@ def run_ingestion(folder: str) -> dict:
                 # else: logger.info("run_ingestion: Weaviate client was already closed.") # Reduce noise
             except Exception as close_err:
                 logger.error(f"run_ingestion: Error closing Weaviate client: {close_err}")
+    # Close embeddings client
+        if embeddings_obj and hasattr(embeddings_obj, 'client') and hasattr(embeddings_obj.client, 'close'):
+            try:
+                embeddings_obj.client.close()
+                logger.info("run_ingestion: Closed embeddings client connection.")
+            except Exception as close_err:
+                logger.error(f"run_ingestion: Error closing embeddings client: {close_err}")
+
 
 
 def after_ingestion(client, collection_name):

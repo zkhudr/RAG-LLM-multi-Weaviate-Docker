@@ -4,7 +4,8 @@ import numpy as np
 import weaviate
 import logging
 import sys
-from config import config as cfg  # Use config for collection name, centroid path, and connection details
+from config import cfg # Use config for collection name, centroid path, and connection details
+from centroid_manager import should_recalculate_centroid
 
 # --- Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -26,8 +27,6 @@ def calculate_and_save_centroid(client: weaviate.Client, collection_name: str, s
                 processed_count += 1
                 if processed_count % 1000 == 0:
                     logger.info(f"Fetched {processed_count} vectors...")
-            # else:
-            #     logger.warning(f"Object UUID {obj.uuid} missing vector.")
 
         if not all_vectors:
             logger.error("No vectors found in the collection. Cannot calculate centroid.")
@@ -43,9 +42,16 @@ def calculate_and_save_centroid(client: weaviate.Client, collection_name: str, s
         np.save(save_path, centroid_vector)
         logger.info(f"Domain centroid vector saved successfully to: {save_path}")
 
+        # Example of using should_recalculate_centroid function after fetching vectors
+        if should_recalculate_centroid(new_vectors=all_vectors, all_vectors=all_vectors, old_centroid=None):
+            logger.info("Centroid needs recalculation.")
+        else:
+            logger.info("No need to recalculate centroid.")
+
     except Exception as e:
         logger.error(f"Failed to calculate or save centroid: {e}", exc_info=True)
         raise
+
 
 if __name__ == "__main__":
     client = None
