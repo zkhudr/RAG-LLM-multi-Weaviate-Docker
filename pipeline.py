@@ -3,7 +3,14 @@
 import re
 import logging
 from datetime import datetime
-from typing import Optional, Dict, Tuple, List # Ensure List, Dict, Optional are imported
+from typing import Optional, Dict, Tuple, List, Any
+# Strategy imports for response merging
+from llm_merge_strategies import (
+    MergeStrategy,
+    ApiPriorityStrategy,
+    ConcatStrategy,
+    LocalOnlyStrategy,
+)
 import requests
 from tenacity import retry, stop_after_attempt, wait_exponential
 import hashlib
@@ -11,12 +18,35 @@ import json
 import os
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
+from llm_providers import get_provider, LLMProvider
+from dotenv import load_dotenv
 
-# Assuming these are correctly importable from your project structure
+
+load_dotenv()
+# module-level self/api_provider removed — it belongs in the pipeline __init__
+  
+    
+# Initialize logger
+logger = logging.getLogger(__name__)
+
+## Core imports and dummy‐fallbacks…
 try:
     from langchain_ollama import OllamaLLM
     from config import cfg # Use 'cfg' directly if it's the loaded instance
     from retriever import TechnicalRetriever
+    from llm_merge_strategies import ApiPriorityStrategy, ConcatStrategy, LocalOnlyStrategy, MergeStrategy
+    
+    # Try to import CentroidManager
+    try:
+        from centroid_manager import CentroidManager
+        centroid_manager = CentroidManager()
+        centroid_available = True
+        logger.info("CentroidManager initialized successfully")
+    except ImportError:
+        logger.warning("CentroidManager not available, centroid features disabled")
+        centroid_manager = None
+        centroid_available = False
+        
     imports_ok = True
 except ImportError as e:
     logging.critical(f"CRITICAL: Failed to import core pipeline dependencies: {e}", exc_info=True)
@@ -30,8 +60,9 @@ except ImportError as e:
         class retrieval: PERFORM_DOMAIN_CHECK=False; DOMAIN_SIMILARITY_THRESHOLD=0.6; SPARSE_RELEVANCE_THRESHOLD=0.1; FUSED_RELEVANCE_THRESHOLD=0.4; SEMANTIC_WEIGHT=0.7; SPARSE_WEIGHT=0.3
         class paths: DOMAIN_CENTROID_PATH="./dummy_centroid.npy"
         class env: merged_keywords=[]
+    centroid_manager = None
 
-# Configure logging
+## Configure logging (after imports)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -74,6 +105,29 @@ class IndustrialAutomationPipeline:
             logger.warning("Domain keywords list is EMPTY during pipeline initialization!")
         else:
             logger.info(f"Pipeline initialized with {len(self.domain_keywords_set)} domain keywords.")
+         
+         # Build the list of active validators based on config flags
+        self._validators = []
+        if self.cfg.retrieval.PERFORM_DOMAIN_CHECK:
+            self._validators.append(self._validate_semantic)
+        if self.cfg.retrieval.PERFORM_TECHNICAL_VALIDATION:
+            self._validators.append(self._validate_technical)
+        
+        # Choose merge strategy from config (default: API-first)
+        strat = getattr(self.cfg.model, "MERGE_STRATEGY", "api_first").lower()
+        if strat == "concat":
+            self.merge_strategy: MergeStrategy = ConcatStrategy()
+        elif strat == "local_only":
+            self.merge_strategy = LocalOnlyStrategy()
+        else:
+            self.merge_strategy = ApiPriorityStrategy()
+
+        # Instantiate external LLM provider once
+        self.api_provider: Optional[LLMProvider] = get_provider(
+            self.cfg,
+            self._format_chat_history_for_api
+        )
+
 
     def _load_domain_centroid(self) -> Optional[np.ndarray]:
         """Loads the pre-calculated domain centroid vector."""
@@ -90,6 +144,15 @@ class IndustrialAutomationPipeline:
         except Exception as e:
             logger.error(f"Failed to load domain centroid: {e}", exc_info=True)
             return None
+        
+    def _validate_semantic(self, text: str) -> bool:
+        # (optional) check domain centroid here if you ever want to re-enable it
+        return True
+
+    def _validate_technical(self, text: str) -> bool:
+            # your keyword-based check from before
+            terms = [k.lower() for k in self.cfg.env.DOMAIN_KEYWORDS]
+            return any(term in text.lower() for term in terms)
 
     def _sanitize_input(self, query: str) -> str:
         """Basic sanitization of input query."""
@@ -143,20 +206,26 @@ class IndustrialAutomationPipeline:
     # === End Cache Functions ===
 
 
-    def _calculate_semantic_score(self, query: str) -> float:
+    def _calculate_semantic_score(self, query: str) -> Tuple[float, Dict]:
         """Calculates cosine similarity between query embedding and domain centroid."""
         if self.domain_centroid is None:
             logger.warning("Cannot calculate semantic score, domain centroid not loaded.")
-            return 0.0
+            return 0.0, {}
+        
         try:
             query_embedding = self.embeddings.embed_query(query)
             query_vector = np.array(query_embedding).reshape(1, -1)
-            similarity = cosine_similarity(query_vector, self.domain_centroid)[0][0]
-            similarity = max(0.0, min(1.0, similarity)) # Clip
-            return float(similarity)
+            centroid_feedback = centroid_manager.query_insight(query_vector.flatten())
+            if centroid_feedback and "similarity" in centroid_feedback:
+                similarity = centroid_feedback["similarity"]
+            else:
+                similarity = cosine_similarity(query_vector, self.domain_centroid)[0][0]
+            similarity = max(0.0, min(1.0, float(similarity)))
+            return similarity, centroid_feedback
         except Exception as e:
-            logger.error(f"Error calculating semantic score for query '{query[:50]}...': {e}", exc_info=True)
-            return 0.0
+            logger.error(f"Error calculating semantic score: {e}", exc_info=True)
+            return 0.0, {}    
+
 
     def _calculate_sparse_score(self, query_terms: List[str]) -> float:
         """Calculates keyword overlap ratio between query terms and domain keywords."""
@@ -180,9 +249,9 @@ class IndustrialAutomationPipeline:
         self.logger.debug(f"Sparse Check: Cleaned Terms={cleaned_query_terms}, Matches={match_count}, Ratio={overlap_ratio:.3f}")
         return overlap_ratio
 
-    def _check_domain_relevance_hybrid(self, query: str, query_terms: List[str]) -> bool:
+    def _check_domain_relevance_hybrid(self, query: str, query_terms: List[str]) -> Tuple[bool, Dict]:
         """Performs hybrid relevance check using semantic and sparse scores."""
-        semantic_score = self._calculate_semantic_score(query)
+        semantic_score, centroid_feedback = self._calculate_semantic_score(query)
         sparse_score = self._calculate_sparse_score(query_terms)
 
         fused_score = (semantic_score * self.cfg.retrieval.SEMANTIC_WEIGHT) + \
@@ -200,7 +269,7 @@ class IndustrialAutomationPipeline:
             f"Sparse={sparse_score:.3f} (Thresh={self.cfg.retrieval.SPARSE_RELEVANCE_THRESHOLD}, Pass={sparse_relevant}), "
             f"Fused={fused_score:.3f} (Thresh={self.cfg.retrieval.FUSED_RELEVANCE_THRESHOLD}, Pass={is_relevant})"
         )
-        return is_relevant
+        return is_relevant,centroid_feedback
 
     # === NEW: Helper to format history for LLM prompt ===
     def _format_chat_history_for_prompt(self, chat_history: Optional[List[Dict]]) -> str:
@@ -263,157 +332,126 @@ class IndustrialAutomationPipeline:
         # === MODIFIED: generate_response ===
     def generate_response(self, query: str, chat_history: Optional[List[Dict]] = None) -> Dict:
         """
-        Generates response using context and optional chat history, with history-aware
-        caching, retrieval, and optional response validation.
+        History-aware cache → optional domain check → retrieve → generate (local+API)
+        → optional validation → format → cache.
         """
-        self.logger.info(f"Generating response with max_history_turns={self.cfg.pipeline.max_history_turns}, " 
-                 f"history length: {len(chat_history) if chat_history else 0}")
-        # --- History-Aware Caching Check ---
-        # Get max history turns from config
-        max_turns = self.cfg.pipeline.max_history_turns
+        from datetime import datetime
+        import json
 
-        # Calculate how many messages to include
-        max_messages = max_turns * 2
+        self.logger.info(
+            f"Generating response (max_history_turns={self.cfg.pipeline.max_history_turns}, "
+            f"history len={len(chat_history) if chat_history else 0})"
+        )
 
-        # Get the appropriate slice of history for caching
-        history_for_cache = chat_history[-max_messages-1:-1] if chat_history and len(chat_history) > max_messages else chat_history[:-1] if chat_history else None
-
-        history_for_cache_key = self._format_chat_history_for_api(history_for_cache)
-        history_str_for_key = json.dumps(history_for_cache_key) if history_for_cache_key else ""
-        cache_key_content = f"{query}_{history_str_for_key}"
-        cache_key = self._get_cache_key(cache_key_content)
-
-        cached = self._load_from_cache(cache_key)
-        if cached:
-            self.logger.info("Returning CACHED response (history-aware key used)")
-            cached.setdefault('response', '')
-            cached.setdefault('source', 'cache')
-            cached.setdefault('model', 'cache')
-            cached.setdefault('context', '')
-            cached.setdefault('error', False)
+        # ── CACHE KEY ──
+        max_msgs = self.cfg.pipeline.max_history_turns * 2
+        if chat_history and len(chat_history) > max_msgs:
+            hist_cache = chat_history[-max_msgs - 1:-1]
+        else:
+            hist_cache = chat_history[:-1] if chat_history else None
+        hist_key = self._format_chat_history_for_api(hist_cache) or ""
+        cache_key = self._get_cache_key(f"{query}_{json.dumps(hist_key)}")
+        if (cached := self._load_from_cache(cache_key)):
+            self.logger.info("Returning cached response")
+            cached.setdefault('response','')
+            cached.setdefault('source','cache')
+            cached.setdefault('model','cache')
+            cached.setdefault('context','')
+            cached.setdefault('error',False)
             cached['timestamp'] = datetime.now().isoformat()
             return cached
-        # --- End Caching Check ---
 
+        centroid_feedback = {}
         try:
-            # --- Sanitization ---
-            if self.cfg.security.SANITIZE_INPUT:
-                sanitized_query = self._sanitize_input(query)
-                if not sanitized_query or len(sanitized_query) < 3:
-                    self.logger.warning("Query failed sanitization or was too short.")
-                    return self._format_response("Query too short or invalid after sanitization", "validation", context=None, error=True)
-            else:
-                sanitized_query = query
+            # ── SANITIZE ──
+            sanitized = self._sanitize_input(query) if self.cfg.security.SANITIZE_INPUT else query
+            if self.cfg.security.SANITIZE_INPUT and (not sanitized or len(sanitized) < 3):
+                return self._format_response(
+                    response="Query too short or invalid after sanitization",
+                    source="validation", context=None, error=True
+                )
 
-            query_terms = [t for t in sanitized_query.lower().split() if len(t) > 1]
+            terms = [t for t in sanitized.lower().split() if len(t) > 1]
 
-            # --- Domain Check ---
+            # ── DOMAIN CHECK ──
             if self.cfg.retrieval.PERFORM_DOMAIN_CHECK:
-                domain_match = self._check_domain_relevance_hybrid(sanitized_query, query_terms)
-                if not domain_match:
-                    self.logger.info("Query deemed outside domain scope by hybrid check.")
-                    return self._format_response("Query appears to be outside the scope of industrial automation.", "domain_check", context=None)
-                self.logger.info("Query passed hybrid domain relevance check.")
+                ok, centroid_feedback = self._check_domain_relevance_hybrid(sanitized, terms)
+                if not ok:
+                    return self._format_response(
+                        response="Query appears outside industrial automation scope.",
+                        source="domain_check", context=None, error=False
+                    )
+                self.logger.info("Domain check passed")
             else:
-                self.logger.info("Domain relevance check skipped by configuration.")
+                self.logger.info("Domain check skipped")
 
-            # --- History-Aware Context Retrieval ---
-            # --- History-Aware Context Retrieval ---
-            retrieval_query = sanitized_query
-            if self.cfg.retrieval.retrieve_with_history and chat_history:
-                # Get max history turns from config
-                max_turns = self.cfg.pipeline.max_history_turns
-                
-                # Calculate how many messages to include
-                max_messages = max_turns * 2
-                
-                # Get the appropriate slice of history for retrieval context
-                history_for_retrieval = chat_history[-max_messages-1:-1] if len(chat_history) > max_messages else chat_history[:-1]
-                
-                last_user_message_content = ""
-                for i in range(len(history_for_retrieval) - 1, -1, -1):
-                    if history_for_retrieval[i].get("role") == "user":
-                        last_user_message_content = history_for_retrieval[i].get("content", "")
-                        break
-                
-                if last_user_message_content:
-                    retrieval_query = f"Previous user question context: {last_user_message_content}\n\nCurrent user question: {sanitized_query}"
-                    self.logger.info(f"Retrieving context using history-aware query: '{retrieval_query[:150]}...'")
-                else:
-                    self.logger.info("retrieve_with_history enabled, but no previous user message found.")
-            else:
-                self.logger.info(f"Retrieving context using latest query only: '{retrieval_query[:100]}...'")
-
-            context = self.retriever.get_context(retrieval_query)
+            # ── RETRIEVE CONTEXT ──
+            retrieval_q = sanitized
+            if self.cfg.retrieval.retrieve_with_history and hist_cache:
+                last_user = next((m["content"] for m in reversed(hist_cache) if m.get("role")=="user"), "")
+                if last_user:
+                    retrieval_q = f"Previous: {last_user}\nCurrent: {sanitized}"
+            self.logger.info(f"Retrieving context for: '{retrieval_q[:100]}…'")
+            context = self.retriever.get_context(retrieval_q) or ""
             if not context:
-                self.logger.warning(f"No context found for retrieval query: {retrieval_query[:50]}...")
+                self.logger.warning("No context found")
 
-            # --- Response Generation (Pass History) ---
-            local_response = self._generate_local_response(sanitized_query, context, chat_history)
+            # 1) Local LLM response always as dict
+            local_resp = {"response": self._generate_local_response(sanitized, context, chat_history)}
 
-            api_response = None
-            provider = self.cfg.model.EXTERNAL_API_PROVIDER.lower()
-            api_key_exists = False
-            if provider == 'deepseek' and self.cfg.security.DEEPSEEK_API_KEY:
-                api_key_exists = True
-                api_response = self.call_deepseek_api(sanitized_query, context, chat_history)
-            elif provider == 'openai' and self.cfg.security.OPENAI_API_KEY:
-                self.logger.warning("OpenAI provider selected but call_openai_api not implemented yet.")
-            elif provider != 'none':
-                self.logger.warning(f"External provider '{provider}' configured but no key/call function.")
+            # 2) External provider call (None if not configured)
+            prov = self.cfg.model.EXTERNAL_API_PROVIDER.lower()
+            api_raw = self.api_provider.call(sanitized, context, chat_history) if self.api_provider else None
+            api_resp = api_raw if isinstance(api_raw, dict) else {}
 
-            merged_response = self.merge_responses(local_response, api_response)
 
-            # --- Optional Validation --- START OF COMPLETED SECTION ---
-            response_text = merged_response.get("response") or merged_response.get("text") or ""
-            is_valid = self.validate_technical_response(response_text)
-            #is_valid = self.validate_technical_response(merged_response)
-            logger.warning(f"[Debug] merged_response = {merged_response}")
-            self.logger.info(f"Response validation result: {is_valid}")
+            # 3) Warn if user wanted a provider but got nothing back
+            if prov != "none" and not api_raw:
+                self.logger.warning(f"Provider '{prov}' configured but returned no response or is unavailable")
 
-            validation_failed_source = None # Flag to potentially override source later
-            if not is_valid:
-                self.logger.warning(f"Generated response failed technical validation. Original response snippet: '{merged_response[:100]}...'")
-                # Option A: Replace the response
-                merged_response = "The generated response may not be directly related to industrial automation or lacks specific technical terms. Please clarify or ask about a specific technical topic."
-                validation_failed_source = "validation_failed" # Set a flag/source override
-            # --- Optional Validation --- END OF COMPLETED SECTION ---
+            # 4) Always merge dicts
+            api_resp: Dict = api_raw if isinstance(api_raw, dict) else {}
+            merged = self.merge_strategy.merge(local_resp, api_resp)
+            text = merged.get("response", "")
 
-            # --- Format final response ---
-            source = "local_llm"
-            if api_response and provider != 'none':
-                source = provider
-            elif api_key_exists and not api_response and provider != 'none':
-                source = f"{provider}_api_failed_fallback_local"
-
-            # Override source if validation failed and we replaced the message
-            if validation_failed_source:
-                source = validation_failed_source
-
-            final_result = self._format_response(
-                response=merged_response,             # Use potentially modified response
-                source=source,                         # Use potentially modified source
-                context=context if is_valid else "",   # Don't show context if validation failed
-                error=False                            # Not treating validation failure as a hard error
-            )
-
-            # --- Caching Save ---
-            # Only cache responses that passed validation
-            if is_valid:
-                self._save_to_cache(cache_key, final_result) # Use history-aware key
+            # ── VALIDATION ──
+            is_valid = True
+            source = prov if api_resp else "local_llm"
+            if self.cfg.retrieval.PERFORM_TECHNICAL_VALIDATION:
+                for vfn in self._validators:
+                    if not vfn(text):
+                        self.logger.info(f"Validation failed: {vfn.__name__}")
+                        merged = {"response":"Please clarify or ask a specific technical topic."}
+                        source = "validation_failed"
+                        is_valid = False
+                        break
             else:
-                self.logger.info("Skipping cache save for validation-failed response.")
+                self.logger.info("Technical validation skipped")
 
-            return final_result
+            # ── FORMAT ──
+            final = self._format_response(
+                response=merged,
+                source=source,
+                context=context if is_valid else "",
+                error=False
+            )
+            final["centroid_feedback"] = centroid_feedback
+
+            # ── CACHE if valid ──
+            if is_valid:
+                self._save_to_cache(cache_key, final)
+            else:
+                self.logger.info("Not caching invalidated response")
+
+            return final
 
         except Exception as e:
-            self.logger.exception(f"Pipeline error during generate_response for query '{query[:50]}...': {str(e)}")
+            self.logger.exception(f"Error in generate_response: {e}")
             return self._format_response(
-                response=f"Sorry, an internal error occurred processing your request.",
-                source="pipeline_error",
-                context=None,
-                error=True
+                response="Sorry, an internal error occurred.",
+                source="pipeline_error", context=None, error=True
             )
+
 
     # === MODIFIED: _generate_local_response ===
     def _generate_local_response(self, query: str, context: str, chat_history: Optional[List[Dict]] = None) -> str:
@@ -492,17 +530,18 @@ class IndustrialAutomationPipeline:
         # Add the current user query
         messages.append({"role": "user", "content": query})
 
-        # Prepare request body
+        # Pick override → per-provider default → (never) literal fallback
+        default_model =self.cfg.model.EXTERNAL_API_MODEL_DEFAULTS.get("deepseek")
+        model_name    = self.cfg.model.EXTERNAL_API_MODEL_NAME or default_model
         payload = {
-            "model": self.cfg.model.EXTERNAL_API_MODEL_NAME or "deepseek-chat", # Use config override or DeepSeek default
-            "messages": messages,
-            "temperature": self.cfg.model.LLM_TEMPERATURE,
-            "max_tokens": self.cfg.model.MAX_TOKENS,
-            "top_p": self.cfg.model.TOP_P,
-            "frequency_penalty": self.cfg.model.FREQUENCY_PENALTY,
-            # Add other parameters supported by DeepSeek API if needed
-            "stream": False # Assuming non-streaming for now
-        }
+            "model":     model_name,
+             "messages":  messages,
+             "temperature": self.cfg.model.LLM_TEMPERATURE,
+             "max_tokens":  self.cfg.model.MAX_TOKENS,
+             "top_p":       self.cfg.model.TOP_P,
+             "frequency_penalty": self.cfg.model.FREQUENCY_PENALTY,
+             "stream":     False
+         }
 
         self.logger.info(f"Calling {provider_name.capitalize()} API: {api_url} with model {payload['model']}")
         self.logger.debug(f"API Payload (excluding messages): { {k:v for k,v in payload.items() if k != 'messages'} }")
@@ -514,7 +553,8 @@ class IndustrialAutomationPipeline:
 
             api_result = response.json()
             # Log raw response for debugging if needed
-            # self.logger.debug(f"{provider_name.capitalize()} API Raw Response: {api_result}")
+            self.logger.debug(f"{provider_name.capitalize()} API Raw Response: {api_result}")
+         
 
             # Extract the response text (adjust based on actual DeepSeek API structure)
             response_text = api_result.get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -576,24 +616,15 @@ class IndustrialAutomationPipeline:
         # Use re.IGNORECASE for case-insensitivity
         return any(re.search(pattern, response, re.IGNORECASE) for pattern in technical_indicators)
 
-    def merge_responses(self, local: str, api: Optional[str]) -> str:
+    def merge_responses(self, local: str, api: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Merges responses from local LLM and optional API verification."""
-        # Prioritize API response if available and non-empty
-        if api:
+        if isinstance(api, dict):
             self.logger.debug("Using API response as primary.")
-            return api # Simple strategy: just return API if it exists
-        else:
-            self.logger.debug("Using Local LLM response (API not available or failed).")
-            return local
-        # --- Old merge logic (can uncomment if needed) ---
-        # if not api: return local
-        # # Basic check if responses are very similar (can be improved)
-        # if local.strip().lower() == api.strip().lower():
-        #     return local # Return one if identical
-        # # Simple concatenation if different (consider more sophisticated merging)
-        # return f"Local Response:\n{local}\n\nAPI Verification:\n{api}"
-        # --- End Old merge logic ---
+            return api
 
+        self.logger.debug("Using Local LLM response (API not available or failed).")
+        # wrap local string into a dict so .get() works
+        return {"response": local}
 
     def _format_response(self, response: str, source: str, context: Optional[str], error: bool = False) -> Dict:
         """Formats the final response dictionary."""
@@ -611,6 +642,7 @@ class IndustrialAutomationPipeline:
             "timestamp": datetime.now().isoformat(),
             "error": error # Include error flag
         }
+    
 
 # === Keep direct execution block for testing (if desired) ===
 if __name__ == "__main__":

@@ -3,24 +3,25 @@ import logging
 import sys
 import json
 import argparse
-from collections import Counter # To count keyword frequency
+import numpy as np
+import spacy
+import weaviate
+
+
 
 # NLP & ML Libs
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import KMeans
-import numpy as np
-import spacy
+
 from keybert import KeyBERT
 from sentence_transformers import SentenceTransformer
-
-
+from collections import Counter # To count keyword frequency
+from pathlib import Path
 from config import cfg # Import the central config object
-import weaviate
 from weaviate.exceptions import WeaviateConnectionError
 from weaviate.classes.config import Property, DataType
 #from weaviate.connect import ConnectionParams # Needed if using connect_to_custom
 from weaviate.config import AdditionalConfig # Needed for timeout
-from weaviate.classes.config import Property, DataType
 # --- Configuration & Parameters ---
 DEFAULT_COLLECTION_NAME = "Industrial_tech" # Keep this or read from cfg later?
 DEFAULT_KEYBERT_MODEL = 'all-MiniLM-L6-v2'
@@ -28,7 +29,7 @@ DEFAULT_SPACY_MODEL = 'en_core_web_sm'
 DEFAULT_TOP_N_PER_DOC = 20 # Keywords to extract *per document*
 DEFAULT_N_GRAM_RANGE = (1, 3) # Reduced N-gram range slightly to limit candidates
 DEFAULT_MIN_KEYWORD_LENGTH = 4
-DEFAULT_DIVERSITY = 0.1 # MMR diversity for KeyBERT
+DEFAULT_EXTRACTION_DIVERSITY = 0.1 # MMR diversity for KeyBERT
 DEFAULT_POS_TAGS = {"NOUN", "PROPN"} # Focused on Nouns/Proper Nouns
 DEFAULT_FINAL_TOP_N = 200 # Number of keywords after aggregation
 DEFAULT_MIN_DOC_FREQ = 2 # Minimum documents a keyword must appear in
@@ -46,10 +47,17 @@ logger = logging.getLogger(__name__)
 
 def parse_arguments():
     """Parses command-line arguments."""
-    # Read collection from cfg INSIDE main, not via args default. Remove arg if always using cfg.
-    # parser.add_argument("--collection", default=DEFAULT_COLLECTION_NAME, help="Weaviate collection name (uses config)")
     parser = argparse.ArgumentParser(description="Advanced Keyword Extraction Pipeline (Per-Document KeyBERT).")
-    # Read collection from cfg INSIDE main, not via args default. Remove arg if always using cfg.
+
+    # ─── Legacy alias: accept --min_doc_freq and treat it as absolute min-doc-frequency ─────────────────────────────────────
+    parser.add_argument(
+        "--min_doc_freq",
+        type=int,
+        default=None,
+        help="(Legacy) shorthand for --min_doc_freq_abs"
+    )
+
+    # ─── Core extraction flags ────────────────────────────────────────────────────────────────────────────────────────
     parser.add_argument("--collection", default=DEFAULT_COLLECTION_NAME, help="Weaviate collection name")
     parser.add_argument("--keybert_model", default=DEFAULT_KEYBERT_MODEL, help="Sentence Transformer model for KeyBERT")
     parser.add_argument("--spacy_model", default=DEFAULT_SPACY_MODEL, help="SpaCy model for POS tagging")
@@ -57,18 +65,50 @@ def parse_arguments():
     parser.add_argument("--final_top_n", type=int, default=DEFAULT_FINAL_TOP_N, help="Final number of keywords after aggregation and filtering")
     parser.add_argument("--ngram_range", type=lambda s: tuple(map(int, s.split(','))), default=DEFAULT_N_GRAM_RANGE, help="N-gram range for keywords (e.g., '1,2')")
     parser.add_argument("--min_len", type=int, default=DEFAULT_MIN_KEYWORD_LENGTH, help="Minimum character length for final keywords")
-    parser.add_argument("--diversity", type=float, default=DEFAULT_DIVERSITY, help="Diversity setting (0-1) for KeyBERT's MMR")
+    parser.add_argument("--extraction_diversity", type=float, default=DEFAULT_EXTRACTION_DIVERSITY, help="Diversity setting (0-1) for KeyBERT's MMR")
     parser.add_argument("--pos_tags", type=lambda s: set(s.split(',')), default=DEFAULT_POS_TAGS, help="Comma-separated POS tags to keep (e.g., 'NOUN,PROPN')")
-    parser.add_argument("--min_doc_freq", type=int, default=DEFAULT_MIN_DOC_FREQ, help="Minimum number of documents a keyword must appear in")
-    parser.add_argument("--no_pos_filter", action='store_true', help="Disable POS tag filtering")
-    #parser.add_argument("--weaviate_host", default=DEFAULT_WEAVIATE_HOST, help="Weaviate host")
-    #parser.add_argument("--weaviate_http_port", type=int, default=DEFAULT_WEAVIATE_HTTP_PORT, help="Weaviate HTTP port")
-    #parser.add_argument("--weaviate_grpc_port", type=int, default=DEFAULT_WEAVIATE_GRPC_PORT, help="Weaviate gRPC port")
+    parser.add_argument("--min_doc_freq_abs", type=int, default=None, help="Absolute min-doc-frequency (overrides fraction if set)")
+    parser.add_argument("--min_doc_freq_frac", type=float, default=None, help="Fractional min-doc-frequency (0.0–1.0). Rounded up * total_docs")
+    parser.add_argument("--no_pos_filter", action="store_true", help="Disable POS tag filtering")
+
+    # ─── Legacy/UI-only aliases to absorb extra flags from Flask/UI ─────────────────────────────────────────────────
+    parser.add_argument(
+        "--diversity",
+        type=float,
+        default=None,
+        help="(Alias) same as --extraction_diversity"
+    )
+    parser.add_argument(
+        "--docFreqMode",
+        choices=["absolute","fraction"],
+        default=None,
+        help="(Ignored) UI flag to pick abs vs frac input"
+    )
+    parser.add_argument(
+        "--ingestion.MIN_QUALITY_SCORE",
+        type=float,
+        default=None,
+        help="(Ignored) override for ingestion.MIN_QUALITY_SCORE"
+    )
 
     args = parser.parse_args()
+
+    # ─── Map legacy shorthand to real param ─────────────────────────────────────────────────────────────────────────
+    if args.min_doc_freq is not None:
+        if args.min_doc_freq_abs is None and args.min_doc_freq_frac is None:
+            args.min_doc_freq_abs = args.min_doc_freq
+
+    # ─── Map UI alias into real extraction flag ─────────────────────────────────────────────────────────────────────
+    if args.diversity is not None:
+        args.extraction_diversity = args.diversity
+
+    # ─── ngram_range sanity check ─────────────────────────────────────────────────────────────────────────────────
     if len(args.ngram_range) != 2 or args.ngram_range[0] < 1 or args.ngram_range[1] < args.ngram_range[0]:
-         parser.error("Invalid ngram_range. Use format like '1,2' or '1,3'.")
+        parser.error("Invalid ngram_range. Use format like '1,2' or '1,3'.")
+
     return args
+
+
 
 def load_spacy_model(model_name: str):
     """Loads spaCy model."""
@@ -81,7 +121,7 @@ def load_spacy_model(model_name: str):
     logger.info(f"Loaded spaCy model '{model_name}'.")
     return nlp
 
-# Assuming you already have the config loaded using Pydantic model
+# Assuming the config is loaded using Pydantic model
 
 def get_all_content_from_weaviate(client: weaviate.WeaviateClient, collection_name: str) -> list[str]:
     """Retrieves non-empty text content from all objects using available text properties (Weaviate v4 syntax)."""
@@ -155,7 +195,7 @@ def get_all_content_from_weaviate(client: weaviate.WeaviateClient, collection_na
             total_obj_count = collection.aggregate.over_all(total_count=True).total_count
             logger.warning(f"Failed to extract any text content from '{collection_name}'. The collection has {total_obj_count} objects.")
             if total_obj_count > 0:
-                 logger.warning(f"Ensure the specified text properties {text_properties} contain data in your objects.")
+                 logger.warning(f"Ensure the specified text properties {text_properties} contain data in objects.")
 
         return texts
 
@@ -170,7 +210,7 @@ def get_all_content_from_weaviate(client: weaviate.WeaviateClient, collection_na
 
 
 # <<< MODIFIED: Run KeyBERT per document >>>
-def run_keybert_per_document(texts: list[str], model_name: str, top_n_per_doc: int, ngram_range: tuple[int, int], diversity: float) -> dict[str, float]:
+def run_keybert_per_document(texts: list[str], model_name: str, top_n_per_doc: int, ngram_range: tuple[int, int], extraction_diversity: float) -> dict[str, float]:
     """
     Extracts keywords using KeyBERT for each document individually and aggregates scores.
     Returns a dictionary of {keyword: max_score}.
@@ -188,7 +228,7 @@ def run_keybert_per_document(texts: list[str], model_name: str, top_n_per_doc: i
         kw_model = KeyBERT(model=transformer_model)
         logger.info("KeyBERT model initialized.")
 
-        logger.info(f"Running KeyBERT extraction per document (top_n={top_n_per_doc}, ngram_range={ngram_range}, diversity={diversity})...")
+        logger.info(f"Running KeyBERT extraction per document (top_n={top_n_per_doc}, ngram_range={ngram_range}, diversity={extraction_diversity})...")
         processed_docs = 0
         for i, text in enumerate(texts):
             try:
@@ -201,7 +241,7 @@ def run_keybert_per_document(texts: list[str], model_name: str, top_n_per_doc: i
                     keyphrase_ngram_range=ngram_range,
                     stop_words='english',
                     use_mmr=True,
-                    diversity=diversity,
+                    diversity=extraction_diversity,
                     top_n=top_n_per_doc # Extract top N for THIS doc
                 )
 
@@ -356,6 +396,39 @@ if __name__ == "__main__":
     args = parse_arguments()
     client = None
     nlp_model = None
+    # 1. Load ingested_docs.json
+    docs_file = Path(cfg.paths.DOCUMENT_DIR) / "ingested_docs.json"
+    if docs_file.exists():
+        with open(docs_file, "r", encoding="utf-8") as f:
+            all_files = json.load(f)
+        total_docs = len(all_files)
+    else:
+        # fallback to whatever is actually loaded from Weaviate
+        total_docs = len(all_texts) if 'all_texts' in locals() else 0
+    
+    # 2. Decide which threshold to use
+    if args.min_doc_freq_abs is not None:
+        min_doc_freq = args.min_doc_freq_abs
+        mode = "absolute"
+    elif args.min_doc_freq_frac is not None:
+        min_doc_freq = math.ceil(args.min_doc_freq_frac * total_docs)
+        mode = "fraction"
+    else:
+        # fallback to old arg
+        min_doc_freq = args.min_doc_freq
+        mode = "absolute"
+    
+    # 3. Log both forms
+    computed_frac = min_doc_freq / total_docs if total_docs > 0 else 0
+    logger.info(
+        f"Using min_doc_freq={min_doc_freq} "
+        f"({computed_frac:.2%} of {total_docs} docs) "
+        f"mode={mode}"
+    )
+    # ====== END OF ADDED CODE ======
+    
+    client = None
+    nlp_model = None
 
     if not cfg or not cfg.retrieval or not cfg.model:
         logger.critical("CRITICAL: Central configuration (cfg) not loaded or incomplete. Cannot proceed.")
@@ -369,7 +442,7 @@ if __name__ == "__main__":
         w_host = cfg.retrieval.WEAVIATE_HOST
         w_http_port = cfg.retrieval.WEAVIATE_HTTP_PORT
         w_grpc_port = cfg.retrieval.WEAVIATE_GRPC_PORT
-        # Ensure w_timeout_tuple is a tuple e.g., (10, 120) from your config
+        # Ensure w_timeout_tuple is a tuple e.g., (10, 120) from config
         w_timeout_tuple = cfg.retrieval.WEAVIATE_TIMEOUT
         w_collection_name = args.collection # Use collection name from args/defaults
 
@@ -415,8 +488,6 @@ if __name__ == "__main__":
         # if all_texts:
         #    print(f"First item preview: {repr(all_texts[0][:100])}...")
 
-
-        # <<< The rest of your main logic remains the same >>>
         # Extract Keywords using KeyBERT (Per Document + Aggregation)
         if all_texts:
             logger.info(f"Starting KeyBERT extraction on {len(all_texts)} documents...") # Added log
@@ -425,20 +496,20 @@ if __name__ == "__main__":
                 args.keybert_model,
                 args.top_n_per_doc,
                 args.ngram_range,
-                args.diversity
+                args.extraction_diversity
             )
 
             # Filter Keywords (Doc Freq, Linguistic + Pattern)
             if aggregated_keywords_scores:
                 logger.info("Applying final filters to aggregated keywords...") # Added log
                 final_keywords_with_scores = apply_final_filters(
-                    aggregated_keywords_scores,
-                    keyword_frequencies,
-                    nlp_model,
-                    args.pos_tags,
-                    args.min_len,
-                    args.min_doc_freq,
-                    apply_pos_filter=not args.no_pos_filter
+                        aggregated_keywords_scores,
+                        keyword_frequencies,
+                        nlp_model,
+                        args.pos_tags,
+                        args.min_len,
+                        min_doc_freq,  # Using our calculated threshold
+                        apply_pos_filter=not args.no_pos_filter
                 )
 
                 # Select final Top N from filtered list
@@ -485,7 +556,7 @@ if __name__ == "__main__":
 
     except Exception as e:
         logger.critical(f"An unexpected error occurred in the main execution block: {str(e)}", exc_info=True)
-        print(f"❌ Failure: {str(e)}")
+        print(f" Failure: {str(e)}")
         sys.exit(1)
 
     finally:

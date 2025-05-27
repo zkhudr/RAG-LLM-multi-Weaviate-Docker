@@ -1,98 +1,146 @@
-# config.py (Updated for Multiple Secure API Keys & Generic Provider)
+# config.py (Pydantic v2 strict schema, legacy aliases, and provider-default fixes)
 
 import os
 import yaml
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
-from typing import List, Dict, Any, Optional, Literal, Tuple # Added Literal
-from dotenv import load_dotenv
 import logging
-import shutil
 from pathlib import Path
+from typing import List, Dict, Any, Optional, Literal, Tuple
+from dotenv import load_dotenv
+from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
 
+# Initialize logger
 logger = logging.getLogger(__name__)
 
-# Load .env variables into os.environ FIRST
+# Load environment variables
 load_dotenv()
 
-# Configuration File Path
+# Path to configuration YAML
 CONFIG_YAML_PATH = Path("./config_settings.yaml").resolve()
 
-# --- Flow Style for YAML Lists ---
-class FlowStyleList(list): pass
+# --- YAML Flow Style for Lists ---
+class FlowStyleList(list):
+    pass
+
 def flow_style_list_representer(dumper, data):
     return dumper.represent_sequence('tag:yaml.org,2002:seq', data, flow_style=True)
 
-# Use SafeDumper and add representer conditionally
-dumper_to_use = yaml.SafeDumper
-if 'FlowStyleList' in globals() and 'flow_style_list_representer' in globals():
-    class ConfigDumper(yaml.SafeDumper): pass
-    ConfigDumper.add_representer(FlowStyleList, flow_style_list_representer)
-    dumper_to_use = ConfigDumper
+class ConfigDumper(yaml.SafeDumper):
+    pass
+
+ConfigDumper.add_representer(FlowStyleList, flow_style_list_representer)
 # --- End Flow Style ---
 
-def save_yaml_config(data: Dict[str, Any], path: Path):
+
+def save_yaml_config(data: Dict[str, Any], path: Path) -> bool:
     """Atomically save validated config data dictionary to YAML file."""
     temp_path = path.with_suffix(".yaml.tmp")
     try:
         dump_data = data.copy()
-        if FlowStyleList and 'env' in dump_data:
-             env_section = dump_data['env']
-             for key in ['DOMAIN_KEYWORDS', 'AUTO_DOMAIN_KEYWORDS', 'USER_ADDED_KEYWORDS']:
-                 if key in env_section and isinstance(env_section[key], list):
-                     env_section[key] = FlowStyleList(env_section[key])
+        if 'env' in dump_data:
+            env_section = dump_data['env']
+            for key in ['DOMAIN_KEYWORDS', 'AUTO_DOMAIN_KEYWORDS', 'USER_ADDED_KEYWORDS']:
+                if key in env_section and isinstance(env_section[key], list):
+                    env_section[key] = FlowStyleList(env_section[key])
 
-        logger.debug(f"Dumping config data to temporary file: {temp_path}")
+        # Write to temp file
         with open(temp_path, 'w', encoding='utf-8') as f:
-            yaml.dump(dump_data, f, default_flow_style=None, sort_keys=False, Dumper=dumper_to_use, indent=2)
-        logger.debug("YAML dump successful.")
+            yaml.dump(
+                dump_data,
+                f,
+                default_flow_style=None,
+                sort_keys=False,
+                Dumper=ConfigDumper,
+                indent=2
+            )
+            f.flush()
+            os.fsync(f.fileno())
 
-        logger.debug(f"Attempting atomic replace: {temp_path} -> {path}")
-        try: os.replace(temp_path, path)
-        except OSError as replace_error:
-            logger.warning(f"os.replace failed ({replace_error}), attempting shutil.move...")
-            shutil.move(str(temp_path), str(path))
+        # Atomic replace
+        try:
+            os.replace(temp_path, path)
+        except OSError as e:
+            logger.warning(f"Atomic replace failed: {e}; writing directly.")
+            with open(path, 'w', encoding='utf-8') as f:
+                yaml.dump(
+                    dump_data,
+                    f,
+                    default_flow_style=None,
+                    sort_keys=False,
+                    Dumper=ConfigDumper,
+                    indent=2
+                )
+        finally:
+            # Always try to remove the temp file; ignore if it's gone
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                logger.warning(f"Could not delete temp file {temp_path}: {e}")
 
-        logger.info(f"Successfully saved configuration to {path}")
+        logger.info(f"Configuration saved to {path}")
         return True
 
     except Exception as e:
-        logger.error(f"Failed to save YAML configuration to {path}: {e}", exc_info=True)
-        if temp_path.exists(): # Clean up temp file on error
-            try: temp_path.unlink()
-            except OSError as e_rm: logger.error(f"Failed to remove temp file {temp_path}: {e_rm}")
-        raise # Re-raise the original error
+        logger.error(f"Failed to save config: {e}", exc_info=True)
+        # Cleanup temp file on error
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as e2:
+            logger.warning(f"Could not delete temp file after error {temp_path}: {e2}")
+        raise
 
-# === Pydantic Models ===
+
+# === Configuration Models ===
 
 class PipelineConfig(BaseModel):
-    """Configuration specific to the RAG pipeline execution."""
-    max_history_turns: int = 5  # Default: Use last 5 user/assistant pairs (10 messages)
+    model_config = ConfigDict(extra="forbid")
+    max_history_turns: int = Field(5)
+
 
 class DomainKeywordExtractionConfig(BaseModel):
-    keybert_model: str = "all-MiniLM-L6-v2"
-    top_n_per_doc: int = 10
-    final_top_n: int = 100
-    min_doc_freq: int = 2
-    diversity: float = 0.7
-    no_pos_filter: bool = False
+    model_config = ConfigDict(extra="forbid")
+    keybert_model: str = Field('all-MiniLM-L6-v2')
+    top_n_per_doc: int = Field(10)
+    final_top_n: int = Field(100)
+    min_doc_freq_mode: Literal['absolute', 'fraction'] = Field('absolute')
+    min_doc_freq_abs: Optional[int] = Field(None)
+    min_doc_freq_frac: Optional[float] = Field(None)
+    diversity: float = Field(0.7)
+    no_pos_filter: bool = Field(False)
+    # Legacy aliases
+    min_doc_freq: Optional[int] = Field(None, alias='min_doc_freq')
+    extraction_diversity: Optional[float] = Field(None, alias='extraction_diversity')
+
+    @model_validator(mode='after')
+    def apply_aliases(self):
+        if self.min_doc_freq is not None:
+            if self.min_doc_freq_mode == 'absolute':
+                object.__setattr__(self, 'min_doc_freq_abs', self.min_doc_freq)
+            else:
+                object.__setattr__(self, 'min_doc_freq_frac', float(self.min_doc_freq))
+        if self.extraction_diversity is not None:
+            object.__setattr__(self, 'diversity', self.extraction_diversity)
+        return self
+
 
 class SecurityConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     SANITIZE_INPUT: bool = True
     RATE_LIMIT: int = 10
-    API_TIMEOUT: int = 30
+    API_TIMEOUT: int = 40
     CACHE_ENABLED: bool = False
 
-    # API Keys - Loaded ONLY from environment variables, default to empty string
     DEEPSEEK_API_KEY: str = Field(default_factory=lambda: os.getenv("DEEPSEEK_API_KEY", ""), exclude=True)
     OPENAI_API_KEY: str = Field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""), exclude=True)
     ANTHROPIC_API_KEY: str = Field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""), exclude=True)
     COHERE_API_KEY: str = Field(default_factory=lambda: os.getenv("COHERE_API_KEY", ""), exclude=True)
-    # Add other keys here following the pattern
 
-    # Note: exclude=True prevents these fields from being included in model_dump()
-    # which prevents them from being saved back to YAML.
 
 class RetrievalConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     COLLECTION_NAME: str = "Industrial_tech"
     K_VALUE: int = 6
     SCORE_THRESHOLD: float = 0.6
@@ -104,187 +152,163 @@ class RetrievalConfig(BaseModel):
     SEMANTIC_WEIGHT: float = 0.7
     SPARSE_WEIGHT: float = 0.3
     PERFORM_DOMAIN_CHECK: bool = True
-    WEAVIATE_HOST: str = os.getenv("WEAVIATE_DOCKER_HOST", "localhost") # Maybe a separate var for host
-    WEAVIATE_HTTP_PORT: int = int(os.getenv("WEAVIATE_HOST_HTTP_PORT") or 8080) # Prioritize env
-    WEAVIATE_GRPC_PORT: int = int(os.getenv("WEAVIATE_HOST_GRPC_PORT") or 50051) # Prioritize env
+    PERFORM_TECHNICAL_VALIDATION: bool = True
+    WEAVIATE_HOST: str = os.getenv("WEAVIATE_DOCKER_HOST", "localhost")
+    WEAVIATE_HTTP_PORT: int = int(os.getenv("WEAVIATE_HOST_HTTP_PORT", 8080))
+    WEAVIATE_GRPC_PORT: int = int(os.getenv("WEAVIATE_HOST_GRPC_PORT", 50051))
     retrieve_with_history: bool = False
     WEAVIATE_TIMEOUT: Tuple[int, int] = (10, 120)
 
     @field_validator('SEARCH_TYPE')
-    def validate_search_type(cls, value):
-        allowed = {'mmr', 'similarity', 'similarity_score_threshold','hybrid'}
-        val_lower = value.lower()
-        if val_lower not in allowed:
+    def validate_search_type_cls(cls, value):
+        allowed = {'mmr', 'similarity', 'similarity_score_threshold', 'hybrid'}
+        low = value.lower()
+        if low not in allowed:
             raise ValueError(f"SEARCH_TYPE must be one of {allowed}, got '{value}'")
-        return val_lower
+        return low
 
-# Literal type for provider choices
+
 ApiProvider = Literal["deepseek", "openai", "anthropic", "cohere", "none"]
 
 class ModelConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # External API endpoints
+    PROVIDER_URLS: Dict[str, str] = Field(
+        default_factory=lambda: {
+            "deepseek":  "https://api.deepseek.com/v1/chat/completions",
+            "openai":    "https://api.openai.com/v1/chat/completions",
+            "anthropic": "https://api.anthropic.com/v1/complete",
+            "cohere":    "https://api.cohere.com/v1/completions"
+        }
+    )
+    # Default model names per provider
+    EXTERNAL_API_MODEL_DEFAULTS: Dict[str, str] = Field(
+        default_factory=lambda: {
+            "openai":    "gpt-3.5-turbo",
+            "anthropic": "claude-v1",
+            "cohere":    "command-nightly",
+            # Use the chat model name that invokes DeepSeek-V3
+            "deepseek":  "deepseek-chat"
+        }
+    )
+
     LLM_TEMPERATURE: float = 0.5
     MAX_TOKENS: int = 1536
-    OLLAMA_MODEL: str = "deepseek-coder:6.7b-instruct-q5_K_M" # Primary local model
+    OLLAMA_MODEL: str = "deepseek-coder:6.7b-instruct-q5_K_M"
     EMBEDDING_MODEL: str = "nomic-embed-text"
     TOP_P: float = 0.9
     FREQUENCY_PENALTY: float = 0.1
-    SYSTEM_MESSAGE: str = Field(default="You are an expert AI assistant...") # Keep enhanced message
-
-    # --- NEW: Select External API Provider ---
-    EXTERNAL_API_PROVIDER: ApiProvider = "deepseek" # Default provider
-    EXTERNAL_API_MODEL_NAME: Optional[str] = None # Optional: Override default model name for provider
+    SYSTEM_MESSAGE: str = Field("You are an expert AI assistant...")
+    EXTERNAL_API_PROVIDER: ApiProvider = "deepseek"
+    EXTERNAL_API_MODEL_NAME: Optional[str] = None
+    MERGE_STRATEGY: Literal["api_first", "concat", "local_only"] = "api_first"
 
     @field_validator('EXTERNAL_API_PROVIDER')
     def validate_provider(cls, value):
-        # Simple lowercase validation, Literal handles allowed values
         return value.lower()
 
+    @model_validator(mode='after')
+    def check_api_keys(self):
+        if self.EXTERNAL_API_PROVIDER != 'none':
+            mapping = {
+                'deepseek': 'DEEPSEEK_API_KEY',
+                'openai':   'OPENAI_API_KEY',
+                'anthropic':'ANTHROPIC_API_KEY',
+                'cohere':   'COHERE_API_KEY'
+            }
+            key = mapping.get(self.EXTERNAL_API_PROVIDER)
+            if key and not os.getenv(key):
+                object.__setattr__(self, 'EXTERNAL_API_PROVIDER', 'none')
+        return self
+
 class DocumentConfig(BaseModel):
-    CHUNK_SIZE: int = 768
-    CHUNK_OVERLAP: int = 70
-    FILE_TYPES: List[str] = ['pdf', 'txt', 'csv', 'md', 'docx']
-    PARSE_TABLES: bool = True
-    GENERATE_SUMMARY: bool = False
+    model_config = ConfigDict(extra="forbid")
+    CHUNK_SIZE: int = Field(768)
+    CHUNK_OVERLAP: int = Field(70)
+    MIN_CONTENT_LENGTH: int = Field(50)
+    FILE_TYPES: List[str] = Field(['pdf', 'txt', 'csv', 'md', 'docx'])
+    PARSE_TABLES: bool = Field(True)
+    GENERATE_SUMMARY: bool = Field(False)
 
 class PathConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     DOCUMENT_DIR: str = "./data"
     DOMAIN_CENTROID_PATH: str = "./domain_centroid.npy"
 
 class EnvironmentConfig(BaseModel):
-    DOMAIN_KEYWORDS: List[str] = []
-    AUTO_DOMAIN_KEYWORDS: List[str] = []
-    USER_ADDED_KEYWORDS: List[str] = []
+    model_config = ConfigDict(extra="forbid")
+    DOMAIN_KEYWORDS: List[str] = Field(default_factory=list)
+    AUTO_DOMAIN_KEYWORDS: List[str] = Field(default_factory=list)
+    USER_ADDED_KEYWORDS: List[str] = Field(default_factory=list)
+    SELECTED_N_TOP: int = Field(10000)
 
     @property
     def merged_keywords(self) -> List[str]:
-        domain = self.DOMAIN_KEYWORDS or []
-        auto = self.AUTO_DOMAIN_KEYWORDS or []
-        user = self.USER_ADDED_KEYWORDS or []
-        return sorted(list(set(domain + auto + user))) # Sort for consistency
+        return sorted(set(self.DOMAIN_KEYWORDS + self.AUTO_DOMAIN_KEYWORDS + self.USER_ADDED_KEYWORDS))
 
-# === Root Config Model ===
+class IngestionConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    CENTROID_AUTO_THRESHOLD: float = Field(0.05)
+    CENTROID_DIVERSITY_THRESHOLD: float = Field(0.01)
+    CENTROID_UPDATE_MODE: Literal['auto', 'manual'] = Field('auto')
+    MIN_QUALITY_SCORE: float = Field(0.3)
+    # Legacy alias
+    CENTROID_DIVERSITY: Optional[float] = Field(None, alias='CENTROID_DIVERSITY')
+
+    @model_validator(mode='after')
+    def apply_legacy_alias(self):
+        if self.CENTROID_DIVERSITY is not None:
+            object.__setattr__(self, 'CENTROID_DIVERSITY_THRESHOLD', self.CENTROID_DIVERSITY)
+        return self
+
 class AppConfig(BaseModel):
-    security: SecurityConfig = Field(default_factory=SecurityConfig)
-    retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
-    model: ModelConfig = Field(default_factory=ModelConfig)
-    document: DocumentConfig = Field(default_factory=DocumentConfig)
-    paths: PathConfig = Field(default_factory=PathConfig)
-    env: EnvironmentConfig = Field(default_factory=EnvironmentConfig)
-    pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
+    model_config = ConfigDict(extra="forbid")
+    security: SecurityConfig                   = Field(default_factory=SecurityConfig)
+    retrieval: RetrievalConfig                 = Field(default_factory=RetrievalConfig)
+    model: ModelConfig                         = Field(default_factory=ModelConfig)
+    document: DocumentConfig                   = Field(default_factory=DocumentConfig)
+    paths: PathConfig                          = Field(default_factory=PathConfig)
+    env: EnvironmentConfig                     = Field(default_factory=EnvironmentConfig)
+    pipeline: PipelineConfig                   = Field(default_factory=PipelineConfig)
+    ingestion: IngestionConfig                 = Field(default_factory=IngestionConfig)
     domain_keyword_extraction: DomainKeywordExtractionConfig = Field(default_factory=DomainKeywordExtractionConfig)
 
-    # Automatically update derived env fields after validation/loading
-    #@model_validator(mode='after')
-    #def update_derived_env_fields(self) -> 'AppConfig':
-     #   self.env.API_TIMEOUT = self.security.API_TIMEOUT
-     #   self.env.EMBEDDING_MODEL = self.model.EMBEDDING_MODEL
-     #   return self
-
     @classmethod
-    def load_from_yaml(cls, path: Path = CONFIG_YAML_PATH) -> 'AppConfig':
-        """Loads configuration from YAML, validates, handles defaults, and returns instance."""
+    def load_from_yaml(cls, path: Path = CONFIG_YAML_PATH) -> "AppConfig":
         if not path.exists():
-            logger.warning(f"Configuration file {path} not found. Creating default config.")
-            default_config = cls()
-            try:
-                # Use model_dump with exclude_defaults=False? Or just dump? Exclude keys explicitly.
-                dump_data = default_config.model_dump(exclude={'security': {'DEEPSEEK_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'COHERE_API_KEY'}})
-                save_yaml_config(dump_data, path)
-            except Exception as save_e:
-                logger.error(f"Failed to save default config file {path}: {save_e}")
-            return default_config
+            default = cls()
+            data = default.model_dump(exclude={'security': {
+                'DEEPSEEK_API_KEY','OPENAI_API_KEY','ANTHROPIC_API_KEY','COHERE_API_KEY'
+            }})
+            save_yaml_config(data, path)
+            return default
 
         try:
-            with open(path, 'r', encoding='utf-8') as f:
-                raw_config_data = yaml.safe_load(f) or {}
+            raw = yaml.safe_load(path.read_text(encoding='utf-8')) or {}
+        except yaml.YAMLError as ye:
+            logger.error(f"YAML parsing error: {ye}", exc_info=True)
+            raise RuntimeError("Could not parse YAML config") from ye
 
-            # Validate raw data against the AppConfig model
-            # Pydantic automatically merges defaults for missing fields
-            instance = cls(**raw_config_data)
+        inst = cls(**raw)
+        logger.info(f"Configuration loaded from {path}")
+        return inst
 
-            # Note: The @model_validator handles updating derived fields now.
+    def update_and_save(self, updates: Dict[str, Any], path: Path = CONFIG_YAML_PATH) -> bool:
+        original = self.model_dump()
+        merged = {**original, **updates}
+        validated = AppConfig(**merged)
+        new_dump = validated.model_dump()
+        if new_dump != original:
+            save_yaml_config(new_dump, path)
+            for field in type(self).model_fields:
+                setattr(self, field, getattr(validated, field))
+            return True
+        return False
 
-            logger.info(f"Configuration loaded and validated from {path}")
-            return instance
-        except Exception as e: # Catch YAML, Validation, and other errors
-            logger.error(f"Failed to load/validate configuration from {path}: {e}", exc_info=True)
-            raise RuntimeError(f"Could not load/validate configuration from {path}") from e
-
-    def update_and_save(self, updates: Dict[str, Any], path: Path = CONFIG_YAML_PATH):
-        """Updates current config, validates, saves if changed."""
-        logger.info("Received config updates. Validating and applying...")
-        config_changed = False
-
-        # Get current state as dict for comparison later
-        # Use model_dump() for Pydantic v2
-        dump_method = getattr(self, 'model_dump', getattr(self, 'dict', None))
-        if not dump_method: raise AttributeError("Cannot find dump method")
-        original_dump = dump_method()
-
-        # Create a dictionary representing the potential new state by deep merging
-        # This avoids potential issues with model_copy and ensures we work with dicts first
-        potential_new_state_dict = original_dump.copy()
-        for section_key, section_updates in updates.items():
-            if section_key in potential_new_state_dict and isinstance(section_updates, dict):
-                 # Merge the update into the existing section dictionary
-                potential_new_state_dict[section_key] = {
-                     **potential_new_state_dict.get(section_key, {}),
-                     **section_updates
-                 }
-            elif section_key in potential_new_state_dict:
-                 # Handle cases where update is not a dict? Or log warning?
-                 logger.warning(f"Update for section '{section_key}' is not a dict, skipping merge.")
-            # else: section_key not in original, ignore?
-
-        try:
-            # --- *** VALIDATE THE FULL POTENTIAL DICT *** ---
-            validated_new_config = AppConfig(**potential_new_state_dict)
-            # --- *** END VALIDATION *** ---
-
-            # Convert validated config back to dict for comparison and saving
-            validated_new_dump = validated_new_config.model_dump()
-
-            # Compare the validated new dictionary state with the original one
-            if original_dump != validated_new_dump:
-                config_changed = True
-                logger.info("Configuration data changed.")
-
-                # --- *** UPDATE SELF (CFG) FROM VALIDATED OBJECT *** ---
-                # Assign the validated nested objects back to self
-                for field_name in self.model_fields.keys():
-                     if hasattr(validated_new_config, field_name):
-                         setattr(self, field_name, getattr(validated_new_config, field_name))
-                # --- *** END UPDATE SELF *** ---
-
-            else:
-                logger.info("No effective configuration changes detected.")
-
-        except ValidationError as e:
-            logger.error(f"Validation error applying updates: {e}")
-            raise # Re-raise validation error
-
-        if config_changed:
-            logger.info("Configuration changed. Attempting save...")
-            try:
-                # Dump the *validated* new state, excluding API keys
-                config_dict_to_save = validated_new_config.model_dump(exclude={'security': {'DEEPSEEK_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'COHERE_API_KEY'}})
-                save_yaml_config(config_dict_to_save, path) # Call utility save function
-                logger.info("Configuration save successful.")
-            except Exception as e:
-                logger.error(f"Error during configuration save call: {e}", exc_info=True)
-                raise # Re-raise save error
-        else:
-            logger.info("Skipping save as no changes were detected.")
-
-        return config_changed
-
-# --- Initialize Singleton Configuration Instance ---
-# ... (keep cfg initialization as before) ...
+# Instantiate config
 try:
     cfg = AppConfig.load_from_yaml()
-    # ... (log key status) ...
 except Exception:
-    logging.critical("CRITICAL: Failed to load configuration...", exc_info=True)
-    cfg = None # Set cfg to None if loading fails critically
-
-# --- End config.py ---
+    logger.critical("CRITICAL: Failed to load configuration...", exc_info=True)
+    cfg = None

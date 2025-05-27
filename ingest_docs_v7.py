@@ -20,6 +20,8 @@ import pandas as pd
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 
+
+
 # Weaviate v4 imports
 import weaviate
 
@@ -53,25 +55,29 @@ weaviate_logger.propagate = False
 class PipelineConfig:
     """Centralized pipeline configuration for Weaviate v4"""
     # Document processing
-    MIN_CONTENT_LENGTH = 50
+    
+    MIN_CONTENT_LENGTH   = cfg.document.MIN_CONTENT_LENGTH
+    MIN_QUALITY_SCORE     = cfg.ingestion.MIN_QUALITY_SCORE
     VECTORSTORE_COLLECTION = "industrial_tech"
     # Weaviate connection - NOW USING VALUES FROM YOUR config.py
-    WEAVIATE_HOST = cfg.retrieval.WEAVIATE_HOST
-    WEAVIATE_HTTP_PORT = cfg.retrieval.WEAVIATE_HTTP_PORT
-    WEAVIATE_GRPC_PORT = cfg.retrieval.WEAVIATE_GRPC_PORT
-    WEAVIATE_TIMEOUT = (30, 300)
-    # Embedding configuration
-    EMBEDDING_MODEL = cfg.model.EMBEDDING_MODEL
-    EMBEDDING_TIMEOUT = 30
-    EMBEDDING_BASE_URL = "http://localhost:11434"
-    # Document processing
-    PDF_TABLE_EXTRACTION = cfg.document.PARSE_TABLES
-    CHUNK_SIZE = cfg.document.CHUNK_SIZE
-    CHUNK_OVERLAP = cfg.document.CHUNK_OVERLAP
-    # Retry configuration
-    RETRY_ATTEMPTS = 3
-    RETRY_WAIT_MULTIPLIER = 2
-    RETRY_MAX_WAIT = 30
+
+    if cfg is not None and hasattr(cfg, 'retrieval'):
+        WEAVIATE_HOST = cfg.retrieval.WEAVIATE_HOST
+        WEAVIATE_HTTP_PORT = cfg.retrieval.WEAVIATE_HTTP_PORT
+        WEAVIATE_GRPC_PORT = cfg.retrieval.WEAVIATE_GRPC_PORT
+        WEAVIATE_TIMEOUT = (30, 300)
+        # Embedding configuration
+        EMBEDDING_MODEL = cfg.model.EMBEDDING_MODEL
+        EMBEDDING_TIMEOUT = 30
+        EMBEDDING_BASE_URL = "http://localhost:11434"
+        # Document processing
+        PDF_TABLE_EXTRACTION = cfg.document.PARSE_TABLES
+        CHUNK_SIZE = cfg.document.CHUNK_SIZE
+        CHUNK_OVERLAP = cfg.document.CHUNK_OVERLAP
+        # Retry configuration
+        RETRY_ATTEMPTS = 3
+        RETRY_WAIT_MULTIPLIER = 2
+        RETRY_MAX_WAIT = 30
 
     @classmethod
     def get_client(cls): # Signature remains correct (only cls)
@@ -327,10 +333,30 @@ class RobustPDFLoaderV4:
 
     def _format_table(self, table_data) -> str:
         try:
-            df = pd.DataFrame(table_data[1:], columns=table_data[0])
-            return f"TABLE:\n{df.to_markdown(index=False)}"
+            # Filter out None values before creating DataFrame
+            cleaned_data = []
+            for row in table_data:
+                if row:  # Check if row exists
+                    cleaned_row = ['' if cell is None else str(cell) for cell in row]
+                    cleaned_data.append(cleaned_row)
+            
+            if not cleaned_data:
+                return ""
+                
+            # Use cleaned data for DataFrame
+            if len(cleaned_data) > 1:  # Ensure we have header and data
+                df = pd.DataFrame(cleaned_data[1:], columns=cleaned_data[0])
+                return f"TABLE:\n{df.to_markdown(index=False)}"
+            else:
+                return "TABLE:\n" + "\n".join("|".join(row) for row in cleaned_data)
         except Exception as e:
-            return "TABLE:\n" + "\n".join("|".join(row) for row in table_data)
+            # Fallback to basic string joining with None protection
+            safe_data = []
+            for row in table_data:
+                if row:
+                    safe_row = ['' if cell is None else str(cell) for cell in row]
+                    safe_data.append(safe_row)
+            return "TABLE:\n" + "\n".join("|".join(row) for row in safe_data)
 
     def _load_fallback(self) -> List[Document]:
         try:
@@ -360,7 +386,7 @@ class DocumentProcessor:
         self._init_collection()
 
     def _init_collection(self):
-        """Initialize Weaviate collection with v4 settings"""
+        """Initialize Weaviate collection with optimized HNSW settings"""
         collection_name = PipelineConfig.VECTORSTORE_COLLECTION
         if not self.weaviate_client.collections.exists(collection_name):
             logger.info(f"Collection '{collection_name}' does not exist. Creating...")
@@ -368,7 +394,7 @@ class DocumentProcessor:
                 self.weaviate_client.collections.create(
                     name=collection_name,
                     properties=[
-                        Property(name="content", data_type=DataType.TEXT),
+                        Property(name="page_content", data_type=DataType.TEXT),
                         Property(name="source", data_type=DataType.TEXT),
                         Property(name="filetype", data_type=DataType.TEXT),
                         # Add other properties based on your SCHEMA_PROPERTIES if needed
@@ -381,7 +407,36 @@ class DocumentProcessor:
                     vectorizer_config=Configure.Vectorizer.none(), # Correct for external embeddings
                     vector_index_config=Configure.VectorIndex.hnsw(
                         distance_metric=VectorDistances.COSINE, # Use the enum
-                        quantizer=Configure.VectorIndex.Quantizer.pq() # Keep if desired
+                        ef=128,  # Higher ef increases recall at cost of query time
+                        max_connections=64,  # Higher max_connections increases recall and index size
+                        dynamic_ef_min=100,
+                        dynamic_ef_max=500,
+                        vector_cache_max_objects=1000000,  # Cache vectors in memory for faster retrieval
+                        flat_search_cutoff=40000,  # Use flat search for small collections
+                        
+                        #This configuration balances compression and accuracy by dividing vectors into 8 segments with 8 bits per component.
+                        # For larger embeddings (768+ dimensions), you might increase segments to 16 or 32. For more aggressive compression,
+                        # reduce bits_per_component to 6 or 4, but this will decrease search accuracy. 
+                        # The training_limit parameter controls how many vectors are used to train the PQ model - higher values give better quantization but slower initialization.
+                        # note to self: add to UI
+
+                        vector_index_config=Configure.VectorIndex.hnsw(
+                        distance_metric=VectorDistances.COSINE,
+                        ef=128,  # Higher ef increases recall at cost of query time
+                        max_connections=64,  # Higher max_connections increases recall and index size
+                        dynamic_ef_min=100,
+                        dynamic_ef_max=500,
+                        vector_cache_max_objects=1000000,  # Cache vectors in memory for faster retrieval
+                        flat_search_cutoff=40000,  # Use flat search for small collections
+                        quantizer=Configure.VectorIndex.Quantizer.pq(
+                            segments=8,  # Number of segments to divide vectors into (higher = more compression)
+                            bits_per_component=8,  # Bits per component (8 is standard, lower = more compression)
+                            centroids=256,  # Number of centroids per segment (2^bits_per_component)
+                            training_limit=100000  # Maximum vectors to use for training
+    )
+)
+
+
                     ),
                     inverted_index_config=Configure.inverted_index(
                         bm25_b=0.75,
@@ -423,11 +478,48 @@ class DocumentProcessor:
         )
         return splitter.split_documents(documents)
 
+    
     def _filter_documents(self, documents: List[Document]) -> List[Document]:
-        return [doc for doc in documents if self._is_valid(doc)]
+        """Filter by both content length and quality score."""
+        from ingest_block import calculate_quality_score
+        from config import cfg
+        # 1) Fetch the dynamic threshold
+        min_q = cfg.ingestion.MIN_QUALITY_SCORE
+        logger.info(f"Using dynamic MIN_QUALITY_SCORE = {min_q:.2f}")
+        # 2) Load domain keywords for scoring
+        your_domain_keywords = cfg.env.AUTO_DOMAIN_KEYWORDS or cfg.env.DOMAIN_KEYWORDS
+
+        filtered: List[Document] = []
+        for doc in documents:
+            # a) length check
+            if len(doc.page_content) < PipelineConfig.MIN_CONTENT_LENGTH:
+                continue
+
+            # b) quality scoring (compute if unset)
+            quality = doc.metadata.get('quality_score')
+            if quality is None:
+                quality = calculate_quality_score(doc.page_content, your_domain_keywords)
+                doc.metadata['quality_score'] = quality
+
+            # c) apply the configured threshold
+            if quality < min_q:
+                logger.debug(f"Rejected chunk (score {quality:.2f} < {min_q:.2f})")
+                continue
+
+            filtered.append(doc)
+
+        return filtered
+
+
 
     def _is_valid(self, doc: Document) -> bool:
         return len(doc.page_content) >= PipelineConfig.MIN_CONTENT_LENGTH
+    
+
+
+
+
+
 
     def _store_results(self, documents: List[Document]) -> None:
         """Weaviate v4 batch insertion with embeddings"""
@@ -448,7 +540,7 @@ class DocumentProcessor:
 
                 # Prepare properties, ensuring all required keys exist even if None initially
                 properties = {
-                    "content": doc.page_content,
+                    "page_content": doc.page_content,
                     "source": doc.metadata.get("source", "unknown"),
                     "filetype": doc.metadata.get("filetype", "unknown"),
                     "page": doc.metadata.get("page", 0), # Default to 0 if missing

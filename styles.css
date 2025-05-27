@@ -251,7 +251,7 @@ h6 {
     line-height: 1.2;
     margin-top: 0;
     margin-bottom: 0.5em;
-    color: #111827;
+    color: #0EA5E9;
 }
 
 h1 {
@@ -426,4 +426,229 @@ input[type="checkbox"].toggle-checkbox:checked::before {
     transform: translateX(14px);
     /* Moves the thumb to the right when on */
 }
+
+/* === Auto Domain Keywords Chips === */
+.chip {
+    background-color: #0EA5E9;
+    /* Using your blue theme */
+    color: white;
+    padding: 5px 12px;
+    border-radius: 16px;
+    font-size: 12px;
+    cursor: pointer;
+    margin: 2px;
+    transition: background-color 0.3s ease;
+}
+
+.chip:hover {
+    background-color: #0284C7;
+    /* Darker shade on hover */
+    transform: scale(1.1);
+}
+
+/* === Custom Slider (Top N Keywords) === */
+input[type=range].custom-slider {
+    height: 6px;
+    background: #e0e0e0;
+    border-radius: 4px;
+}
+
+input[type=range].custom-slider::-webkit-slider-runnable-track {
+    width: 100%;
+    height: 6px;
+    cursor: pointer;
+    background: #CACACA;
+    border-radius: 4px;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.1);
+    border: 1px solid #B6B6B6;
+}
+
+input[type=range].custom-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    height: 16px;
+    width: 16px;
+    background: #0EA5E9;
+    border-radius: 50%;
+    cursor: pointer;
+    margin-top: -4px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+    border: 1px solid #ABABAB;
+}
+
+input[type=range].custom-slider:focus::-webkit-slider-thumb {
+    background: #0284C7;
+    /* Darker color on focus */
+}
+
+/* For Firefox compatibility */
+input[type=range].custom-slider::-moz-range-track {
+    width: 100%;
+    height: 6px;
+    cursor: pointer;
+    background: #CACACA;
+    border-radius: 4px;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.1);
+    border: 1px solid #B6B6B6;
+}
+
+input[type=range].custom-slider::-moz-range-thumb {
+    height: 11px;
+    width: 11px;
+    background: #0EA5E9;
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+    border: 1px solid #ABABAB;
+}
+
+input[type=range].custom-slider:focus::-moz-range-thumb {
+    background: #0284C7;
+    /* Darker color on focus */
+}
+
+/* === Toggle Checkbox === */
+input[type="checkbox"].toggle-checkbox {
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    width: 34px;
+    height: 20px;
+    background-color: #B6B6B6;
+    border-radius: 50px;
+    position: relative;
+    cursor: pointer;
+    transition: background-color 0.3s ease;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.1);
+    border: 1px solid #B6B6B6;
+}
+
+input[type="checkbox"].toggle-checkbox:checked {
+    background-color: #0EA5E9;
+}
+
+input[type="checkbox"].toggle-checkbox::before {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    background-color: white;
+    border-radius: 50%;
+    transition: transform 0.3s ease;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+    border: 1px solid #ABABAB;
+}
+
+input[type="checkbox"].toggle-checkbox:checked::before {
+    transform: translateX(14px);
+    /* Move the thumb to the right when checked */
+}
+
+
+
+#centroid-panel,
+#centroid-stats {
+    flex: 1;
+    /* each panel takes equal width */
+    min-width: 400px;
+    /* don’t shrink too small */
+}
+.centroid-container {
+    display: flex;
+    gap: 0rem;
+    align-items: flex-start;
+    margin-top: 0rem;
+    padding: 0rem;
+    /* <-- add horizontal padding */
+}
+
+/* Optional: if you only want padding on the stats side */
+#centroid-stats {
+    padding-right: 1rem;
+}
+
+
+.chart-container {
+    border: 0rem solid #b6b5b5;
+    padding: 0.1rem;
+    background: #b6b5b5;
+}
+
+#stats-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    /* enforce fixed column widths */
+}
+
+#stats-table th,
+#stats-table td {
+    border: 1px solid #b6b5b5;
+    padding: 0.5rem;
+}
+
+/* Header styling */
+#stats-table th {
+    background: #b6b5b5;
+    text-align: left;
+}
+
+/* Metric column (first) */
+#stats-table th:nth-child(1),
+#stats-table td:nth-child(1) {
+    width: 10%;
+    white-space: normal;
+    /* allow wrapping */
+    overflow-wrap: anywhere;
+}
+
+/* Value column (second) */
+#stats-table th:nth-child(2),
+#stats-table td:nth-child(2) {
+    width: 10%;
+    white-space: normal;
+    /* allow wrapping */
+    text-align: right;
+}
+
+/* Force all fieldsets to that grey fill */
+fieldset {
+    background-color: #b6b5b5 !important;
+    border: 1px solid #e79428;
+    /* optional border you control */
+    padding: 1rem;
+    /* breathing room */
+}
+
+/* If you only want certain fieldsets, add a class:
+     <fieldset class="grey-bg">…</fieldset>
+  */
+.grey-bg {
+    background-color: #ffca7b !important;
+}
+
+
+/* Tidy up the legend so it doesn’t inherit the grey:
+     legend sits on top of the fieldset background */
+
+fieldset>legend {
+    background: #e0dfdf !important;
+    padding: 0 0.5rem;
+    font-weight: bold; }
+
+        .prose img {
+            max-width: 100%;
+        }
+    
+        .prose table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+    
+        .prose th,
+        .prose td {
+            border: 1px solid #ddd;
+            padding: 0.5rem;
+        }
 

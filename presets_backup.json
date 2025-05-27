@@ -20,7 +20,7 @@
       "PERFORM_DOMAIN_CHECK": true,
       "PERFORM_TECHNICAL_VALIDATION": true,
       "WEAVIATE_HOST": "localhost",
-      "WEAVIATE_HTTP_PORT": 8091,
+      "WEAVIATE_HTTP_PORT": 8090,
       "WEAVIATE_GRPC_PORT": 51002,
       "WEAVIATE_TIMEOUT": [
         10,
@@ -273,12 +273,14 @@
       "min_doc_freq_mode": "absolute",
       "min_doc_freq_abs": 1,
       "min_doc_freq_frac": 0.006,
-      "diversity": 0.3,
+      "min_doc_freq": 1,
+      "extraction_diversity": 0.3,
       "no_pos_filter": true,
       "final_top_n": 200,
       "keybert_model": "all-MiniLM-L6-v2",
       "top_n_per_doc": 50
-    }
+    },
+    "centroidUpdateMode": "always"
   },
   "Informative_LLMHeavy": {
     "model": {
@@ -313,7 +315,7 @@
     "ingestion": {
       "CENTROID_AUTO_THRESHOLD": 0.05,
       "CENTROID_DIVERSITY_THRESHOLD": 0.01,
-      "CENTROID_UPDATE_MODE": "auto"
+      "CENTROID_UPDATE_MODE":"auto"
     },
     "document": {
       "CHUNK_OVERLAP": 56,
@@ -351,7 +353,7 @@
       "CENTROID_AUTO_THRESHOLD": 0.05,
       "CENTROID_DIVERSITY_THRESHOLD": 0.01,
       "CENTROID_UPDATE_MODE": "auto"
-    },
+        },
     "retrieval": {
       "COLLECTION_NAME": "Industrial_tech",
       "K_VALUE": 6,
@@ -366,7 +368,7 @@
       "PERFORM_DOMAIN_CHECK": true,
       "PERFORM_TECHNICAL_VALIDATION": true,
       "WEAVIATE_HOST": "localhost",
-      "WEAVIATE_HTTP_PORT": 8091,
+      "WEAVIATE_HTTP_PORT": 8090,
       "WEAVIATE_GRPC_PORT": 51002,
       "WEAVIATE_TIMEOUT": [
         10,
@@ -667,13 +669,15 @@
       "keybert_model": "all-MiniLM-L6-v2",
       "top_n_per_doc": 50,
       "final_top_n": 200,
-      "min_doc_freq_abs": 3,
-      "diversity": 0.3,
+      "min_doc_freq": 3,
+      "extraction_diversity": 0.3,
       "no_pos_filter": true
     },
     "pipeline": {
       "max_history_turns": 5
-    }
+    },
+    "savedConfig": null,
+    "configDirtyExplicitlySet": false
   },
   "HighRecall_RAG": {
     "security": {
@@ -685,8 +689,8 @@
     "ingestion": {
       "CENTROID_AUTO_THRESHOLD": 0.05,
       "CENTROID_DIVERSITY_THRESHOLD": 0.01,
-      "CENTROID_UPDATE_MODE": "auto"
-    },
+      "CENTROID_UPDATE_MODE":   "auto"
+          },
     "retrieval": {
       "COLLECTION_NAME": "Industrial_tech",
       "K_VALUE": 8,
@@ -701,8 +705,8 @@
       "PERFORM_DOMAIN_CHECK": true,
       "PERFORM_TECHNICAL_VALIDATION": true,
       "WEAVIATE_HOST": "localhost",
-      "WEAVIATE_HTTP_PORT": 8091,
-      "WEAVIATE_GRPC_PORT": 51002,
+      "WEAVIATE_HTTP_PORT": 8090,
+      "WEAVIATE_GRPC_PORT": 50001,
       "retrieve_with_history": false
     },
     "model": {
@@ -1080,7 +1084,7 @@
       "CENTROID_AUTO_THRESHOLD": 0.05,
       "CENTROID_DIVERSITY_THRESHOLD": 0.01,
       "CENTROID_UPDATE_MODE": "auto"
-    },
+        },
     "document": {
       "CHUNK_OVERLAP": 56,
       "CHUNK_SIZE": 345,
@@ -1274,8 +1278,8 @@
       "PERFORM_DOMAIN_CHECK": false,
       "PERFORM_TECHNICAL_VALIDATION": false,
       "WEAVIATE_HOST": "localhost",
-      "WEAVIATE_HTTP_PORT": 8091,
-      "WEAVIATE_GRPC_PORT": 51002,
+      "WEAVIATE_HTTP_PORT": 8090,
+      "WEAVIATE_GRPC_PORT": 51001,
       "WEAVIATE_TIMEOUT": [
         10,
         120
@@ -1493,7 +1497,8 @@
       "min_doc_freq_mode": "absolute",
       "min_doc_freq_abs": 1,
       "min_doc_freq_frac": 0.006,
-      "diversity": 0.3,
+      "min_doc_freq": 1,
+      "extraction_diversity": 0.3,
       "no_pos_filter": true,
       "final_top_n": 200,
       "keybert_model": "all-MiniLM-L6-v2",
@@ -1510,7 +1515,7 @@
     "ingestion": {
       "CENTROID_AUTO_THRESHOLD": 0.05,
       "CENTROID_DIVERSITY_THRESHOLD": 0.01,
-      "CENTROID_UPDATE_MODE": "auto"
+      "CENTROID_UPDATE_MODE":        "auto"
     },
     "retrieval": {
       "K_VALUE": 10,
@@ -1882,7 +1887,8 @@
         "ControlEdge PLC",
         "Process Automation Servers",
         "Gas Detection Systems"
-      ]
+      ],
+      "merged_keywords": []
     }
   },
   "Business & Finance": {
@@ -1895,7 +1901,9 @@
     "ingestion": {
       "CENTROID_AUTO_THRESHOLD": 0.05,
       "CENTROID_DIVERSITY_THRESHOLD": 0.01,
-      "CENTROID_UPDATE_MODE": "auto"
+      "CENTROID_UPDATE_MODE": 
+        "auto"
+      
     },
     "retrieval": {
       "COLLECTION_NAME": "Industrial_tech",
@@ -1911,8 +1919,8 @@
       "PERFORM_DOMAIN_CHECK": false,
       "PERFORM_TECHNICAL_VALIDATION": true,
       "WEAVIATE_HOST": "localhost",
-      "WEAVIATE_HTTP_PORT": 8091,
-      "WEAVIATE_GRPC_PORT": 51002,
+      "WEAVIATE_HTTP_PORT": 8090,
+      "WEAVIATE_GRPC_PORT": 51001,
       "retrieve_with_history": false
     },
     "model": {
@@ -2352,25 +2360,25 @@
     }
   },
   "Reference Ingestion": {
-    "ingestion": {
-      "CENTROID_AUTO_THRESHOLD": 5,
-      "CENTROID_DIVERSITY_THRESHOLD": 0.6,
-      "CENTROID_UPDATE_MODE": "auto",
-      "MIN_QUALITY_SCORE": 0.3,
-      "CENTROID_DIVERSITY": null
-    },
     "security": {
       "SANITIZE_INPUT": true,
       "RATE_LIMIT": 20,
       "API_TIMEOUT": 30,
       "CACHE_ENABLED": true
     },
+    "ingestion": {
+      "CENTROID_AUTO_THRESHOLD": 0.05,
+      "CENTROID_DIVERSITY_THRESHOLD": 0.01,
+      "CENTROID_UPDATE_MODE": 
+        "auto"
+      
+    },
     "retrieval": {
       "COLLECTION_NAME": "Industrial_tech",
       "K_VALUE": 10,
       "SCORE_THRESHOLD": 0.6,
       "LAMBDA_MULT": 0.5,
-      "SEARCH_TYPE": "hybrid",
+      "SEARCH_TYPE": "similarity_score_threshold",
       "DOMAIN_SIMILARITY_THRESHOLD": 0.5,
       "SPARSE_RELEVANCE_THRESHOLD": 0.21,
       "FUSED_RELEVANCE_THRESHOLD": 0.44,
@@ -2379,12 +2387,8 @@
       "PERFORM_DOMAIN_CHECK": true,
       "PERFORM_TECHNICAL_VALIDATION": true,
       "WEAVIATE_HOST": "localhost",
-      "WEAVIATE_HTTP_PORT": 8091,
-      "WEAVIATE_GRPC_PORT": 51002,
-      "WEAVIATE_TIMEOUT": [
-        10,
-        120
-      ],
+      "WEAVIATE_HTTP_PORT": 8090,
+      "WEAVIATE_GRPC_PORT": 51001,
       "retrieve_with_history": false
     },
     "model": {
@@ -2396,17 +2400,10 @@
       "FREQUENCY_PENALTY": 0.43,
       "SYSTEM_MESSAGE": "Answer concisely based ONLY on the provided context documents. Be factual and direct. Avoid speculation or information not present in the context. Prefer short answers, yes/no if applicable.",
       "EXTERNAL_API_PROVIDER": "deepseek",
-      "EXTERNAL_API_MODEL_NAME": null,
-      "MERGE_STRATEGY": "api_first",
-      "PROVIDER_URLS": {
-        "anthropic": "https://api.anthropic.com/v1/complete",
-        "cohere": "https://api.cohere.com/v1/completions",
-        "deepseek": "https: //api.deepseek.com",
-        "openai": "https://api.openai.com/v1/chat/completions"
-      }
+      "EXTERNAL_API_MODEL_NAME": null
     },
     "document": {
-      "CHUNK_SIZE": 1024,
+      "CHUNK_SIZE": 2048,
       "CHUNK_OVERLAP": 100,
       "FILE_TYPES": [
         "pdf",
@@ -2416,14 +2413,14 @@
         "md"
       ],
       "PARSE_TABLES": true,
-      "GENERATE_SUMMARY": true,
-      "MIN_CONTENT_LENGTH": 50
+      "GENERATE_SUMMARY": true
     },
     "paths": {
       "DOCUMENT_DIR": "./data",
       "DOMAIN_CENTROID_PATH": "./domain_centroid.npy"
     },
     "env": {
+      "SELECTED_N_TOP": 155,
       "DOMAIN_KEYWORDS": [
         "Industrial Automation",
         "Honeywell",
@@ -2754,23 +2751,10 @@
         "DuPont de Nemours Inc",
         "Lockheed Martin Corporation",
         "Abb Ability Manufacturing Operations Management Suite"
-      ],
-      "SELECTED_N_TOP": 155
+      ]
     },
     "pipeline": {
       "max_history_turns": 5
-    },
-    "domain_keyword_extraction": {
-      "min_doc_freq_mode": "absolute",
-      "min_doc_freq_abs": 3,
-      "min_doc_freq_frac": null,
-      "min_doc_freq": 3,
-      "extraction_diversity": null,
-      "no_pos_filter": true,
-      "diversity": 0.3,
-      "final_top_n": 200,
-      "keybert_model": "all-MiniLM-L6-v2",
-      "top_n_per_doc": 50
     }
   },
   "The_Smart_One": {
@@ -2794,7 +2778,7 @@
       "PERFORM_DOMAIN_CHECK": true,
       "PERFORM_TECHNICAL_VALIDATION": true,
       "WEAVIATE_HOST": "localhost",
-      "WEAVIATE_HTTP_PORT": 8091,
+      "WEAVIATE_HTTP_PORT": 8090,
       "WEAVIATE_GRPC_PORT": 51002,
       "WEAVIATE_TIMEOUT": [
         10,
@@ -3001,7 +2985,8 @@
       "min_doc_freq_mode": "absolute",
       "min_doc_freq_abs": 1,
       "min_doc_freq_frac": 0.006,
-      "diversity": 0.3,
+      "min_doc_freq": 1,
+      "extraction_diversity": 0.3,
       "no_pos_filter": true,
       "final_top_n": 200,
       "keybert_model": "all-MiniLM-L6-v2",
@@ -3029,7 +3014,7 @@
       "PERFORM_DOMAIN_CHECK": false,
       "PERFORM_TECHNICAL_VALIDATION": false,
       "WEAVIATE_HOST": "localhost",
-      "WEAVIATE_HTTP_PORT": 8091,
+      "WEAVIATE_HTTP_PORT": 8090,
       "WEAVIATE_GRPC_PORT": 51002,
       "WEAVIATE_TIMEOUT": [
         10,
@@ -3383,13 +3368,15 @@
       "keybert_model": "all-MiniLM-L6-v2",
       "top_n_per_doc": 50,
       "final_top_n": 200,
-      "min_doc_freq_abs": 3,
-      "diversity": 0.3,
+      "min_doc_freq": 3,
+      "extraction_diversity": 0.3,
       "no_pos_filter": true
     },
     "pipeline": {
       "max_history_turns": 5
-    }
+    },
+    "savedConfig": null,
+    "configDirtyExplicitlySet": false
   },
   "Loosely_Relevant_LLM_Assisted": {
     "model": {
@@ -3424,7 +3411,9 @@
     "ingestion": {
       "CENTROID_AUTO_THRESHOLD": 0.05,
       "CENTROID_DIVERSITY_THRESHOLD": 0.01,
-      "CENTROID_UPDATE_MODE": "auto"
+      "CENTROID_UPDATE_MODE": 
+        "auto"
+      
     },
     "document": {
       "CHUNK_SIZE": 1024,
@@ -3460,7 +3449,7 @@
       "PERFORM_DOMAIN_CHECK": true,
       "PERFORM_TECHNICAL_VALIDATION": true,
       "WEAVIATE_HOST": "localhost",
-      "WEAVIATE_HTTP_PORT": 8091,
+      "WEAVIATE_HTTP_PORT": 8090,
       "WEAVIATE_GRPC_PORT": 51002,
       "WEAVIATE_TIMEOUT": [
         10,
@@ -3814,13 +3803,15 @@
       "keybert_model": "all-MiniLM-L6-v2",
       "top_n_per_doc": 50,
       "final_top_n": 200,
-      "min_doc_freq_abs": 3,
-      "diversity": 0.3,
+      "min_doc_freq": 3,
+      "extraction_diversity": 0.3,
       "no_pos_filter": true
     },
     "pipeline": {
       "max_history_turns": 5
-    }
+    },
+    "savedConfig": null,
+    "configDirtyExplicitlySet": false
   },
   "All values": {
     "security": {
@@ -3833,6 +3824,7 @@
       "CENTROID_AUTO_THRESHOLD": 0.05,
       "CENTROID_DIVERSITY_THRESHOLD": 0.01,
       "CENTROID_UPDATE_MODE": "auto"
+      
     },
     "retrieval": {
       "COLLECTION_NAME": "Industrial_tech",
@@ -3848,8 +3840,8 @@
       "PERFORM_DOMAIN_CHECK": true,
       "PERFORM_TECHNICAL_VALIDATION": true,
       "WEAVIATE_HOST": "localhost",
-      "WEAVIATE_HTTP_PORT": 8091,
-      "WEAVIATE_GRPC_PORT": 51002,
+      "WEAVIATE_HTTP_PORT": 8090,
+      "WEAVIATE_GRPC_PORT": 51001,
       "WEAVIATE_TIMEOUT": [
         10,
         120
@@ -4202,13 +4194,15 @@
       "keybert_model": "all-MiniLM-L6-v2",
       "top_n_per_doc": 50,
       "final_top_n": 200,
-      "min_doc_freq_abs": 3,
-      "diversity": 0.3,
+      "min_doc_freq": 3,
+      "extraction_diversity": 0.3,
       "no_pos_filter": true
     },
     "pipeline": {
       "max_history_turns": 5
-    }
+    },
+    "savedConfig": null,
+    "configDirtyExplicitlySet": false
   },
   "TESTING": {
     "security": {
@@ -4220,7 +4214,7 @@
     "ingestion": {
       "CENTROID_AUTO_THRESHOLD": 0.05,
       "CENTROID_DIVERSITY_THRESHOLD": 0.01,
-      "CENTROID_UPDATE_MODE": "auto"
+      "CENTROID_UPDATE_MODE":  "auto"      
     },
     "retrieval": {
       "COLLECTION_NAME": "Industrial_tech",
@@ -4235,7 +4229,7 @@
       "SPARSE_WEIGHT": 0.5,
       "PERFORM_DOMAIN_CHECK": false,
       "WEAVIATE_HOST": "localhost",
-      "WEAVIATE_HTTP_PORT": 8091,
+      "WEAVIATE_HTTP_PORT": 8090,
       "WEAVIATE_GRPC_PORT": 51002,
       "PERFORM_TECHNICAL_VALIDATION": false,
       "WEAVIATE_TIMEOUT": [
@@ -4454,13 +4448,15 @@
       "keybert_model": "all-MiniLM-L6-v2",
       "top_n_per_doc": 50,
       "final_top_n": 200,
-      "min_doc_freq_abs": 3,
-      "diversity": 0.5,
+      "min_doc_freq": 3,
+      "extraction_diversity": 0.5,
       "no_pos_filter": true
     },
     "pipeline": {
       "max_history_turns": 5
-    }
+    },
+    "savedConfig": null,
+    "configDirtyExplicitlySet": false
   },
   "test ingestion param passed": {
     "security": {
@@ -4482,7 +4478,7 @@
       "SPARSE_WEIGHT": 0.5,
       "PERFORM_DOMAIN_CHECK": false,
       "WEAVIATE_HOST": "localhost",
-      "WEAVIATE_HTTP_PORT": 8091,
+      "WEAVIATE_HTTP_PORT": 8090,
       "WEAVIATE_GRPC_PORT": 51002,
       "PERFORM_TECHNICAL_VALIDATION": false,
       "WEAVIATE_TIMEOUT": [
@@ -4701,367 +4697,18 @@
       "keybert_model": "all-MiniLM-L6-v3",
       "top_n_per_doc": 502,
       "final_top_n": 2002,
-      "min_doc_freq_abs": 1,
-      "diversity": 0.1,
-      "no_pos_filter": true,
-      "min_doc_freq_frac": 0.006
-    },
-    "pipeline": {
-      "max_history_turns": 5
-    },
-    "ingestion": {
-      "CENTROID_AUTO_THRESHOLD": 0.05,
-      "CENTROID_DIVERSITY_THRESHOLD": 0.01,
-      "CENTROID_UPDATE_MODE": "auto"
-    }
-  },
-  "max-param": {
-    "ingestion": {
-      "CENTROID_AUTO_THRESHOLD": 100,
-      "CENTROID_DIVERSITY_THRESHOLD": 1,
-      "CENTROID_UPDATE_MODE": "auto",
-      "MIN_QUALITY_SCORE": 0.23,
-      "CENTROID_DIVERSITY": null
-    },
-    "security": {
-      "SANITIZE_INPUT": true,
-      "RATE_LIMIT": 10000,
-      "API_TIMEOUT": 3000,
-      "CACHE_ENABLED": true
-    },
-    "retrieval": {
-      "COLLECTION_NAME": "Industrial_tech",
-      "K_VALUE": 200,
-      "SCORE_THRESHOLD": 1,
-      "LAMBDA_MULT": 1,
-      "SEARCH_TYPE": "hybrid",
-      "DOMAIN_SIMILARITY_THRESHOLD": 1,
-      "SPARSE_RELEVANCE_THRESHOLD": 1,
-      "FUSED_RELEVANCE_THRESHOLD": 1,
-      "SEMANTIC_WEIGHT": 1,
-      "SPARSE_WEIGHT": 1,
-      "PERFORM_DOMAIN_CHECK": true,
-      "PERFORM_TECHNICAL_VALIDATION": true,
-      "WEAVIATE_HOST": "localhost",
-      "WEAVIATE_HTTP_PORT": 8091,
-      "WEAVIATE_GRPC_PORT": 51002,
-      "WEAVIATE_TIMEOUT": [
-        10,
-        120
-      ],
-      "retrieve_with_history": false
-    },
-    "model": {
-      "LLM_TEMPERATURE": 2,
-      "MAX_TOKENS": 2048,
-      "OLLAMA_MODEL": "deepseek-r1",
-      "EMBEDDING_MODEL": "nomic-embed-text",
-      "TOP_P": 1,
-      "FREQUENCY_PENALTY": 2,
-      "SYSTEM_MESSAGE": "You are a helpful AI assistant for industrial automation. Use the provided context and conversation history to answer accurately and clearly. Provide sufficient detail but remain focused on the question.",
-      "EXTERNAL_API_PROVIDER": "deepseek",
-      "EXTERNAL_API_MODEL_NAME": null,
-      "MERGE_STRATEGY": "api_first",
-      "PROVIDER_URLS": {
-        "anthropic": "https://api.anthropic.com/v1/complete",
-        "cohere": "https://api.cohere.com/v1/completions",
-        "deepseek": "https://api.deepseek.com",
-        "openai": "https://api.openai.com/v1/chat/completions"
-      }
-    },
-    "document": {
-      "CHUNK_SIZE": 1024,
-      "CHUNK_OVERLAP": 104,
-      "FILE_TYPES": [
-        "pdf",
-        "txt",
-        "csv",
-        "docx",
-        "md"
-      ],
-      "PARSE_TABLES": true,
-      "GENERATE_SUMMARY": true,
-      "MIN_CONTENT_LENGTH": 50
-    },
-    "paths": {
-      "DOCUMENT_DIR": "./data",
-      "DOMAIN_CENTROID_PATH": "./domain_centroid.npy"
-    },
-    "env": {
-      "DOMAIN_KEYWORDS": [
-        "Industrial Automation",
-        "Honeywell",
-        "SCADA",
-        "PLC",
-        "IoT",
-        "Honeywell Digital Transformation",
-        "Process Automation",
-        "Manufacturing Automation",
-        "Industrial Internet of Things (IIoT)",
-        "Automation Systems",
-        "Distributed Control System (DCS)",
-        "Real-time Data",
-        "Industrial Networks",
-        "Machine Learning in Automation",
-        "Predictive Maintenance",
-        "Edge Computing",
-        "Control Systems Engineering",
-        "Digital Twin",
-        "Industrial Control Systems (ICS)",
-        "Process Control",
-        "Smart Factories",
-        "Advanced Process Control (APC)",
-        "Remote Monitoring",
-        "Industrial Sensors",
-        "SCADA Software",
-        "Honeywell Experion",
-        "IoT Sensors",
-        "Automation Solutions",
-        "Honeywell Process Solutions",
-        "Distributed Automation",
-        "PLC Programming",
-        "SCADA Integration",
-        "Industrial Safety",
-        "Automation Architecture",
-        "Manufacturing Execution Systems (MES)",
-        "IIoT Connectivity",
-        "Smart Manufacturing",
-        "Cloud-based Automation",
-        "Industrial Data Analytics",
-        "Energy Management Systems",
-        "Predictive Analytics",
-        "Automated Control Loops",
-        "SCADA Security",
-        "Process Optimization",
-        "Industrial Robotics",
-        "Industrial Wireless Communication",
-        "Edge Analytics",
-        "Supervisory Control",
-        "Data Acquisition Systems",
-        "Data Visualization Tools",
-        "Honeywell Connected Plant",
-        "Cybersecurity in Automation",
-        "Process Control Optimization",
-        "Automated Refineries",
-        "Advanced Control Systems",
-        "Autonomous Manufacturing",
-        "PLC-based Automation",
-        "SCADA Data Collection",
-        "Industrial PLC Systems",
-        "Remote Automation",
-        "Machine Vision Systems",
-        "Data-Driven Insights",
-        "Industrial Automation Software",
-        "Control Panel Design",
-        "Industrial Automation Integration",
-        "System Integration",
-        "Industrial Ethernet",
-        "Refineries Control Systems",
-        "Distributed Sensors",
-        "Control System Architecture",
-        "Industrial IoT Devices",
-        "Wireless IoT Networks",
-        "Real-time Monitoring",
-        "Process Data Analytics",
-        "Honeywell Safety Systems",
-        "Industrial Control Panel",
-        "Automation Services for Refineries",
-        "Advanced Industrial Automation",
-        "Oil and Gas Automation",
-        "Refineries Digital Transformation",
-        "Automated Manufacturing Systems",
-        "Control and Monitoring Systems",
-        "Process Flow Automation",
-        "Honeywell Smart Industry",
-        "System Fault Detection",
-        "Factory Automation Solutions",
-        "Process Monitoring Solutions",
-        "SCADA Control Systems",
-        "PLC Diagnostics",
-        "Smart Manufacturing Solutions",
-        "Refineries Automation Solutions",
-        "Operational Technology (OT)",
-        "Digital Control Systems",
-        "PLC-based Control Systems",
-        "Honeywell Industrial Solutions",
-        "Industry 4.0 Automation",
-        "Data-Driven Process Control",
-        "Process Simulation Software",
-        "Industrial Process Systems",
-        "Honeywell Industrial IoT",
-        "Experion PKS",
-        "Safety Manager",
-        "MasterLogic PLC",
-        "HC900 Hybrid Controller",
-        "SmartLine Transmitters",
-        "C300 Controller",
-        "TotalFlow",
-        "OneWireless",
-        "Enraf",
-        "FlexTech Controllers",
-        "Genetec",
-        "Field Device Manager",
-        "Process Historian",
-        "TDC 3000",
-        "ControlEdge",
-        "LCA (Lifecycle Automation)",
-        "PMA",
-        "Experion LX",
-        "ProView",
-        "Smart Automation",
-        "Web HMI",
-        "Vibration Monitoring",
-        "Field Instruments",
-        "HMI Systems",
-        "Cloud Control",
-        "Product Simulation",
-        "WorkStation",
-        "3D Visualization",
-        "Power Systems",
-        "ControlRoom Management",
-        "DeviceNet",
-        "Control Hardware",
-        "RTAC",
-        "SCADA Solutions",
-        "Asset Performance",
-        "FieldBus",
-        "Equipment Performance Monitoring",
-        "E-Stop Systems",
-        "Variable Frequency Drives",
-        "HART Communicators",
-        "Smart Devices",
-        "Thermal Imaging",
-        "Industrial Robots",
-        "ControlEdge PLC",
-        "Process Automation Servers",
-        "Gas Detection Systems"
-      ],
-      "AUTO_DOMAIN_KEYWORDS": [
-        "2018 www honeywellprocess",
-        "lcn honeywell confidential",
-        "honeywell portfolio update",
-        "2018 2018 honeywell",
-        "q4000 frame scanner",
-        "glossary term 119",
-        "hidden markov model",
-        "2018 honeywell international",
-        "honeywellprocess com 2019",
-        "honeywell trademark",
-        "honeywell trademark honeywell",
-        "honeywell automation investment",
-        "segment profit",
-        "2019 www honeywellprocess",
-        "portfolio honeywell portfolio",
-        "comparable gaap measures",
-        "gaap measures portfolio",
-        "controller masterlogic plc",
-        "ootthheerr wwaarrrraannttiieess eexxpprreesssseedd",
-        "com 2018 honeywell",
-        "honeywell international s\u00e0rl",
-        "lcn elcn migration",
-        "refinery rijeka refinery",
-        "emission reductions honeywell",
-        "experion lcn honeywell",
-        "honeywell portfolio",
-        "trademark honeywell international",
-        "2019 honeywell",
-        "remedy honeywell warrants",
-        "hart smartview terminals",
-        "portfolio honeywell",
-        "honeywell account manager",
-        "shall honeywell liable",
-        "future use table",
-        "discriminant analysis flda",
-        "turbomachinery controls emulation",
-        "trainview operator hmi",
-        "contact honeywell sales",
-        "lcn honeywell",
-        "honeywell disclaims",
-        "refinery salzbergen refinery",
-        "standardization hmi libraries",
-        "083339 crank arm",
-        "masterlogic ml200 plc",
-        "herculink trademark honeywell",
-        "non gaap financial",
-        "honeywell com",
-        "legacy scada systems",
-        "honeywell liable consequential",
-        "honeywell process solutions",
-        "pacing 12 injectors",
-        "honeywell taiwan fax",
-        "divestiture related costs",
-        "masterlogic plc",
-        "refprop thermodynamic engine",
-        "www honeywell com",
-        "ccc control emulated",
-        "q4000 scanner",
-        "honeywell liable",
-        "\u0437\u0430 \u043e\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u0438\u0435 \u043f\u0440\u0438\u0433\u043e\u0434\u043d\u043e\u0441\u0442\u0438",
-        "com 2019 honeywell",
-        "calculations available dr45aw",
-        "\u0442\u0435\u043c\u043f\u0435\u0440\u0430\u0442\u0443\u0440\u0435 \u043a\u043e\u043c\u043f\u044c\u044e\u0442\u0435\u0440\u043e\u043c \u0438\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u044f",
-        "integrated systems honeywell",
-        "turkey aegean refinery",
-        "nearest shrunken centroids",
-        "rheinland refinery rijeka",
-        "cbm maintenance programs",
-        "www honeywell",
-        "experion alarm management",
-        "honeywell ionic battery",
-        "dimensions long port",
-        "honeywell warrants",
-        "controledge hc900 experion",
-        "masterlogic 200 plc",
-        "organic sales percent",
-        "refinery burgas refinery",
-        "17 hidden markov",
-        "speciality aerospace basic",
-        "glossary",
-        "\u0434\u0438\u0430\u043f\u0430\u0437\u043e\u043d\u043e\u043c \u0434\u043b\u044f \u043f\u0440\u0438\u043b\u043e\u0436\u0435\u043d\u0438\u0439",
-        "motor unit herculine",
-        "organic sales percentage",
-        "distribution probability coin",
-        "glossary term",
-        "bayesian inference functions",
-        "compliance smartradar flexline",
-        "earnings share adjusted",
-        "hold \u0440\u0438\u0441\u0443\u043d\u043e\u043a \u043e\u043f\u0435\u0440\u0430\u0442\u043e\u0440\u0441\u043a\u0438\u0439",
-        "refinery gothenburg refinery",
-        "honeywellprocess com contact",
-        "oorr rreeppllaaccee wwiitthhoouutt",
-        "modular honeywell ionic",
-        "2010 version masterlogic",
-        "computer interface herculink",
-        "honeywell confidential",
-        "\u043e\u0442\u0432\u0435\u0442\u0441\u0442\u0432\u0435\u043d\u043d\u043e\u0441\u0442\u044c \u0437\u0430 \u043e\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u0438\u0435",
-        "sustaining safety operational",
-        "socar state oil",
-        "interface herculink computer",
-        "water ph measurement",
-        "use conjugate priors"
-      ],
-      "USER_ADDED_KEYWORDS": [
-        "Emerson",
-        "competitors",
-        "SLB",
-        "VSD"
-      ],
-      "SELECTED_N_TOP": 155
-    },
-    "pipeline": {
-      "max_history_turns": 5
-    },
-    "domain_keyword_extraction": {
-      "min_doc_freq_mode": "absolute",
-      "min_doc_freq_abs": 3,
-      "min_doc_freq_frac": 0.006,
       "min_doc_freq": 3,
-      "extraction_diversity": 0.7,
+      "extraction_diversity": 0.1,
       "no_pos_filter": true,
-      "diversity": 0.7,
-      "final_top_n": 200,
-      "keybert_model": "all-MiniLM-L6-v2",
-      "top_n_per_doc": 50
-    }
+      "min_doc_freq_frac": 0.006,
+      "min_doc_freq_abs": 1
+    },
+    "pipeline": {
+      "max_history_turns": 5
+    },
+    "savedConfig": null,
+    "configDirtyExplicitlySet": false,
+    "centroidUpdateMode": "auto",
+    "centroidAutoThreshold": 5
   }
 }

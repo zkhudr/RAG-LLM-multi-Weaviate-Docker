@@ -1,167 +1,203 @@
-# ingest_block.py (Optimized Version)
+# ingest_block.py (Cleaned and Optimized Version)
 
 import os
+import re
+import csv
 import json
 import hashlib
 import logging
 import argparse
-import csv
-import re
-import warnings
 import traceback
+import threading
+import warnings
 from pathlib import Path
-import datetime as dt
-from datetime import timezone
-from typing import List, Dict, Optional, Tuple, Union, Any, Generator
+from datetime import datetime, timezone
+from typing import Any, Dict, Generator, List, Optional, Set, Tuple, Union
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# PDF processing (ensure imports are correct)
+
+
+# Third-party libraries
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.metrics.pairwise import cosine_similarity
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+# Attempt to import optional dependencies
 try:
     import pdfplumber
 except ImportError:
     pdfplumber = None
-    logging.warning("pdfplumber not installed, table extraction in PDFs might be limited.")
+    logging.warning("pdfplumber not installed; PDF table extraction might be limited.")
 
-# DOCX support
 try:
     import docx
 except ImportError:
     docx = None
-    logging.warning("python-docx is not installed; DOCX files will not be processed.")
+    logging.warning("python-docx not installed; DOCX file processing will be unavailable.")
 
-# Pandas for table formatting
 try:
     import pandas as pd
 except ImportError:
     pd = None
-    logging.warning("pandas not installed, table formatting might be basic.")
+    logging.warning("pandas not installed; table formatting might be basic.")
 
-
-from tenacity import retry, stop_after_attempt, wait_exponential
-
-# LangChain components
+# LangChain & Ollama
 from langchain_core.documents import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_ollama import OllamaEmbeddings
+from langchain_community.embeddings import OllamaEmbeddings  # Remove one if only one needed
 
-# Weaviate v4 imports
+# Weaviate v4
 import weaviate
-# Remove unused Weaviate class imports if not needed here
-# from weaviate.classes.config import Property, DataType, Configure,VectorDistances
 from weaviate.classes.data import DataObject
-# from weaviate.exceptions import WeaviateBaseError (already imported below)
 
-# Local Configuration & Components
+# Local modules
 from config import cfg
-# Import specific components needed from v7
 from ingest_docs_v7 import PipelineConfig, RobustPDFLoaderV4
+from centroid_manager import CentroidManager, should_recalculate_centroid
 
 # Setup logging
 logger = logging.getLogger(__name__)
 
+# Initialize centroid manager
+centroid_manager = CentroidManager()
+_centroid_mgr = centroid_manager  # Optional alias if needed
 
-# --- Extraction Functions ---
 
-def extract_text_from_txt(filepath: Path) -> str:
+def calculate_quality_score(
+    text: str,
+    tables: Optional[List[dict]] = None,
+    cached_domain_keywords: Optional[Set[str]] = None
+) -> float:
+    """
+    Unified document quality score:
+      1. Info density
+      2. Sentence-length penalty
+      3. Keyword presence
+      4. Structure (headings/paragraphs)
+      5. Table content bonus
+      6. Semantic relevance to domain centroid
+    Returns value in [0.1, 1.0].
+    """
+    if not text or len(text) < 50:
+        return 0.1
+
+    clean = re.sub(r'\s+', ' ', text).strip()
+    words = re.findall(r'\b\w+\b', clean.lower())
+    if not words:
+        return 0.1
+    unique = set(words)
+    info_density = len(unique) / len(words)
+
+    sentences = [s.strip() for s in re.split(r'[.!?]+', clean) if s.strip()]
+    if sentences:
+        avg_len = sum(len(s.split()) for s in sentences) / len(sentences)
+        sentence_score = min(1.0, max(0.0, 1.0 - abs(avg_len - 15) / 20))
+    else:
+        sentence_score = 0.2
+
+    if cached_domain_keywords:
+        matches = sum(1 for w in unique if w in cached_domain_keywords)
+        keyword_score = min(1.0, matches / 10)
+    else:
+        keyword_score = 0.5
+
+    has_head = bool(re.search(r'\n[A-Z][^.!?]*\n', text))
+    has_para = '\n\n' in text
+    structure_score = 0.3 + (0.4 if has_para else 0) + (0.3 if has_head else 0)
+
+    table_score = min(1.0, len(tables) * 0.2) if tables else 0.0
+
+    domain_rel = 0.0
     try:
-        with open(filepath, "r", encoding="utf-8") as f:
-            return f.read()
-    except Exception as e:
-        logger.error(f"Error reading TXT file {filepath.name}: {e}")
-        return ""
+        centroid = _centroid_mgr.get_centroid()
+        if centroid is not None:
+            emb = OllamaEmbeddings()
+            vec = np.array(emb.embed_query(text)).reshape(1, -1)
+            domain_rel = float(cosine_similarity(vec, [centroid])[0][0])
+    except Exception:
+        pass
 
-def extract_text_from_docx(filepath: Path) -> str:
-    if docx is None:
-        logger.error(f"python-docx not installed. Cannot process DOCX: {filepath.name}")
-        return ""
-    try:
-        doc = docx.Document(filepath)
-        return "\n".join([para.text for para in doc.paragraphs if para.text])
-    except Exception as e:
-        logger.error(f"Error reading DOCX file {filepath.name}: {e}")
-        return ""
+    score = (
+        info_density * 0.25 +
+        sentence_score * 0.15 +
+        keyword_score * 0.2 +
+        structure_score * 0.1 +
+        table_score * 0.1 +
+        domain_rel * 0.2
+    )
+    return min(1.0, max(0.1, score))
 
-def extract_text_from_csv(filepath: Path) -> str:
-    # Consider using pandas if available for more robust CSV handling
-    if pd:
-        try:
-            df = pd.read_csv(filepath, encoding='utf-8', on_bad_lines='skip')
-            # Represent as string - maybe join rows? Or just header and first few rows?
-            # Simple approach: Convert to string representation
-            return df.to_string(index=False)
-        except Exception as e:
-            logger.error(f"Error reading CSV file {filepath.name} with pandas: {e}")
-            # Fallback to basic CSV reader if pandas fails
-    # Basic CSV reader (fallback)
-    try:
-        with open(filepath, "r", encoding="utf-8", newline='') as f:
-            reader = csv.reader(f)
-            # Join rows, limit lines maybe?
-            return "\n".join([", ".join(row) for row in reader])
-    except Exception as e_basic:
-        logger.error(f"Error reading CSV file {filepath.name} with basic reader: {e_basic}")
-        return ""
 
-# --- OPTIMIZED extract_text ---
+
+def centroid_exists(centroid_path):
+    return os.path.exists(centroid_path)
+
+
 # Accepts an optional, already connected Weaviate client instance
+# --- Corrected extract_text function ---
+
 def extract_text(filepath: Path, client_instance: Optional[weaviate.Client] = None) -> str:
-    """Extracts text, reusing client if provided, especially for PDFs."""
+    """Extracts text from various file types, reusing a passed Weaviate client for PDFs."""
     ext = filepath.suffix.lower()
     logger.debug(f"Extracting text from: {filepath.name} (type: {ext})")
 
     if ext == ".txt":
         return extract_text_from_txt(filepath)
-    elif ext == ".docx":
+    if ext == ".docx":
         return extract_text_from_docx(filepath)
-    elif ext == ".csv":
+    if ext == ".csv":
         return extract_text_from_csv(filepath)
-    elif ext == ".pdf":
-        temp_client_created = False # Flag to track if we created a temporary client
-        loader_client = None
-        try:
-            # --- Use PASSED-IN CLIENT if available ---
-            if client_instance and client_instance.is_connected(): # Check if passed client is usable
-                 loader_client = client_instance
-                 logger.debug(f"Reusing provided client instance for PDF extraction: {filepath.name}")
+    if ext == ".md":
+        return extract_text_from_txt(filepath)
+    if ext == ".pdf":
+        temp_client_created = False
+        # Decide which client to use
+        if client_instance and client_instance.is_connected():
+            loader_client = client_instance
+            logger.debug(f"Reusing provided client instance for PDF extraction: {filepath.name}")
+        else:
+            if client_instance:
+                logger.warning(f"Passed client not connected for {filepath.name}, creating temporary one.")
             else:
-                # Fallback: Get a temporary client ONLY if none usable was passed
-                if client_instance:
-                     logger.warning(f"Passed client not connected for {filepath.name}, getting temporary one.")
-                else:
-                     logger.warning(f"No client passed to extract_text for {filepath.name}, getting temporary one.")
+                logger.warning(f"No client passed to extract_text for {filepath.name}, creating temporary one.")
+            loader_client = PipelineConfig.get_client()
+            if not loader_client:
+                logger.error(f"Failed to get fallback Weaviate client for PDF extraction: {filepath.name}")
+                return ""
+            temp_client_created = True
 
-                loader_client = PipelineConfig.get_client() # Original problematic path
-                if loader_client:
-                    temp_client_created = True # Mark that we created one
-                else:
-                     logger.error(f"Failed to get fallback Weaviate client for PDF extraction: {filepath.name}")
-                     return "" # Return empty on client failure
-
-            # Use the determined client (passed-in or temporary)
+        try:
             loader = RobustPDFLoaderV4(str(filepath), client=loader_client)
             docs = loader.load()
             return "\n".join(doc.page_content for doc in docs if doc.page_content)
-
         except Exception as e:
             logger.error(f"Error processing PDF file {filepath.name} with RobustLoader: {e}", exc_info=True)
             return ""
         finally:
-            # --- Close ONLY if we created a temporary client ---
-            if temp_client_created and loader_client and hasattr(loader_client, 'close'):
-                 try:
-                    if loader_client.is_connected():
-                        loader_client.close()
-                        logger.debug(f"Closed temporary client after PDF extraction: {filepath.name}")
-                 except Exception as close_err:
+            if temp_client_created:
+                try:
+                    loader_client.close()
+                    logger.debug(f"Closed temporary client after PDF extraction: {filepath.name}")
+                except Exception as close_err:
                     logger.error(f"Error closing temporary client for {filepath.name}: {close_err}")
-            # DO NOT close the client if it was passed in from the caller
+    
+    # Unsupported extension
+    return ""  # no content extracted for this file type
 
-    # Handle .md files
-    elif ext == ".md":
-        # Simple text reading for markdown, similar to txt
-        return extract_text_from_txt(filepath)
-    else:
-        # logger.warning(f"Unsupported file type for extraction: {filepath.name}") # Already logged by caller
-        return ""
+
+class CleanableOllamaEmbeddings(OllamaEmbeddings):
+    def __del__(self):
+        """Ensure client is closed when object is garbage collected"""
+        self.close()
+        
+    def close(self):
+        """Close the underlying HTTP client"""
+        if hasattr(self, 'client') and self.client:
+            self.client.close()
+            logger.info("Closed Ollama embeddings client")
 
 # --- Incremental Ingestion Class ---
 class IncrementalDocumentProcessorBlock:
@@ -174,10 +210,30 @@ class IncrementalDocumentProcessorBlock:
             except OSError as e:
                  logger.error(f"Failed to create data directory {self.data_dir}: {e}")
                  raise # Stop if directory cannot be ensured
-
-        self.meta_file = self.data_dir.parent / meta_filename # Store metafile outside data dir
+        # Initialize domain_keywords as empty set
+        self.domain_keywords = set()
+        self.meta_file = self.data_dir.parent / meta_filename 
         self.processed_files = self.load_metadata()
 
+        
+        self.domain_keywords = set(getattr(cfg.env, 'merged_keywords', []))
+        logger.info(f"Cached {len(self.domain_keywords)} domain keywords for quality scoring")         
+        self.meta_file = self.data_dir.parent / meta_filename # Store metafile outside data dir
+        self.processed_files = self.load_metadata()
+        self._load_domain_keywords()
+    
+    def _load_domain_keywords(self):
+        """Load domain keywords from config, if available"""
+        try:
+            from config import cfg
+            if hasattr(cfg, 'env') and hasattr(cfg.env, 'merged_keywords'):
+                self.domain_keywords = set(cfg.env.merged_keywords)
+                logger.info(f"Cached {len(self.domain_keywords)} domain keywords for quality scoring")
+            else:
+                logger.warning("No merged_keywords found in configuration")
+        except (ImportError, AttributeError) as e:
+            logger.warning(f"Could not load domain keywords: {e}")
+            
     def load_metadata(self) -> dict:
         """Load a JSON file mapping file paths to their last processed hash."""
         if self.meta_file.exists():
@@ -185,18 +241,33 @@ class IncrementalDocumentProcessorBlock:
                 with open(self.meta_file, "r", encoding="utf-8") as f:
                     return json.load(f)
             except (json.JSONDecodeError, IOError) as e:
-                logger.error(f"Error loading metadata from {self.meta_file}: {e}. Starting fresh.")
+                logger.error(f"Error loading metadata from {self.meta_file}: {e}")
+                # back up the corrupted file for inspection
+                corrupt = self.meta_file.with_suffix(self.meta_file.suffix + ".corrupt")
+                try:
+                    os.replace(self.meta_file, corrupt)
+                    logger.info(f"Backed up corrupted metadata to {corrupt}")
+                except Exception as be:
+                    logger.error(f"Failed to back up corrupt metadata: {be}")
                 return {}
         logger.info(f"Metadata file {self.meta_file} not found. Starting fresh.")
         return {}
 
     def save_metadata(self) -> None:
-        """Save the updated metadata dictionary."""
+       # write atomically to avoid half-corrupting the file
+        tmp = self.meta_file.with_suffix(self.meta_file.suffix + ".tmp")
         try:
-            with open(self.meta_file, "w", encoding="utf-8") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self.processed_files, f, indent=2)
+            os.replace(tmp, self.meta_file)
         except IOError as e:
             logger.error(f"Error saving metadata to {self.meta_file}: {e}")
+           # clean up leftover tmp
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except Exception:
+                pass
 
     def compute_hash(self, filepath: Path) -> str:
         """Compute the SHA-256 hash of a file’s contents."""
@@ -213,133 +284,325 @@ class IncrementalDocumentProcessorBlock:
             logger.error(f"Error reading file for hash {filepath.name}: {e}")
             return "" # Return empty string on error
 
-    # --- OPTIMIZED load_new_documents ---
-    # Accepts the main client instance
     def load_new_documents(self, client_instance: weaviate.Client) -> List[Document]:
-        """Iterate over files, process new/updated ones, pass client to extract_text."""
+        """Iterate over files, process new/updated ones with parallel processing."""
         docs = []
+        counter_lock = threading.Lock()
         logger.info(f"Scanning directory: {self.data_dir}")
-        processed_count = 0
-        skipped_unchanged_count = 0
-        skipped_unsupported_count = 0
-        skipped_no_text_count = 0
-        error_count = 0
-
-        # Use rglob to include subdirectories if needed, otherwise keep glob
-        # file_iterator = self.data_dir.rglob("*") if include_subdirs else self.data_dir.glob("*")
-        file_iterator = self.data_dir.glob("*") # Current behavior
-
-        for filepath in file_iterator:
+        
+        # Collect files to process
+        files_to_process = []
+        for filepath in self.data_dir.glob("*"):
             if not filepath.is_file():
                 continue
-
-            processed_count += 1
-
+                    
             # Check file type support
             supported_extensions = set(f".{ext.lower()}" for ext in getattr(PipelineConfig, 'FILE_TYPES', ['pdf', 'txt', 'csv', 'docx', 'md']))
             if filepath.suffix.lower() not in supported_extensions:
-                skipped_unsupported_count += 1
-                logger.debug(f"Skipping unsupported file type: {filepath.name}")
                 continue
-
+                
             current_hash = self.compute_hash(filepath)
-            if not current_hash: # Skip if hashing failed
-                error_count += 1
+            if not current_hash:
                 continue
-
+                
             stored_hash = self.processed_files.get(str(filepath))
-
             if stored_hash == current_hash:
-                skipped_unchanged_count += 1
-                # logger.debug(f"Skipping file (unchanged): {filepath.name}") # Reduce noise
                 continue
-
-            logger.info(f"Processing new/updated file: {filepath.name}")
-            # --- PASS THE CLIENT ---
+                
+            files_to_process.append(filepath)
+        
+        logger.info(f"Found {len(files_to_process)} new/modified files to process")
+        
+        # Process files in parallel
+        max_workers = min(os.cpu_count() or 4, 8)  # Limit to 8 threads max
+        logger.info(f"Starting parallel processing with {max_workers} worker threads")
+        processed_count = 0
+        error_count = 0
+        # Thread-safe counter
+        
+        
+        def process_file(filepath):
+            nonlocal processed_count, error_count
+            logger.info(f"Processing file: {filepath.name}")
             text = extract_text(filepath, client_instance=client_instance)
-
-            # Check if text is None OR empty/whitespace after stripping
+            
             if text is None or not text.strip():
-                logger.warning(f"No text extracted or text is empty/whitespace for {filepath.name}, skipping.")
-                # Update hash to prevent retrying problematic files
-                self.processed_files[str(filepath)] = current_hash
-                skipped_no_text_count += 1
-                continue
-
-            # --- Document Creation ---
+                with counter_lock:
+                    self.processed_files[str(filepath)] = self.compute_hash(filepath)
+                return None
+                
             try:
                 file_path_obj = Path(filepath)
                 stat = file_path_obj.stat()
-                # Use timezone-aware datetime objects
-                created_dt = dt.datetime.fromtimestamp(stat.st_ctime, tz=timezone.utc).isoformat().replace('+00:00', 'Z')
-                modified_dt = dt.datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat().replace('+00:00', 'Z')
-
+                created_dt = datetime.fromtimestamp(stat.st_ctime, tz=timezone.utc).isoformat().replace('+00:00', 'Z')
+                modified_dt = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat().replace('+00:00', 'Z')
+                
                 metadata = {
                     "source": str(filepath),
                     "filetype": file_path_obj.suffix.lower(),
                     "created_date": created_dt,
                     "modified_date": modified_dt,
-                    "page": 0, # Default for whole-doc text
+                    "page": 0,
                     "content_flags": [],
-                    "error_messages": []
+                    "error_messages": [],
+                    "quality_score": calculate_quality_score(text, self.domain_keywords)  # Pass cached keywords
                 }
-
+                
                 doc = Document(page_content=text, metadata=metadata)
-                docs.append(doc)
-
-                # Update hash only after successful doc creation
-                self.processed_files[str(filepath)] = current_hash
-
-            except Exception as doc_create_e:
-                logger.error(f"Error creating Document object for {filepath.name}: {doc_create_e}", exc_info=True)
-                error_count += 1
-                # Do NOT update hash, allow retry later
-                continue
-            # --- End Document Creation ---
-
-        logger.info(
-            f"Directory scan complete. Total files considered: {processed_count}. "
-            f"New/Updated with text: {len(docs)}. "
-            f"Skipped (unchanged): {skipped_unchanged_count}. "
-            f"Skipped (unsupported): {skipped_unsupported_count}. "
-            f"Skipped (no text): {skipped_no_text_count}. "
-            f"Errors: {error_count}."
-        )
+                
+                with counter_lock:
+                    self.processed_files[str(filepath)] = self.compute_hash(filepath)
+                    processed_count += 1
+                    
+                return doc
+            except Exception as e:
+                with counter_lock:
+                    error_count += 1
+                logger.error(f"Error processing {filepath.name}: {e}")
+                return None
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_file = {executor.submit(process_file, filepath): filepath for filepath in files_to_process}
+            for future in as_completed(future_to_file):
+                doc = future.result()
+                if doc:
+                    docs.append(doc)
+    
+        logger.info(f"Parallel processing complete. Used {max_workers} threads, Processed: {processed_count}, Errors: {error_count}")
         return docs
 
-    # --- OPTIMIZED process ---
-    # Accepts the main client instance
+       
     def process(self, client_instance: weaviate.Client) -> List[Document]:
-        """Load new documents using the client, split, filter, update metadata."""
-        # --- PASS THE CLIENT ---
-        docs = self.load_new_documents(client_instance=client_instance)
-        if not docs:
-            logger.info("No new documents loaded.")
-            self.save_metadata() # Save metadata even if no docs, to record skips
+        """
+        Load new documents, extract tables, calculate quality, filter,
+        and then perform a centroid significance check & update.
+        """
+        docs: List[Document] = []
+
+        # 1) Scan for new/modified files
+        logger.info(f"Scanning directory: {self.data_dir}")
+        files_to_process: List[Tuple[Path, str]] = []
+        supported_exts = {
+            f".{e.lower()}"
+            for e in getattr(PipelineConfig, "FILE_TYPES", ["pdf", "txt", "csv", "docx", "md"])
+        }
+        for path in self.data_dir.glob("*"):
+            if not path.is_file() or path.suffix.lower() not in supported_exts:
+                continue
+            h = self.compute_hash(path)
+            if not h or self.processed_files.get(str(path)) == h:
+                continue
+            files_to_process.append((path, h))
+
+        if not files_to_process:
+            logger.info("No new/modified files to process.")
             return []
 
-        logger.info(f"Splitting {len(docs)} new documents...")
+        # 2) Process files (parallel)
+        batch_size  = self._calculate_optimal_batch_size([p for p, _ in files_to_process])
+        max_workers = min(os.cpu_count() or 4, 8)
+        logger.info(
+            f"Processing {len(files_to_process)} files "
+            f"in batches of {batch_size} with {max_workers} threads"
+        )
+        for batch in self._create_batches(files_to_process, batch_size):
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {
+                    pool.submit(self._process_single_file, path, client_instance): h
+                    for path, h in batch
+                }
+                for fut in as_completed(futures):
+                    doc = fut.result()
+                    h = futures[fut]
+                    if doc:
+                        docs.append(doc)
+                        self.processed_files[doc.metadata["source"]] = h
+
+        if not docs:
+            logger.info("No new/modified documents yielded valid docs.")
+            return []
+
+        # 3) Split into chunks
+        logger.info(f"Splitting {len(docs)} documents into chunks")
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=PipelineConfig.CHUNK_SIZE,
+            chunk_overlap=PipelineConfig.CHUNK_OVERLAP
+        )
         try:
-            splitter = RecursiveCharacterTextSplitter(
-                chunk_size=PipelineConfig.CHUNK_SIZE,
-                chunk_overlap=PipelineConfig.CHUNK_OVERLAP
-                # Add other params if needed (e.g., separators)
-            )
             split_docs = splitter.split_documents(docs)
-        except Exception as split_e:
-             logger.error(f"Error during document splitting: {split_e}", exc_info=True)
-             self.save_metadata() # Save hash updates even if splitting fails
-             return [] # Return empty list if splitting fails
+        except Exception as e:
+            logger.error(f"Splitting error: {e}", exc_info=True)
+            self.save_metadata()
+            return []
+        total_chunks = len(split_docs)
+        logger.info(f"Generated {total_chunks} total chunks")
 
-        valid_docs = [d for d in split_docs if len(d.page_content) >= PipelineConfig.MIN_CONTENT_LENGTH]
-        logger.info(f"Prepared {len(valid_docs)} valid document chunks for insertion (Min length: {PipelineConfig.MIN_CONTENT_LENGTH}).")
-        self.save_metadata() # Save updated hashes after successful processing/splitting
-        return valid_docs
+        # 4) Filter by length & quality (use live config values)
+        min_len = PipelineConfig.MIN_CONTENT_LENGTH
+        min_q   = cfg.ingestion.MIN_QUALITY_SCORE
+        quality_docs = [
+            d for d in split_docs
+            if len(d.page_content) >= min_len
+            and d.metadata.get("quality_score", 0) >= min_q
+        ]
+        rejected = total_chunks - len(quality_docs)
+        if rejected:
+            logger.info(
+                f"Rejected {rejected} of {total_chunks} chunks "
+                f"below quality threshold {min_q:.2f}"
+            )
 
+        self.save_metadata()
+        if not quality_docs:
+            return []
+
+        # 5) Centroid significance check & update
+        try:
+            from langchain_community.embeddings import OllamaEmbeddings
+            embedder = OllamaEmbeddings(
+                model=PipelineConfig.EMBEDDING_MODEL,
+                base_url=PipelineConfig.EMBEDDING_BASE_URL
+            )
+            new_vectors = [
+                np.array(embedder.embed_query(d.page_content))
+                for d in quality_docs
+            ]
+            if new_vectors:
+                cm = CentroidManager()
+                all_vectors  = cm.get_all_vectors(client_instance, cfg.retrieval.COLLECTION_NAME)
+                old_centroid = cm.get_centroid()
+                auto_thr     = cfg.ingestion.CENTROID_AUTO_THRESHOLD
+                div_thr      = cfg.ingestion.CENTROID_DIVERSITY_THRESHOLD
+                if should_recalculate_centroid(
+                        new_vectors, all_vectors, old_centroid,
+                        auto_thr, div_thr
+                ):
+                    cm.update_centroid(all_vectors)
+                    logger.info("Centroid recalculated and updated.")
+                else:
+                    logger.info("Centroid update skipped (insufficient change).")
+        except Exception as e:
+            logger.critical(f"Error during centroid update: {e}", exc_info=True)
+
+        return quality_docs
+
+
+                  
+
+    def _process_single_file(self, filepath, client_instance):
+        """Process a single file with enhanced extraction."""
+        
+        counter_lock = threading.Lock()
+        logger.info(f"Processing file: {filepath.name}")
+        
+        # Extract text content
+        text = extract_text(filepath, client_instance=client_instance)
+        if text is None or not text.strip():
+            with counter_lock:
+                self.processed_files[str(filepath)] = self.compute_hash(filepath)
+            return None
+        
+        # Extract tables
+        tables = extract_tables(filepath)
+        
+        try:
+            file_path_obj = Path(filepath)
+            stat = file_path_obj.stat()
+            created_dt = datetime.fromtimestamp(stat.st_ctime, tz=timezone.utc).isoformat().replace('+00:00', 'Z')
+            modified_dt = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat().replace('+00:00', 'Z')
+            
+            # Calculate quality score with tables and domain keywords
+            quality_score = calculate_quality_score(
+                text, 
+                tables=tables,
+                cached_domain_keywords=self.domain_keywords
+            )
+            
+            metadata = {
+                "source": str(filepath),
+                "filetype": file_path_obj.suffix.lower(),
+                "created_date": created_dt,
+                "modified_date": modified_dt,
+                "page": 0,
+                "content_flags": [],
+                "error_messages": [],
+                "quality_score": quality_score,
+                "has_tables": bool(tables),
+                "table_count": len(tables) if tables else 0
+            }
+            
+            # Add table data to metadata if present
+            if tables:
+                metadata["tables"] = tables
+            
+            doc = Document(page_content=text, metadata=metadata)
+            
+            with counter_lock:
+                self.processed_files[str(filepath)] = self.compute_hash(filepath)
+                
+            return doc
+            
+        except Exception as e:
+            with counter_lock:
+                logger.error(f"Error processing {filepath.name}: {e}")
+            return None
+
+        
+    # Enhance _calculate_optimal_batch_size in ingest_block.py:
+    def _calculate_optimal_batch_size(self, files_to_process):
+        """Calculate optimal batch size based on file types, sizes, and system resources"""
+        if not files_to_process:
+            return 10
+            
+        # Get system memory info
+        try:
+            import psutil
+            available_memory = psutil.virtual_memory().available / (1024 * 1024 * 1024)  # GB
+        except ImportError:
+            available_memory = 8  # Default assumption: 8GB
+            
+        # Analyze file sizes and types
+        total_size = 0
+        file_types = Counter()
+        
+        for filepath in files_to_process:
+            file_types[filepath.suffix.lower()] += 1
+            try:
+                total_size += filepath.stat().st_size
+            except OSError:
+                pass
+                
+        # Adjust batch size based on average file size and available memory
+        avg_size_mb = (total_size / len(files_to_process)) / (1024 * 1024) if files_to_process else 0
+        pdf_ratio = file_types.get('.pdf', 0) / len(files_to_process) if files_to_process else 0
+        
+        # Memory-based calculation
+        if available_memory < 2:  # Less than 2GB available
+            base_size = 2
+        elif available_memory < 4:  # 2-4GB available
+            base_size = 4
+        else:  # More than 4GB available
+            base_size = 8
+            
+        # Adjust for file characteristics
+        if avg_size_mb > 10 or pdf_ratio > 0.7:  # Large files or mostly PDFs
+            return max(2, base_size // 2)
+        elif avg_size_mb > 1 or pdf_ratio > 0.3:  # Medium files or some PDFs
+            return max(4, base_size)
+        else:  # Small files, few PDFs
+            return max(6, base_size * 2)
+
+        
+    def _create_batches(self, files, batch_size):
+        """Create batches of files for processing."""
+        return [files[i:i + batch_size] for i in range(0, len(files), batch_size)]
 
 # --- Store Documents in Weaviate (Mostly Unchanged, Check Metadata) ---
 def store_documents(docs: List[Document], client: weaviate.Client, embeddings_obj) -> None:
     """Stores documents in Weaviate using batch insertion."""
+    if embeddings_obj is None:
+        logger.error("store_documents: No embeddings object provided.")
+        return
+
     if not docs:
         logger.info("store_documents: No documents to insert.")
         return
@@ -439,86 +702,256 @@ def store_documents(docs: List[Document], client: weaviate.Client, embeddings_ob
         # Consider adding more specific error handling if needed
 
 
-# --- OPTIMIZED run_ingestion ---
+# --- OPTIMIZED run_ingestion (Root Fix, v2) ---
 def run_ingestion(folder: str) -> dict:
     """
-    Optimized incremental ingestion: gets one client and passes it down.
+    Incrementally ingest files under `folder` into Weaviate,
+    then perform a centroid significance check/update.
+
+    Returns a JSON-serializable dict with:
+      - new_vectors: List of lists (embeddings)
+      - all_vectors: List of lists (all embeddings)
+      - old_centroid: List (previous centroid)
+      - message: Status string
     """
-    client = None # Initialize client to None
-    embeddings_obj = None # Initialize embeddings to None
-    num_processed_chunks = 0 # Track processed CHUNKS
+    # 1) Connect to Weaviate
+    client = weaviate.connect_to_local(
+        host=cfg.retrieval.WEAVIATE_HOST,
+        port=cfg.retrieval.WEAVIATE_HTTP_PORT,
+        grpc_port=cfg.retrieval.WEAVIATE_GRPC_PORT,
+        skip_init_checks=True
+    )
 
     try:
-        # 1. Initialize the MAIN Weaviate client
-        logger.info("run_ingestion: Attempting to get Weaviate client...")
-        client = PipelineConfig.get_client()
+        # 2) Process new/modified files
+        docs = IncrementalDocumentProcessorBlock(data_dir=folder).process(client)
+        cm = CentroidManager()
 
-        if client is None:
-            logger.critical("run_ingestion: Failed to obtain Weaviate client.")
-            return {"processed": 0, "message": "Incremental ingestion failed: Could not connect to Weaviate."}
+        # Handle no new documents
+        if not docs:
+            logger.info("run_ingestion: No new or modified documents found.")
+            # Explicitly handle None centroid
+            old_cent = cm.get_centroid()
+            if old_cent is None:
+                old_cent = np.zeros(PipelineConfig.EMBED_DIM)
+            return {
+                "new_vectors": [],
+                "all_vectors": [],
+                "old_centroid": old_cent.tolist(),
+                "message": "No new documents ingested."
+            }
 
-        if not client.is_live():
-            logger.critical("run_ingestion: Weaviate server is not responsive.")
-            return {"processed": 0, "message": "Incremental ingestion failed: Weaviate server is not responsive."}
-        logger.info("run_ingestion: Weaviate client is live.")
+        # 3) Upsert & collect embeddings via the store_documents helper
+        embedder = OllamaEmbeddings(
+            model=PipelineConfig.EMBEDDING_MODEL,
+            base_url=PipelineConfig.EMBEDDING_BASE_URL
+        )
+        # Insert everything in one shot
+        store_documents(docs, client, embedder)
 
-        # 2. Initialize embeddings
-        logger.info("run_ingestion: Initializing embeddings...")
+        # Meanwhile build new_vecs for centroid logic
+        new_vecs = [
+            np.array(embedder.embed_query(d.page_content))
+            for d in docs
+            ]
+   
+
+        # 4) Fetch all vectors & previous centroid
+        all_vecs = cm.get_all_vectors(client, cfg.retrieval.COLLECTION_NAME)
+        old_cent = cm.get_centroid()
+        if old_cent is None:
+            # default shape to first vec
+            old_cent = np.zeros_like(all_vecs[0])
+
+        # 5) Optional centroid update
         try:
-            embeddings_obj = OllamaEmbeddings(
-                model=PipelineConfig.EMBEDDING_MODEL,
-                base_url=PipelineConfig.EMBEDDING_BASE_URL
-            )
-            logger.info(f"run_ingestion: Embeddings initialized with model: {PipelineConfig.EMBEDDING_MODEL}")
-        except Exception as embed_e:
-            logger.error(f"run_ingestion: Error initializing embeddings: {embed_e}", exc_info=True)
-            return {"processed": 0, "message": f"Incremental ingestion failed: Embeddings init error: {embed_e}"}
+            if should_recalculate_centroid(new_vecs, all_vecs, old_cent,
+                                          cfg.ingestion.CENTROID_AUTO_THRESHOLD,
+                                          cfg.ingestion.CENTROID_DIVERSITY_THRESHOLD):
+                cm.update_centroid(all_vecs)
+                logger.info("Centroid recalculated and updated.")
+            else:
+                logger.info("Centroid update skipped.")
+        except Exception:
+            logger.warning("Centroid update failed.", exc_info=True)
 
-        # 3. Process documents incrementally, passing the main client
-        logger.info(f"run_ingestion: Starting incremental processing for directory: {folder}")
-        incremental_processor = IncrementalDocumentProcessorBlock(data_dir=folder)
+        # Prepare JSON-serializable output
+        serial_new = [v.tolist() for v in new_vecs]
+        serial_all = [v.tolist() for v in all_vecs]
+        serial_old = old_cent.tolist()
+        msg = f"Ingested {len(new_vecs)} vectors."
+        logger.info(f"run_ingestion: {msg}")
 
-        # --- PASS MAIN CLIENT to processor ---
-        new_docs_chunks = incremental_processor.process(client_instance=client)
-        num_processed_chunks = len(new_docs_chunks)
-
-        # 4. Insert the resulting document chunks
-        if new_docs_chunks:
-            logger.info(f"run_ingestion: Storing {num_processed_chunks} new document chunks into Weaviate...")
-            store_documents(new_docs_chunks, client, embeddings_obj)
-        else:
-            logger.info("run_ingestion: No new or modified documents found to process.")
-
-        # 5. Log success
-        logger.info(f"run_ingestion: Incremental ingestion completed: {num_processed_chunks} new document chunks processed.")
         return {
-            "processed": num_processed_chunks,
-            "message": "Incremental ingestion completed successfully."
+            "new_vectors": serial_new,
+            "all_vectors": serial_all,
+            "old_centroid": serial_old,
+            "message": msg
         }
 
     except Exception as e:
-        logger.critical(f"run_ingestion: Error during ingestion: {e}", exc_info=True)
-        return {
-            "processed": num_processed_chunks, # Report chunks processed before error
-            "message": f"Incremental ingestion failed: {str(e)}"
-        }
+        logger.critical(f"run_ingestion error: {e}", exc_info=True)
+        raise
+
     finally:
-        # 6. Ensure the MAIN client connection is closed
-        if client and hasattr(client, 'close') and callable(client.close):
-            try:
-                if client.is_connected():
-                    client.close()
-                    logger.info("run_ingestion: Closed Weaviate client connection.")
-                # else: logger.info("run_ingestion: Weaviate client was already closed.") # Reduce noise
-            except Exception as close_err:
-                logger.error(f"run_ingestion: Error closing Weaviate client: {close_err}")
+        client.close()
 
 
+
+
+def after_ingestion(client, collection_name):
+    """Update domain centroid after ingestion by averaging all document vectors."""
+    logger.info(f"Updating domain centroid from collection '{collection_name}'...")
+    
+    # Use a lock to ensure thread safety
+    with threading.Lock():
+        try:
+            vectors = []
+            collection = client.collections.get(collection_name)
+            
+            # Log progress periodically
+            processed = 0
+            for obj in collection.iterator(include_vector=True, return_properties=[]):
+                processed += 1
+                if processed % 1000 == 0:
+                    logger.info(f"Processed {processed} vectors...")
+                
+                if obj.vector and 'default' in obj.vector:
+                    vectors.append(obj.vector['default'])
+            
+            if vectors:
+                logger.info(f"Calculating centroid from {len(vectors)} vectors...")
+                centroid = np.mean(np.array(vectors), axis=0)
+                centroid_manager.save_centroid(centroid)
+                logger.info(f"Domain centroid updated successfully with shape {centroid.shape}")
+                return True
+            else:
+                logger.warning("No vectors found in collection. Centroid not updated.")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error updating centroid: {e}", exc_info=True)
+            return False
+
+def extract_text_from_txt(filepath: Path) -> str:
+    try:
+        import chardet
+        with open(filepath, "rb") as f:
+            raw_data = f.read()
+            encoding = chardet.detect(raw_data)['encoding'] or 'utf-8'
+        with open(filepath, "r", encoding=encoding) as f:
+            content = f.read()
+            logger.info(f"Successfully extracted {len(content)} characters from TXT file: {filepath.name}")
+            return content
+    except Exception as e:
+        logger.error(f"Error reading TXT file {filepath.name}: {e}")
+        return ""
+
+# In ingest_block.py, enhance extract_text_from_docx:
+def extract_text_from_docx(filepath: Path) -> str:
+    if docx is None:
+        logger.error(f"python-docx not installed. Cannot process DOCX: {filepath.name}")
+        return ""
+    
+    try:
+        doc = docx.Document(filepath)
+        full_text = []
+        
+        # Extract main text with heading levels
+        for para in doc.paragraphs:
+            # Add heading level info if it's a heading
+            if para.style.name.startswith('Heading'):
+                level = para.style.name.replace('Heading ', '')
+                full_text.append(f"{'#' * int(level)} {para.text}")
+            else:
+                full_text.append(para.text)
+        
+        # Extract tables with better formatting
+        for table in doc.tables:
+            table_text = []
+            for i, row in enumerate(table.rows):
+                cells = [cell.text for cell in row.cells]
+                if i == 0:  # Header row
+                    table_text.append("| " + " | ".join(cells) + " |")
+                    table_text.append("| " + " | ".join(["---"] * len(cells)) + " |")
+                else:
+                    table_text.append("| " + " | ".join(cells) + " |")
+            full_text.append("\n".join(table_text))
+            
+        return "\n\n".join(full_text)
+    except Exception as e:
+        logger.error(f"Error processing DOCX {filepath.name}: {e}")
+        return ""
+
+
+def extract_text_from_csv(filepath: Path) -> str:
+    try:
+        if pd is not None:
+            df = pd.read_csv(filepath, encoding='utf-8', on_bad_lines='skip')
+            # Convert to markdown table for better structure preservation
+            return df.to_markdown(index=False)
+        else:
+            # Fallback to basic CSV reader
+            with open(filepath, "r", encoding="utf-8", newline='') as f:
+                reader = csv.reader(f)
+                return "\n".join([", ".join(row) for row in reader])
+    except Exception as e:
+        logger.error(f"Error reading CSV file {filepath.name}: {e}")
+        return ""
+
+def extract_text_from_markdown(filepath: Path) -> str:
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            content = f.read()
+            # Preserve markdown structure
+            return content
+    except Exception as e:
+        logger.error(f"Error reading Markdown file {filepath.name}: {e}")
+        return ""
+def extract_tables(filepath: Path) -> list:
+    """Extract tables from various document formats."""
+    ext = filepath.suffix.lower()
+    tables = []
+    
+    try:
+        if ext == '.pdf' and pdfplumber is not None:
+            with pdfplumber.open(filepath) as pdf:
+                for i, page in enumerate(pdf.pages):
+                    for j, table in enumerate(page.extract_tables()):
+                        if table:
+                            tables.append({
+                                "table_id": f"page_{i+1}_table_{j+1}",
+                                "data": table,
+                                "page": i+1
+                            })
+        elif ext == '.docx' and docx is not None:
+            doc = docx.Document(filepath)
+            for i, table in enumerate(doc.tables):
+                data = []
+                for row in table.rows:
+                    data.append([cell.text for cell in row.cells])
+                tables.append({
+                    "table_id": f"table_{i+1}",
+                    "data": data
+                })
+        elif ext == '.csv' and pd is not None:
+            df = pd.read_csv(filepath)
+            tables.append({
+                "table_id": "csv_table",
+                "data": df.values.tolist(),
+                "headers": df.columns.tolist()
+            })
+        return tables
+    except Exception as e:
+        logger.error(f"Table extraction failed for {filepath.name}: {e}")
+        return []
+    
+   
 # --- Main Execution (for running script directly) ---
 def main():
     parser = argparse.ArgumentParser(description="Run incremental document ingestion.")
     parser.add_argument("--folder", "-f", type=str, default=cfg.paths.DOCUMENT_DIR if cfg else "./data",
-                        help="Folder containing documents to ingest.")
+                         help="Folder containing documents to ingest.")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging.")
     args = parser.parse_args()
 
@@ -526,8 +959,10 @@ def main():
     log_level = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(level=log_level, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     logger.info("Running ingest_block script directly...")
-
-    run_ingestion(args.folder) # Call the main function
+    result = run_ingestion(args.folder)
+    #print summary to console
+    import pprint; pprint.pprint(result)
+  
 
 # Only call main() if this script is run directly.
 if __name__ == "__main__":

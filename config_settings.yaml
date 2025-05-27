@@ -1,76 +1,58 @@
-security: {SANITIZE_INPUT: true, RATE_LIMIT: 20, API_TIMEOUT: 30, CACHE_ENABLED: true}
+security: {SANITIZE_INPUT: false, RATE_LIMIT: 20, API_TIMEOUT: 30, CACHE_ENABLED: false}
 retrieval:
-  COLLECTION_NAME: Industrial_tech
-  K_VALUE: 6
+  COLLECTION_NAME: Math
+  K_VALUE: 3
   SCORE_THRESHOLD: 0.6
-  LAMBDA_MULT: 0.6
+  LAMBDA_MULT: 0.5
   SEARCH_TYPE: mmr
   DOMAIN_SIMILARITY_THRESHOLD: 0.65
   SPARSE_RELEVANCE_THRESHOLD: 0.15
   FUSED_RELEVANCE_THRESHOLD: 0.45
   SEMANTIC_WEIGHT: 0.7
   SPARSE_WEIGHT: 0.3
-  PERFORM_DOMAIN_CHECK: true
+  PERFORM_DOMAIN_CHECK: false
+  PERFORM_TECHNICAL_VALIDATION: false
   WEAVIATE_HOST: localhost
   WEAVIATE_HTTP_PORT: 8091
   WEAVIATE_GRPC_PORT: 51002
   retrieve_with_history: false
   WEAVIATE_TIMEOUT: [10, 120]
-model: {LLM_TEMPERATURE: 0.6, MAX_TOKENS: 1024, OLLAMA_MODEL: deepseek-r1, EMBEDDING_MODEL: nomic-embed-text,
-  TOP_P: 0.9, FREQUENCY_PENALTY: 0.1, SYSTEM_MESSAGE: You are a helpful AI assistant
-    for industrial automation. Use the provided context and conversation history to
-    answer accurately and clearly. Provide sufficient detail but remain focused on
-    the question., EXTERNAL_API_PROVIDER: deepseek, EXTERNAL_API_MODEL_NAME: null}
+model:
+  PROVIDER_URLS: {anthropic: 'https://api.anthropic.com/v1/complete', cohere: 'https://api.cohere.com/v1/completions',
+    deepseek: 'https://api.deepseek.com/chat/completions', openai: 'https://api.openai.com/v1/chat/completions'}
+  EXTERNAL_API_MODEL_DEFAULTS: {anthropic: claude-v1, cohere: command-nightly, deepseek: deepseek-chat,
+    openai: gpt-3.5-turbo}
+  LLM_TEMPERATURE: 1.0
+  MAX_TOKENS: 1024
+  OLLAMA_MODEL: deepseek-r1
+  EMBEDDING_MODEL: nomic-embed-text
+  TOP_P: 0.9
+  FREQUENCY_PENALTY: 0.2
+  SYSTEM_MESSAGE: Bleep bloop! I am Sparky, the slightly eccentric automation bot!
+    I'll answer using the context... probably... but expect weird analogies, maybe
+    a pun, or a random fact about resistors! Let's get automating... maybe? Zap!
+  EXTERNAL_API_PROVIDER: deepseek
+  EXTERNAL_API_MODEL_NAME: null
+  MERGE_STRATEGY: api_first
 document:
-  CHUNK_SIZE: 345
-  CHUNK_OVERLAP: 56
+  CHUNK_SIZE: 2048
+  CHUNK_OVERLAP: 200
+  MIN_CONTENT_LENGTH: 50
   FILE_TYPES: [pdf, txt, csv, docx, md]
-  PARSE_TABLES: true
-  GENERATE_SUMMARY: true
+  PARSE_TABLES: false
+  GENERATE_SUMMARY: false
 paths: {DOCUMENT_DIR: ./data, DOMAIN_CENTROID_PATH: ./domain_centroid.npy}
 env:
-  DOMAIN_KEYWORDS: [Industrial Automation, Honeywell, SCADA, PLC, IoT, Honeywell Digital
-      Transformation, Process Automation, Manufacturing Automation, Industrial Internet
-      of Things (IIoT), Automation Systems, Distributed Control System (DCS), Real-time
-      Data, Industrial Networks, Machine Learning in Automation, Predictive Maintenance,
-    Edge Computing, Control Systems Engineering, Digital Twin, Industrial Control
-      Systems (ICS), Process Control, Smart Factories, Advanced Process Control (APC),
-    Remote Monitoring, Industrial Sensors, SCADA Software, Honeywell Experion, IoT
-      Sensors, Automation Solutions, Honeywell Process Solutions, Distributed Automation,
-    PLC Programming, SCADA Integration, Industrial Safety, Automation Architecture,
-    Manufacturing Execution Systems (MES), IIoT Connectivity, Smart Manufacturing,
-    Cloud-based Automation, Industrial Data Analytics, Energy Management Systems,
-    Predictive Analytics, Automated Control Loops, SCADA Security, Process Optimization,
-    Industrial Robotics, Industrial Wireless Communication, Edge Analytics, Supervisory
-      Control, Data Acquisition Systems, Data Visualization Tools, Honeywell Connected
-      Plant, Cybersecurity in Automation, Process Control Optimization, Automated
-      Refineries, Advanced Control Systems, Autonomous Manufacturing, PLC-based Automation,
-    SCADA Data Collection, Industrial PLC Systems, Remote Automation, Machine Vision
-      Systems, Data-Driven Insights, Industrial Automation Software, Control Panel
-      Design, Industrial Automation Integration, System Integration, Industrial Ethernet,
-    Refineries Control Systems, Distributed Sensors, Control System Architecture,
-    Industrial IoT Devices, Wireless IoT Networks, Real-time Monitoring, Process Data
-      Analytics, Honeywell Safety Systems, Industrial Control Panel, Automation Services
-      for Refineries, Advanced Industrial Automation, Oil and Gas Automation, Refineries
-      Digital Transformation, Automated Manufacturing Systems, Control and Monitoring
-      Systems, Process Flow Automation, Honeywell Smart Industry, System Fault Detection,
-    Factory Automation Solutions, Process Monitoring Solutions, SCADA Control Systems,
-    PLC Diagnostics, Smart Manufacturing Solutions, Refineries Automation Solutions,
-    Operational Technology (OT), Digital Control Systems, PLC-based Control Systems,
-    Honeywell Industrial Solutions, Industry 4.0 Automation, Data-Driven Process Control,
-    Process Simulation Software, Industrial Process Systems, Honeywell Industrial
-      IoT, Experion PKS, Safety Manager, MasterLogic PLC, HC900 Hybrid Controller,
-    SmartLine Transmitters, C300 Controller, TotalFlow, OneWireless, Enraf, FlexTech
-      Controllers, Genetec, Field Device Manager, Process Historian, TDC 3000, ControlEdge,
-    LCA (Lifecycle Automation), PMA, Experion LX, ProView, Smart Automation, Web HMI,
-    Vibration Monitoring, Field Instruments, HMI Systems, Cloud Control, Product Simulation,
-    WorkStation, 3D Visualization, Power Systems, ControlRoom Management, DeviceNet,
-    Control Hardware, RTAC, SCADA Solutions, Asset Performance, FieldBus, Equipment
-      Performance Monitoring, E-Stop Systems, Variable Frequency Drives, HART Communicators,
-    Smart Devices, Thermal Imaging, Industrial Robots, ControlEdge PLC, Process Automation
-      Servers, Gas Detection Systems]
-  AUTO_DOMAIN_KEYWORDS: []
-  USER_ADDED_KEYWORDS: [Emerson, competitors, SLB, VSD]
+  DOMAIN_KEYWORDS: []
+  AUTO_DOMAIN_KEYWORDS: [2018 www honeywellprocess, lcn honeywell confidential, honeywell
+      portfolio update, 2018 2018 honeywell, q4000 frame scanner, glossary term 119,
+    hidden markov model, 2018 honeywell international, honeywellprocess com 2019,
+    honeywell trademark]
+  USER_ADDED_KEYWORDS: []
+  SELECTED_N_TOP: 10
 pipeline: {max_history_turns: 5}
+ingestion: {CENTROID_AUTO_THRESHOLD: 0.2, CENTROID_DIVERSITY_THRESHOLD: 0.52, CENTROID_UPDATE_MODE: auto,
+  MIN_QUALITY_SCORE: 0.3, CENTROID_DIVERSITY: null}
 domain_keyword_extraction: {keybert_model: all-MiniLM-L6-v2, top_n_per_doc: 50, final_top_n: 200,
-  min_doc_freq: 3, diversity: 0.3, no_pos_filter: true}
+  min_doc_freq_mode: absolute, min_doc_freq_abs: 1, min_doc_freq_frac: 0.006, diversity: 0.7,
+  no_pos_filter: true, min_doc_freq: 1, extraction_diversity: 0.7}

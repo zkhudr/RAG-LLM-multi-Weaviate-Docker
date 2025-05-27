@@ -1,331 +1,588 @@
 // --- START static/ragapp.js ---
-// Use alpine:init to ensure ragApp is defined before Alpine scans
+// Define Alpine component at the right time, no global ragApp, no DOMContentLoaded flag
 
-let domContentLoadedFired = false; // <-- Add this flag outside listeners
+// ragapp.js
 document.addEventListener('alpine:init', () => {
     console.log('[Alpine Event] alpine:init fired. Defining ragApp component...');
+    Alpine.data('ragApp', () => ({
+        
 
-    Alpine.data('ragApp', () => {
-        // Create reactive stores for complex objects
-        const reactiveState = Alpine.reactive({
-            // === CORE STATE ===
-            initCalled: false,
-            statusMessage: 'Initializing...',
-            userInput: '',
-            isStreaming: false,
-            newPresetName: '',
-            newInstanceName: '',
-            selectedPresetName: '',
+        envUserKeywordsString: '',
+        // ─── CORE STATE ───
+        docFreqMode: 'absolute',   
+        totalDocs: 0,              
+        initCalled: false,
+        statusMessage: 'Initializing...',
+        userInput: '',
+        isStreaming: false,
+        newPresetName: '',
+        newInstanceName: '',
+        selectedPresetName: '',
+        chatHistory: [],
+        filesToUpload: [],
+        selectedFileNames: [],
+        weaviateInstances: [],
+        savedChats: [],
+        presets: {},
+        apiKeyStatus: { deepseek: false, openai: false, anthropic: false, cohere: false },
+        toast: { show: false, message: '', type: 'info', timeout: null },
+        confirmationModal: { show: false, title: '', message: '', onConfirm: () => { }, onCancel: () => { }, confirmButtonClass: '' },
+        clearChat() {this.chatHistory = [];        },
+        autoDomainKeywords: '',
+        lastAutoDomainKeywordsList: [],
+        centroidStats: { centroid: null, meta: null},
+        queryCentroidInsight: { similarity: 0, distance: 0 },
+        centroidUpdateMode: 'auto',
+        centroidAutoThreshold: 5,
+        inspectModal: {
+            show: false,
+            data: null
+          },
 
-            // === COLLECTIONS ===
-            chatHistory: [],
-            filesToUpload: [],
-            selectedFileNames: [],
-            weaviateInstances: [],
-            savedChats: [],
-            presets: {},
+        // ─── CONFIGURATION ───
+        formConfig: {
+            
+            ingestion: {
+                CENTROID_AUTO_THRESHOLD: 0,
+                CENTROID_DIVERSITY_THRESHOLD: 0,
+                CENTROID_UPDATE_MODE: "auto",
+                MIN_QUALITY_SCORE: 0.3
+                },
 
-            // === COMPLEX OBJECTS ===
-            apiKeyStatus: {
-                deepseek: false,
-                openai: false,
-                anthropic: false,
-                cohere: false
+            security: {
+                SANITIZE_INPUT: true,
+                RATE_LIMIT: 100,
+                API_TIMEOUT: 30,
+                CACHE_ENABLED: true
             },
-
-            toast: {
-                show: false,
-                message: '',
-                type: 'info',
-                timeout: null
+            retrieval: {
+                COLLECTION_NAME: '',
+                K_VALUE: 5,
+                SCORE_THRESHOLD: 0.5,
+                LAMBDA_MULT: 0.5,
+                SEARCH_TYPE: 'mmr',
+                DOMAIN_SIMILARITY_THRESHOLD: 0.6,
+                SPARSE_RELEVANCE_THRESHOLD: 0.1,
+                FUSED_RELEVANCE_THRESHOLD: 0.4,
+                SEMANTIC_WEIGHT: 0.6,
+                SPARSE_WEIGHT: 0.4,
+                PERFORM_DOMAIN_CHECK: true,
+                PERFORM_TECHNICAL_VALIDATION: true,
+                WEAVIATE_HOST: '',
+                WEAVIATE_HTTP_PORT: 0,
+                WEAVIATE_GRPC_PORT: 0
             },
-
-            confirmationModal: {
-                show: false,
-                title: '',
-                message: '',
-                onConfirm: () => { },
-                onCancel: () => { },
-                confirmButtonClass: ''
+            model: {
+                LLM_TEMPERATURE: 0.7,
+                MAX_TOKENS: 1024,
+                OLLAMA_MODEL: '',
+                EMBEDDING_MODEL: '',
+                TOP_P: 1.0,
+                FREQUENCY_PENALTY: 0.0,
+                SYSTEM_MESSAGE: '',
+                EXTERNAL_API_PROVIDER: 'none',
+                EXTERNAL_API_MODEL_NAME: null
             },
+            document: {
+                CHUNK_SIZE: 1000,
+                CHUNK_OVERLAP: 100,
+                FILE_TYPES: [],
+                PARSE_TABLES: true,
+                GENERATE_SUMMARY: false
+            },
+            paths: {
+                DOCUMENT_DIR: './data',
+                DOMAIN_CENTROID_PATH: './domain_centroid.npy'
+            },
+            env: {
+                DOMAIN_KEYWORDS: [],
+                AUTO_DOMAIN_KEYWORDS: [],
+                USER_ADDED_KEYWORDS: [],
+                SELECTED_N_TOP: null
+            },
+            pipeline: {
+                max_history_turns: 5
+            },
+            domain_keyword_extraction: {
+            // persisted mode & two inputs
+            min_doc_freq_mode: 'absolute',
+            min_doc_freq_abs: null,
+            min_doc_freq_frac: null,
+            min_doc_freq: 2,
+            extraction_diversity: 0.7,
+            no_pos_filter: false
+        }
+          },
 
-            autoDomainKeywords: '',
+        // ─── LIFECYCLE METHODS ───
+        init() {
 
-            // === CONFIGURATION ===
-            formConfig: {
-                security: {
-                    SANITIZE_INPUT: true,
-                    RATE_LIMIT: 100,
-                    API_TIMEOUT: 30,
-                    CACHE_ENABLED: true
-                },
-                retrieval: {
-                    COLLECTION_NAME: '',
-                    K_VALUE: 5,
-                    SCORE_THRESHOLD: 0.5,
-                    LAMBDA_MULT: 0.5,
-                    SEARCH_TYPE: 'mmr',
-                    DOMAIN_SIMILARITY_THRESHOLD: 0.6,
-                    SPARSE_RELEVANCE_THRESHOLD: 0.1,
-                    FUSED_RELEVANCE_THRESHOLD: 0.4,
-                    SEMANTIC_WEIGHT: 0.6,
-                    SPARSE_WEIGHT: 0.4,
-                    PERFORM_DOMAIN_CHECK: true,
-                    WEAVIATE_HOST: '',
-                    WEAVIATE_HTTP_PORT: 0,
-                    WEAVIATE_GRPC_PORT: 0
-                },
-                model: {
-                    LLM_TEMPERATURE: 0.7,
-                    MAX_TOKENS: 1024,
-                    OLLAMA_MODEL: '',
-                    EMBEDDING_MODEL: '',
-                    TOP_P: 1.0,
-                    FREQUENCY_PENALTY: 0.0,
-                    SYSTEM_MESSAGE: '',
-                    EXTERNAL_API_PROVIDER: 'none',
-                    EXTERNAL_API_MODEL_NAME: null
-                },
-                document: {
-                    CHUNK_SIZE: 1000,
-                    CHUNK_OVERLAP: 100,
-                    FILE_TYPES: [],
-                    PARSE_TABLES: true,
-                    GENERATE_SUMMARY: false
-                },
-                paths: {
-                    DOCUMENT_DIR: '',
-                    DOMAIN_CENTROID_PATH: ''
-                },
-                env: {
-                    DOMAIN_KEYWORDS: [],
-                    AUTO_DOMAIN_KEYWORDS: [],
-                    USER_ADDED_KEYWORDS: []
-                },
-                domain_keyword_extraction: {
-                    keybert_model: "all-MiniLM-L6-v2",
-                    top_n_per_doc: 10,
-                    final_top_n: 100,
-                    min_doc_freq: 2,
-                    diversity: 0.7,
-                    no_pos_filter: false,
-                },
-                pipeline: {
-                    max_history_turns: 5,
-                    },
-                savedConfig: null,
-                configDirtyExplicitlySet: false
+                       // ─── GUARD: ensure domain_keyword_extraction and a numeric extraction_diversity ───
+                           if (!this.formConfig.domain_keyword_extraction) {
+                                 this.formConfig.domain_keyword_extraction = {
+                                       diversity: 0,
+                                           extraction_diversity: 0,
+                                               top_n_per_doc: 1,
+                                                   min_doc_freq_abs: 0,
+                                                       min_doc_freq_frac: 0
+                                                         };
+                               }
+                       const kde = this.formConfig.domain_keyword_extraction;
+                       if (kde.extraction_diversity == null) {
+                             kde.extraction_diversity = typeof kde.diversity === 'number'
+                                   ? kde.diversity
+                               : 0;
+                           }
+            
+            if (this.initCalled) return;
+            this.initCalled = true;
+
+            // list of [propertyPath, min, max]
+            const clamps = [
+                ['formConfig.ingestion.CENTROID_AUTO_THRESHOLD', 0, 100],               // % new vectors :contentReference[oaicite:0]{index=0}:contentReference[oaicite:1]{index=1}
+                ['formConfig.domain_keyword_extraction.top_n_per_doc', 1, 50],         // keywords/doc :contentReference[oaicite:2]{index=2}:contentReference[oaicite:3]{index=3}
+                ['formConfig.document.CHUNK_SIZE', 1, null],                           // chunk size :contentReference[oaicite:4]{index=4}:contentReference[oaicite:5]{index=5}
+                ['formConfig.document.CHUNK_OVERLAP', 0, null],                        // overlap :contentReference[oaicite:6]{index=6}:contentReference[oaicite:7]{index=7}
+                ['formConfig.model.MAX_TOKENS', 1, null],                              // max tokens :contentReference[oaicite:8]{index=8}:contentReference[oaicite:9]{index=9}
+                ['formConfig.domain_keyword_extraction.min_doc_freq_abs', 0, null],    // min-doc-freq-abs :contentReference[oaicite:10]{index=10}:contentReference[oaicite:11]{index=11}
+                ['formConfig.domain_keyword_extraction.min_doc_freq_frac', 0, 1],       // min-doc-freq-frac :contentReference[oaicite:12]{index=12}:contentReference[oaicite:13]{index=13}
+                ['formConfig.security.RATE_LIMIT', 0, null],                            // rate limit :contentReference[oaicite:14]{index=14}:contentReference[oaicite:15]{index=15}
+                ['formConfig.security.API_TIMEOUT', 0, null],                           // API timeout :contentReference[oaicite:16]{index=16}:contentReference[oaicite:17]{index=17}
+                ['formConfig.retrieval.K_VALUE', 1, null],                             // K value :contentReference[oaicite:18]{index=18}:contentReference[oaicite:19]{index=19}
+                
+            ];
+
+            for (const [path, min, max] of clamps) {
+                this.$watch(path, v => {
+                    let val = v;
+                    // only clamp if it’s a number
+                    if (typeof val === 'number') {
+                        let clamped = val;
+                        if (min !== null && val < min) clamped = min;
+                        if (max !== null && val > max) clamped = max;
+                        if (clamped !== val) {
+                            this.showToast(
+                                `${path.split('.').pop()} must be between ${min ?? '-∞'} and ${max ?? '∞'}.`,
+                                'error'
+                            );
+                            // write it back
+                            const keys = path.split('.');
+                            let obj = this;
+                            while (keys.length > 1) obj = obj[keys.shift()];
+                            obj[keys[0]] = clamped;
+                        }
+                    }
+                });
+      }
+
+
+
+                        // Kick off data load
+            this.loadInitialData();
+            this.fetchCentroidStats()
+        },
+
+        async loadInitialData() {
+            // Fetch totalDocs
+            console.log("[Init API] Fetching document count...");
+            try {
+                const res = await fetch('/get-doc-count');
+                const json = await res.json();
+                this.totalDocs = json.total_docs;
+                console.log("[Init API] Document count loaded:", this.totalDocs);
+            } catch (e) {
+                console.warn("[Init API] Could not fetch doc count", e);
+                this.totalDocs = 0;
             }
-        });
 
-        // Return the component definition
-        return {
-            // Spread all reactive state properties
-            ...reactiveState,
+            // Initialize both abs ↔ frac from whichever the server provided
+            const dke = this.formConfig.domain_keyword_extraction;
+            if (dke.min_doc_freq_abs != null) {
+                dke.min_doc_freq_frac = this.totalDocs
+                    ? +(dke.min_doc_freq_abs / this.totalDocs).toFixed(3)
+                    : 0;
+            } else if (dke.min_doc_freq_frac != null) {
+                dke.min_doc_freq_abs = this.totalDocs
+                    ? Math.ceil(dke.min_doc_freq_frac * this.totalDocs)
+                    : 0;
+            } else {
+                dke.min_doc_freq_abs = 0;
+                dke.min_doc_freq_frac = 0;
+            }
+        },
 
-            // === LIFECYCLE METHODS ===
-            init() {
-                console.log("[Component Init] Initializing ragApp component");
-                if (!this.initCalled) {
-                    this.loadInitialData();
-                }
-                this.$watch('statusMessage', (value) => {
-                    console.log('[Status Change]', value);
+        // === Auto Domain Keywords Controls ===
+
+            autoDomainKeywordsList: [],        // Currently active auto keywords
+            allAutoDomainKeywordsList: [],     // Full fetched list
+            lastAutoDomainKeywordsList: [],    // Backup for “restore”
+            activeAutoDomainKeywordsSet: new Set(),
+            autoKeywordsEnabled: true,
+            topNOptions: [],                   // e.g. [10, 20, …]
+            selectedTopN: 10000,
+
+        
+        
+
+        applyTopNKeywords() {
+            console.log(`[TopN] Applying top ${this.selectedTopN} keywords`);
+            // Save current for restore
+            this.lastAutoDomainKeywordsList = [...this.autoDomainKeywordsList];
+            // Truncate to Top N
+            this.autoDomainKeywordsList = this.allAutoDomainKeywordsList.slice(0, this.selectedTopN);
+            this._updateActiveSet();
+            this.syncActiveKeywordsToBackend();
+            // Persist selection
+            this.saveTopNToConfig(this.selectedTopN);
+              },
+
+        async saveTopNToConfig(topN) {
+            try {
+                console.log(`[Config] Saving TopN=${topN} to config`);
+                const response = await fetch('/update_topn_config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ topN })
                 });
+                const result = await response.json();
+                if (!result.success) {
+                    console.error("[Config] Failed to save TopN:", result.error);
+                } else {
+                    console.log("[Config] TopN saved successfully");
+                }
+            } catch (e) {
+                console.error("[Config] Error saving TopN to config:", e);
+            }
+              },
+
+            // === Toggle / Restore ===
+        toggleAutoKeywords() {
+            this.autoKeywordsEnabled = !this.autoKeywordsEnabled;
+            console.log("[AutoKeywords] Enabled:", this.autoKeywordsEnabled);
+
+            if (this.autoKeywordsEnabled) {
+                // Re-enable: restore or refetch
+                if (this.lastAutoDomainKeywordsList.length > 0) {
+                    this.autoDomainKeywordsList = [...this.lastAutoDomainKeywordsList];
+                    this._updateActiveSet();
+                    this.syncActiveKeywordsToBackend();
+                    this.showToast("Auto keywords enabled and restored.", "success");
+                } else {
+                    this.fetchAutoDomainKeywords().then(() => {
+                        this.showToast("Auto keywords enabled.", "success");
+                    });
+                }
+            } else {
+                // Disable: stash current then clear
+                this.lastAutoDomainKeywordsList = [...this.autoDomainKeywordsList];
+                this.autoDomainKeywordsList = [];
+                this._updateActiveSet();
+                this.syncActiveKeywordsToBackend();
+                this.showToast("Auto keywords disabled.", "info");
+            }
+              },
+
+
+        restoreAutoDomainKeywords() {
+            if (this.lastAutoDomainKeywordsList.length) {
+                console.log("[AutoKeywords] Restoring last list");
+                this.autoDomainKeywordsList = [...this.lastAutoDomainKeywordsList];
+                this._updateActiveSet();
+                this.syncActiveKeywordsToBackend();
+                this.showToast("Restored last auto keywords set.", "success");
+            } else {
+                console.log("[AutoKeywords] No last list; fetching from backend");
+                this.fetchAutoDomainKeywords().then(() => {
+                    if (this.allAutoDomainKeywordsList.length > 0) {
+                        this.showToast("Fetched keywords from backend.", "success");
+                    } else {
+                        this.showToast("No previous set to restore and none on backend.", "info");
+                    }
+                    console.log("Current list:", this.autoDomainKeywordsList);
+                    console.log("Last saved list:", this.lastAutoDomainKeywordsList);
+                });
+                }
             },
 
-            // === UTILITY METHODS ===
-            isLoading() {
-                const msg = this.statusMessage.toLowerCase();
-                return msg.includes('loading') || msg.includes('saving') ||
-                    msg.includes('creating') || msg.includes('removing') ||
-                    msg.includes('activating') || msg.includes('ingesting') ||
-                    msg.includes('uploading') || msg.includes('sending') ||
-                    msg.includes('replying') || msg.includes('applying');
+            _updateActiveSet() {
+                this.activeAutoDomainKeywordsSet = new Set(this.autoDomainKeywordsList);
             },
 
-            isLoadingChat() {
-                return this.isStreaming ||
-                    this.statusMessage === 'Sending...' ||
-                    this.statusMessage === 'Assistant is replying...';
-            },
-
-            formatTimestamp(isoString) {
-                if (!isoString) return '';
+            // === Backend Sync ===
+            async syncActiveKeywordsToBackend() {
                 try {
-                    return new Date(isoString).toLocaleString();
+                    console.log("Syncing keywords to backend:", Array.from(this.activeAutoDomainKeywordsSet));
+                    const response = await fetch('/update_auto_domain_keywords', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            keywords: Array.from(this.activeAutoDomainKeywordsSet)
+                        })
+                    });
+                    const result = await response.json();
+                    if (!result.success) {
+                        console.error("Backend sync failed:", result.error);
+                        throw new Error(result.error || "Unknown error");
+                    }
+                    console.log("Keywords synced successfully");
                 } catch (e) {
-                    return isoString;
+                    console.error("Sync error:", e);
+                    this.showToast(`Failed to update keywords: ${e.message}`, "error");
                 }
             },
 
-            scrollToBottom() {
-                this.$nextTick(() => {
-                    const el = this.$refs.chatHistoryContainer;
-                    if (el) el.scrollTop = el.scrollHeight;
-                });
+
+            // === UI Feedback ===
+            showToast(message, type = 'info', duration = 3000) {
+                this.toast.message = message;
+                this.toast.type = type;
+                this.toast.show = true;
+                clearTimeout(this.toast.timeout);
+                this.toast.timeout = setTimeout(() => this.toast.show = false, duration);
             },
+        
+
+    // === UTILITY METHODS ===
+    isLoading() {
+        const msg = this.statusMessage.toLowerCase();
+        return msg.includes('loading') || msg.includes('saving') ||
+            msg.includes('creating') || msg.includes('removing') ||
+            msg.includes('activating') || msg.includes('ingesting') ||
+            msg.includes('uploading') || msg.includes('sending') ||
+            msg.includes('replying') || msg.includes('applying');
+    },
 
 
-                    async saveConfig() {
-                        if (this.isLoading()) {
-                            console.warn('[Button Click] Save Config ignored, already loading:', this.statusMessage);
-                            if (this.showToast) this.showToast("Please wait for the current operation to finish.", "info");
-                            return false;
-                        }
+    isLoadingChat() {
+        return this.isStreaming ||
+            this.statusMessage === 'Sending...' ||
+            this.statusMessage === 'Assistant is replying...';
+    },
 
-                        console.log("Saving configuration via /save_config...");
-                        this.statusMessage = 'Saving Config...';
+    formatTimestamp(isoString) {
+        if (!isoString) return '';
+        try {
+            return new Date(isoString).toLocaleString();
+        } catch (e) {
+            return isoString;
+        }
+    },
 
-                        try {
-                            const response = await fetch('/save_config', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify(this.formConfig)
-                            });
+    scrollToBottom() {
+        this.$nextTick(() => {
+            const el = this.$refs.chatHistoryContainer;
+            if (el) el.scrollTop = el.scrollHeight;
+        });
+    },
 
-                            const result = await response.json();
+            data() {
+                return {
+                    isSavingTopN: false,
+                    // …other state…
+                }
+            },
+            
+            methods: {
+                async applyTopNKeywords() {
+                    if (this.isSavingTopN) return;        // drop any extra clicks
+                    this.isSavingTopN = true;
+                    try {
+                        await this.saveTopNToConfig();      // your existing save method
+                        this.showToast("Top-N saved", "success");
+                    } catch (e) {
+                        this.showToast(`Failed to save Top-N: ${e}`, "error");
+                    } finally {
+                        this.isSavingTopN = false;
+                    }
+                },
+                // …
+            },        
 
-                            if (!response.ok || !result.success) {
-                                const errorMsg = result.error || result.message || `HTTP error ${response.status}`;
-                                throw new Error(errorMsg);
-                            }
+        async saveConfig() {
+            // Prevent double‐submit
+            if (this.isLoading()) {
+                console.warn('[Button Click] Save Config ignored, already loading:', this.statusMessage);
+                if (this.showToast) this.showToast("Please wait for the current operation to finish.", "info");
+                return false;
+            }
+            console.log(
+                "formConfig structure:",
+            Object.keys(this.formConfig),                // top-level sections
+                "\nretrieval keys:", Object.keys(this.formConfig.retrieval),
+                "\nfull config:\n", JSON.stringify(this.formConfig, null, 2),
+            )
+            console.log("Saving configuration via /save_config...");
+            this.statusMessage = 'Saving Config...';
 
-                            if (result.config) {
-                                console.log("[saveConfig] Merging validated config from backend");
-                                this.deepMerge(this.formConfig, result.config);
-                            }
+            // ── 1) Sync doc‐freq mode & compute the one true min_doc_freq ──
+            const dke = this.formConfig.domain_keyword_extraction;
+            // Persist the chosen mode
+            dke.min_doc_freq_mode = this.docFreqMode;
 
-                            this.showToast(result.message || 'Configuration saved successfully!', 'success');
-                            this._markConfigClean();
-                            return true;
+            // Compute canonical min_doc_freq
+            if (this.docFreqMode === 'absolute') {
+                // Use the absolute input (or fall back to existing min_doc_freq)
+                dke.min_doc_freq = dke.min_doc_freq_abs ?? dke.min_doc_freq;
+            } else {
+                // Fraction mode → compute count from totalDocs
+                dke.min_doc_freq = (this.totalDocs && dke.min_doc_freq_frac != null)
+                    ? Math.ceil(dke.min_doc_freq_frac * this.totalDocs)
+                    : dke.min_doc_freq;
+            }
 
-                        } catch (error) {
-                            console.error('Configuration Save Error:', error);
-                            this.statusMessage = 'Save Error';
-                            this.showToast(`Error saving config: ${error.message}`, 'error');
-                            return false;
-                        } finally {
-                            if (this.statusMessage === 'Saving Config...') {
-                                this.statusMessage = 'Idle';
-                            } else if (this.statusMessage === 'Save Error') {
-                                setTimeout(() => {
-                                    if (this.statusMessage === 'Save Error') this.statusMessage = 'Idle';
-                                }, 2000);
-                            }
-                        }
-                    },
+            // (Optional) Remove UI‐only helpers so backend only sees the one field
+            //delete dke.min_doc_freq_abs;
+            //delete dke.min_doc_freq_frac;
+
+            try {
+                // ── 2) POST to backend ──
+                const response = await fetch('/save_config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(this.formConfig)
+                });
+                const result = await response.json();
+
+                // 3) Error handling
+                if (!response.ok || !result.success) {
+                    const errorMsg = result.error || result.message || `HTTP error ${response.status}`;
+                    throw new Error(errorMsg);
+                }
+
+                // 4) Merge back any validated defaults from server
+                if (result.config) {
+                    console.log("[saveConfig] Merging validated config from backend");
+                    this.deepMerge(this.formConfig, result.config);
+                }
+
+                // 5) Notify & mark clean
+                this.showToast(result.message || 'Configuration saved successfully!', 'success');
+                this._markConfigClean();
+                return true;
+
+            } catch (error) {
+                console.error('Configuration Save Error:', error);
+                this.statusMessage = 'Save Error';
+                this.showToast(`Error saving config: ${error.message}`, 'error');
+                return false;
+
+            } finally {
+                // Reset status
+                if (this.statusMessage === 'Saving Config...') {
+                    this.statusMessage = 'Idle';
+                } else if (this.statusMessage === 'Save Error') {
+                    setTimeout(() => {
+                        if (this.statusMessage === 'Save Error') this.statusMessage = 'Idle';
+                    }, 2000);
+                }
+            }
+        },
+              
+
 
                     // === INITIALIZATION METHOD (Called manually below) ===
-                    async loadInitialData() {
-                        if (this.initCalled) {
-                            console.warn("[Init Method] init() called again, skipping.");
-                            return;
-                        }
-                        this.initCalled = true;
-                        console.log("[Init Method] init() explicitly called (First Run).");
-                        this.statusMessage = 'Loading UI data...';
-                        try {
-                            console.log("[Init Method] Starting API calls in Promise.all...");
-                            // Fetch initial data using Promise.all
-                            await Promise.all([
-                                (async () => {
-                                    console.log("[Init API] Starting loadInitialConfig...");
-                                    try {
-                                        await this.loadInitialConfig();
-                                        console.log("[Init API] Finished loadInitialConfig.");
-                                    }
-                                    catch (e) {
-                                        console.error("[Init API] loadInitialConfig FAILED:", e);
-                                        throw e;
-                                    }
-                                })(),
-                                (async () => {
-                                    console.log("[Init API] Starting checkApiKeys...");
-                                    try {
-                                        await this.checkApiKeys();
-                                        console.log("[Init API] Finished checkApiKeys.");
-                                    }
-                                    catch (e) {
-                                        console.error("[Init API] checkApiKeys FAILED:", e);
-                                    }
-                                })(),
-                                (async () => {
-                                    console.log("[Init API] Starting fetchPresets...");
-                                    try {
-                                        await this.fetchPresets();
-                                        console.log("[Init API] Finished fetchPresets.");
-                                    }
-                                    catch (e) {
-                                        console.error("[Init API] fetchPresets FAILED:", e);
-                                    }
-                                })(),
-                                (async () => {
-                                    console.log("[Init API] Starting fetchWeaviateInstances...");
-                                    try {
-                                        await this.fetchWeaviateInstances();
-                                        console.log("[Init API] Finished fetchWeaviateInstances.");
-                                    }
-                                    catch (e) {
-                                        console.error("[Init API] fetchWeaviateInstances FAILED:", e);
-                                    }
-                                })(),
-                                (async () => {
-                                    console.log("[Init API] Starting fetchSavedChats...");
-                                    try {
-                                        await this.fetchSavedChats();
-                                        console.log("[Init API] Finished fetchSavedChats.");
-                                    }
-                                    catch (e) {
-                                        console.error("[Init API] fetchSavedChats FAILED:", e);
-                                    }
-                                })(),
-                                (async () => {
-                                    console.log("[Init API] Starting fetchAutoDomainKeywords...");
-                                    try {
-                                        await this.fetchAutoDomainKeywords();
-                                        console.log("[Init API] Finished fetchAutoDomainKeywords.");
-                                    }
-                                    catch (e) {
-                                        console.error("[Init API] fetchAutoDomainKeywords FAILED:", e);
-                                    }
-                                })()
-                            ]);
-
-                            console.log("[Init Method] Promise.all finished.");
-
-                            // Add welcome message
-                            if (this.chatHistory.length === 0) {
-                                console.log("[Init Method] Adding welcome message.");
-                                this.chatHistory.push(
-                                    {
-                                        role: 'assistant',
-                                        text: 'Hello! Ask me anything.',
-                                        timestamp: new Date().toISOString()
-                                    });
+            async loadInitialData() {
+                console.log("[Init Method] loadInitialData() called.");
+                this.statusMessage = 'Loading UI data...';
+                try {
+                    console.log("[Init Method] Starting API calls in Promise.all...");
+                    await Promise.all([
+                        (async () => {
+                            console.log("[Init API] Starting loadInitialConfig...");
+                            try {
+                                await this.loadInitialConfig();
+                                console.log("[Init API] Finished loadInitialConfig.");
+                            } catch (e) {
+                                console.error("[Init API] loadInitialConfig FAILED:", e);
+                                throw e;
                             }
-                            else {
-                                console.log("[Init Method] Skipping welcome message (history already present).");
+                        })(),
+                        (async () => {
+                            console.log("[Init API] Fetching document count...");
+                            try {
+                                const response = await fetch('/get-doc-count');
+                                const data = await response.json();
+                                this.totalDocs = data.total_docs;
+                                console.log("[Init API] Document count loaded:", this.totalDocs);
+                            } catch (e) {
+                                console.warn("[Init API] Could not fetch doc count", e);
                             }
+                        })(),
+                        (async () => {
+                            console.log("[Init API] Starting checkApiKeys...");
+                            try {
+                                await this.checkApiKeys();
+                                console.log("[Init API] Finished checkApiKeys.");
+                            } catch (e) {
+                                console.error("[Init API] checkApiKeys FAILED:", e);
+                            }
+                        })(),
+                        (async () => {
+                            console.log("[Init API] Starting fetchPresets...");
+                            try {
+                                await this.fetchPresets();
+                                console.log("[Init API] Finished fetchPresets.");
+                            } catch (e) {
+                                console.error("[Init API] fetchPresets FAILED:", e);
+                            }
+                        })(),
+                        (async () => {
+                            console.log("[Init API] Starting fetchWeaviateInstances...");
+                            try {
+                                await this.fetchWeaviateInstances();
+                                console.log("[Init API] Finished fetchWeaviateInstances.");
+                            } catch (e) {
+                                console.error("[Init API] fetchWeaviateInstances FAILED:", e);
+                            }
+                        })(),
+                        (async () => {
+                            console.log("[Init API] Starting fetchSavedChats...");
+                            try {
+                                await this.fetchSavedChats();
+                                console.log("[Init API] Finished fetchSavedChats.");
+                            } catch (e) {
+                                console.error("[Init API] fetchSavedChats FAILED:", e);
+                            }
+                        })(),
+                        (async () => {
+                            console.log("[Init API] Starting fetchAutoDomainKeywords...");
+                            try {
+                                await this.fetchAutoDomainKeywords();
+                                console.log("[Init API] Finished fetchAutoDomainKeywords.");
+                            } catch (e) {
+                                console.error("[Init API] fetchAutoDomainKeywords FAILED:", e);
+                            }
+                        })(),
+                    ]);
 
-                            this.statusMessage = 'Idle';
-                            console.log("[Init Method] init() finished successfully.");
-                            this.scrollToBottom();
-                            // Focus input after UI updates
-                            this.$nextTick(() => {
-                                console.log("[Init Method] Focusing input area.");
-                                this.$refs.inputArea?.focus();
-                            });
+                    console.log("[Init Method] Promise.all finished.");
 
-                        }
-                        catch (error) {
-                            // This catches errors specifically re-thrown from critical API calls (like loadInitialConfig)
-                            console.error("[Init Method] CRITICAL Error during init:", error);
-                            this.statusMessage = 'Initialization Error!';
-                            this.showToast(`Initialization failed: ${error.message}. Check console & backend.`,
-                                'error', 10000);
-                        }
-                    }, // End of loadInitialData() method
+                    if (this.chatHistory.length === 0) {
+                        console.log("[Init Method] Adding welcome message.");
+                        this.chatHistory.push({
+                            role: 'assistant',
+                            text: 'Hello! Ask me anything.',
+                            timestamp: new Date().toISOString()
+                        });
+                    } else {
+                        console.log("[Init Method] Skipping welcome message (history already present).");
+                    }
+
+                    this.statusMessage = 'Idle';
+                    console.log("[Init Method] init() finished successfully.");
+                    this.scrollToBottom();
+                    this.$nextTick(() => {
+                        console.log("[Init Method] Focusing input area.");
+                        this.$refs.inputArea?.focus();
+                    });
+
+                } catch (error) {
+                    console.error("[Init Method] CRITICAL Error during init:", error);
+                    this.statusMessage = 'Initialization Error!';
+                    this.showToast(`Initialization failed: ${error.message}. Check console & backend.`, 'error', 10000);
+                }
+            },
+
 
 
                     // ADD THIS METHOD: Called by the button click in index.html
@@ -351,10 +608,9 @@ document.addEventListener('alpine:init', () => {
                         this.statusMessage = 'Extracting keywords...'; // Set loading status
 
                         // Get references to UI elements (consider using x-ref in HTML for cleaner Alpine integration later)
+                        const formElement = document.getElementById('keywordBuilderForm');
                         const keywordResultsDiv = document.getElementById('keywordResults');
                         const keywordListDiv = document.getElementById('keywordList');
-                        const formElement = document.getElementById(
-                            'keywordBuilderForm'); // Assuming form has this ID
 
                         if (!formElement || !keywordResultsDiv || !keywordListDiv) {
                             console.error(
@@ -379,10 +635,14 @@ document.addEventListener('alpine:init', () => {
                                 if (key === 'no_pos_filter') {
                                     jsonData[key] = true; // Checkbox value
                                 }
-                                else if (key === 'diversity') {
+                                else if (key === 'extraction_diversity') {
                                     jsonData[key] = parseFloat(value);
                                 }
-                                else if (['top_n_per_doc', 'final_top_n', 'min_doc_freq'].includes(key)) {
+                                else if (key === 'min_doc_freq_abs') {
+                                    jsonData.min_doc_freq_abs = parseInt(value, 10) || null;
+                                }
+                                else if (key === 'min_doc_freq_frac') {
+                                    jsonData.min_doc_freq_frac = parseFloat(value) || null;
                                     // Ensure conversion to number, handle potential NaN
                                     const numValue = parseInt(value, 10);
                                     jsonData[key] = isNaN(numValue) ? null :
@@ -531,12 +791,10 @@ document.addEventListener('alpine:init', () => {
                     // Helper to reset dirty state (called after successful save/load)
                     _markConfigClean() {
                         try {
-                            this.savedConfig = JSON.parse(JSON.stringify(this
-                                .formConfig)); // Deep copy current state
+                            this.savedConfig = JSON.parse(JSON.stringify(this.formConfig)); // Deep copy current state
                             this.configDirtyExplicitlySet = false; // Reset explicit flag
                             console.log("[Dirty State] Marked config as clean.");
-                        }
-                        catch (e) {
+                        } catch (e) {
                             console.error("[Dirty State] Error marking config clean:", e);
                             // savedConfig might be invalid now, maybe reload?
                             this.savedConfig = null;
@@ -544,71 +802,63 @@ document.addEventListener('alpine:init', () => {
                     },
 
                     // Helper for actions requiring config save confirmation
-            _confirmUnsavedChanges(actionName, actionFunction) {
-                console.log(`[Confirm Action Check] Action: ${actionName}, Config Dirty: ${this.configIsDirty()}`);
-
-                if (this.configIsDirty()) {
-                    this.requireConfirmation({
-                        title: 'Unsaved Configuration',
-                        message: `You have unsaved configuration changes. Save them before starting '${actionName}'?`,
-                        confirmButtonClass: 'bg-green-600 hover:bg-green-700', // Green for Save & Proceed
-                        onConfirm: async () => {
-                            console.log(`[Confirm Action] User chose Save & Proceed for ${actionName}.`);
-
-                            try {
-                                // 🚫 DO NOT set statusMessage manually here — let saveConfig handle it.
-                                const saveSuccess = await this.saveConfig(); // Save config and wait
-
-                                if (saveSuccess) {
-                                    console.log(`[Confirm Action] Config saved. Proceeding with ${actionName}...`);
-                                    actionFunction(); // Proceed with intended action
-                                } else {
-                                    console.warn(`[Confirm Action] Config save failed. Aborting ${actionName}.`);
-                                    this.statusMessage = 'Save Failed';
-                                    setTimeout(() => {
-                                        if (this.statusMessage === 'Save Failed') this.statusMessage = 'Idle';
-                                    }, 2000);
-                                }
-                            } catch (error) {
-                                console.error(`[Confirm Action] Error during save-before-action for ${actionName}:`, error);
-                                this.statusMessage = 'Save Error';
-                                setTimeout(() => {
-                                    if (this.statusMessage === 'Save Error') this.statusMessage = 'Idle';
-                                }, 2000);
-                            }
-                        },
-                        onCancel: () => {
-                            console.log(`[Confirm Action] User cancelled ${actionName} due to unsaved changes.`);
-                            if (this.showToast) this.showToast(`Action '${actionName}' cancelled.`, 'info');
-
-                            // Reset status if left hanging
-                            if (this.isLoading() && !this.isLoadingChat()) this.statusMessage = 'Idle';
+        _confirmUnsavedChanges(actionName, actionFunction) {
+            console.log(`[Confirm Action Check] Action: ${actionName}, Config Dirty: ${this.configIsDirty()}`);
+            if (this.configIsDirty()) {
+                this.requireConfirmation({
+                    title: 'Unsaved Configuration',
+                    message: `You have unsaved configuration changes. Save them before starting '${actionName}'?`,
+                    confirmButtonClass: 'bg-green-600 hover:bg-green-700',
+                    onConfirm: async () => {
+                        console.log(`[Confirm Action] User chose Save & Proceed for ${actionName}.`);
+                        const saveSuccess = await this.saveConfig();
+                        if (saveSuccess) {
+                            console.log(`[Confirm Action] Config saved. Proceeding with ${actionName}...`);
+                            actionFunction();
+                        } else {
+                            console.warn(`[Confirm Action] Config save failed. Aborting ${actionName}.`);
+                            this.statusMessage = 'Save Failed';
+                            setTimeout(() => {
+                                if (this.statusMessage === 'Save Failed') this.statusMessage = 'Idle';
+                            }, 2000);
                         }
-                    });
-                } else {
-                    console.log(`[Confirm Action Check] Config clean. Proceeding directly with ${actionName}.`);
-                    actionFunction();
-                }
-            },
+                    },
+                    onCancel: () => {
+                        console.log(`[Confirm Action] User cancelled ${actionName}.`);
+                        if (this.showToast) this.showToast(`Action '${actionName}' cancelled.`, 'info');
+                        // Reset status if needed
+                        if (this.isLoading() && !this.isLoadingChat()) this.statusMessage = 'Idle';
+                    }
+                });
+            } else {
+                console.log(`[Confirm Action Check] Config clean. Proceeding directly with ${actionName}.`);
+                actionFunction();
+            }
+                      },
 
-                    adjustTextareaHeight(el) {
+        adjustTextareaHeight(el) {
                         if (!el) el = this.$refs.inputArea;
                         if (!el) return;
                         const maxH = 150;
                         el.style.height = 'auto';
                         el.style.height = `${Math.min(el.scrollHeight, maxH)}px`;
                     },
-                    renderMarkdown(text) {
-                        if (!text) return '';
-                        // Basic: escape HTML, convert newlines to <br>, basic bold/italic
-                        let safeText = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-                        safeText = safeText.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>'); // Bold
-                        safeText = safeText.replace(/\*(.*?)\*/g, '<em>$1</em>'); // Italic
-                        safeText = safeText.replace(/`([^`]+)`/g, '<code>$1</code>'); // Inline code
-                        safeText = safeText.replace(/\n/g, '<br>'); // Newlines
-                        // Add <pre><code> for blocks if needed, requires more complex regex or library
-                        return safeText;
-                    }, // Make sure comma is present if other methods follow
+
+            safeRenderMarkdown(text) {
+                if (!text) return '';
+                // Fallback: if libs aren’t available, HTML-escape the text
+                if (!window.marked || !window.DOMPurify) {
+                    return text
+                        .replace(/&/g, '&amp;')
+                        .replace(/</g, '&lt;')
+                        .replace(/>/g, '&gt;')
+                        .replace(/\n/g, '<br>');
+                }
+                // 1) Full Markdown → HTML
+                const html = window.marked.parse(text);
+                // 2) Sanitize HTML
+                return DOMPurify.sanitize(html);
+            },
 
                     showToast(message, type = 'info', duration = 3000) {
                         console.log(`[Toast (${type})] ${message}`);
@@ -719,6 +969,23 @@ document.addEventListener('alpine:init', () => {
                         this.filesToUpload = Array.from(event.target.files || []);
                         this.selectedFileNames = this.filesToUpload.map(f => f.name);
                     },
+
+
+                    // Helper: is a keyword active?
+                    isKeywordActive(kw) {
+                        return this.activeAutoDomainKeywordsSet.has(kw);
+                    },
+
+                    // Toggle keyword active/inactive
+                    toggleKeyword(kw) {
+                        if (this.activeAutoDomainKeywordsSet.has(kw)) {
+                            this.activeAutoDomainKeywordsSet.delete(kw);
+                        } else {
+                            this.activeAutoDomainKeywordsSet.add(kw);
+                        }
+                        this.syncActiveKeywordsToBackend();
+                    },
+
 
                     // === ASYNC ACTIONS (Backend Interaction - Implementations unchanged, ensure endpoints exist) ===
                     // --- API Keys ---
@@ -835,6 +1102,7 @@ document.addEventListener('alpine:init', () => {
                         }
                     },
 
+            
                     // Uses confirmation modal
                     removeWeaviateInstanceWithConfirmation(instanceName) {
                         if (!instanceName || instanceName === "Default (from config)") {
@@ -900,64 +1168,79 @@ document.addEventListener('alpine:init', () => {
                             });
                     },
 
-                    // Called by the 'Activate' button
-                    async activateRAG(instanceName) {
-                        if (!instanceName || this.isLoading()) {
-                            if (!instanceName) console.warn('[Button Click] Activate ignored, no instance name.');
-                            else console.warn('[Button Click] Activate ignored, already loading:', this
-                                .statusMessage);
-                            return;
+            // Called by the 'Activate' button
+            async activateRAG(instanceName) {
+                if (!instanceName || this.isLoading()) {
+                    if (!instanceName) console.warn('[Button Click] Activate ignored, no instance name.');
+                    else console.warn('[Button Click] Activate ignored, already loading:', this.statusMessage);
+                    return;
+                }
+
+                console.log(`[API Call] Activating instance: ${instanceName}`);
+                this.statusMessage = `Activating ${instanceName}...`;
+
+                try {
+                    const response = await fetch('/select_weaviate_instance', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ instance_name: instanceName })
+                    });
+                    const result = await response.json();
+                    if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+
+                    // show success toast
+                    if (this.showToast) {
+                        this.showToast(
+                            result.message || `Instance '${instanceName}' activated.`,
+                            'success'
+                        );
+                    }
+
+                    // reload core config (so your input bindings, endpoint, etc. update)
+                    await this.loadInitialConfig();
+
+                    // **in‐place** flip the active flag locally
+                    this.weaviateInstances.forEach(inst => {
+                        inst.active = (inst.name === instanceName);
+                    });
+
+                    this.statusMessage = 'Idle';
+                }
+                catch (error) {
+                    console.error('[API Error] Activate Instance FAILED:', error);
+                    this.statusMessage = 'Activation Error';
+                    if (this.showToast) {
+                        this.showToast(
+                            `Error activating instance: ${error.message}`,
+                            'error'
+                        );
+                    }
+                    setTimeout(() => {
+                        if (
+                            this.statusMessage === `Activating ${instanceName}...` ||
+                            this.statusMessage === 'Activation Error'
+                        ) {
+                            this.statusMessage = 'Idle';
                         }
-                        console.log(`[API Call] Activating instance: ${instanceName}`);
-                        this.statusMessage = `Activating ${instanceName}...`;
-                        try {
-                            const response = await fetch('/select_weaviate_instance',
-                                { // Ensure Flask POST endpoint exists
-                                    method: 'POST',
-                                    headers:
-                                    {
-                                        'Content-Type': 'application/json'
-                                    },
-                                    body: JSON.stringify(
-                                        {
-                                            instance_name: instanceName
-                                        })
-                                });
-                            const result = await response.json();
-                            if (!response.ok) throw new Error(result.error ||
-                                `HTTP error! Status: ${response.status}`);
+                    }, 3000);
+                }
+            },
 
-                            if (this.showToast) this.showToast(result.message ||
-                                `Instance '${instanceName}' activated. Pipeline re-initializing...`, 'success');
-
-                            // Refresh config (to get new host/port) and instance list (to show new active state)
-                            await this.loadInitialConfig();
-                            await this.fetchWeaviateInstances();
-
-                            this.statusMessage = 'Idle'; // Set AFTER successful refresh
-
-                        }
-                        catch (error) {
-                            console.error('[API Error] Activate Instance FAILED:', error);
-                            this.statusMessage = 'Activation Error';
-                            if (this.showToast) this.showToast(`Error activating instance: ${error.message}`,
-                                'error');
-                            setTimeout(() => {
-                                if (this.statusMessage === `Activating ${instanceName}...` || this
-                                    .statusMessage === 'Activation Error') this.statusMessage = 'Idle';
-                            }, 3000);
-                        }
-                    },
 
                     // --- Chat Functionality ---
 
                     async sendMessage() {
                         // Use the confirmation helper to check for unsaved changes before proceeding
                         // It will call _performSendMessage only if config is clean or after successful save
-                        this._confirmUnsavedChanges('Send Message', this._performSendMessage.bind(this));
+                     //   this._confirmUnsavedChanges('Send Message', this._performSendMessage.bind(this));
+                     
+                            console.log('[Debug] ⚡️ sendMessage() → directly invoking _performSendMessage');
+                            await this._performSendMessage();
+                          
                     },
 
                     async _performSendMessage() { // Contains the original message sending logic
+                        console.log('[Debug] 🔥 _performSendMessage entered; userInput=', this.userInput);
                         const queryToSend = this.userInput.trim();
                         if (!queryToSend) {
                             // Use showToast if available (assuming it's defined elsewhere in your component)
@@ -1074,7 +1357,17 @@ document.addEventListener('alpine:init', () => {
                             });
                         }
                     }, // End of _performSendMessage
-
+                    
+                     
+                    // Scroll chat window to bottom after any append
+                     
+                     scrollToBottom() {
+                     this.$nextTick(() => {
+                     const win = this.$root.querySelector('#chat-window');
+                     win.scrollTop = win.scrollHeight;
+                     });
+                    },
+                    
                     // --- Saved Chats ---
                     async fetchSavedChats() {
                         console.log("[API Call] Fetching saved chats from /list_chats...");
@@ -1340,23 +1633,31 @@ document.addEventListener('alpine:init', () => {
                                 throw new Error(errorDetail); // Throw to be caught by the catch block
                             }
 
+                            // --- Response Handling ---
+                            if (result.status === 'centroid_missing') {
+                                // Show popup for user to enter/select centroid path
+                                let newPath = prompt(result.message + "\nEnter new centroid file path (or select):", this.formConfig.paths.DOMAIN_CENTROID_PATH);
+                                if (newPath) {
+                                    await this._createCentroidFile(newPath, this.formConfig.paths.DOCUMENT_DIR);
+                                    // Optionally, retry ingestion after centroid creation:
+                                    await this._performStartIngestion();
+                                }
+                                return; // Don't proceed further
+                            }
+
                             // --- Success Path ---
-                            // Process successful response, include stats in the message if available
                             let successMsg = result.message || 'Full ingestion finished.';
                             if (result.stats) {
-                                // Construct a more detailed message using stats
                                 const stats = result.stats;
                                 const processed = stats.processed_chunks !== undefined ? stats.processed_chunks :
-                                    stats.processed_files !== undefined ? stats.processed_files :
-                                        'N/A'; // Adapt based on what your script returns
+                                    stats.processed_files !== undefined ? stats.processed_files : 'N/A';
                                 const inserted = stats.inserted !== undefined ? stats.inserted : 'N/A';
                                 const errors = stats.errors !== undefined ? stats.errors : 0;
                                 successMsg +=
                                     ` (Processed: ${processed}, Inserted: ${inserted}, Errors: ${errors})`;
                             }
-                            if (this.showToast) this.showToast(successMsg, 'success',
-                                8000); // Show success toast for longer
-                            this.statusMessage = 'Ingestion Complete'; // Indicate completion
+                            if (this.showToast) this.showToast(successMsg, 'success', 8000);
+                            this.statusMessage = 'Ingestion Complete';
 
                         }
                         catch (error) {
@@ -1382,224 +1683,291 @@ document.addEventListener('alpine:init', () => {
                             // --- END Finally Block ---
                         }
                     }, // End of _performStartIngestion
+                    
 
-
-                    // --- File Handling & Ingestion ---
-
-                    async startIncrementalIngestion() {
-                        console.log(
-                            '[Button Click] Start Incremental Ingestion clicked. Checking for unsaved changes...'
+                    // ← Public method that your button should call
+                     startIncrementalIngestion() {
+                    // Pass both a name and a callback into the confirm helper
+                        this._confirmUnsavedChanges(
+                                'Incremental Ingestion',
+                                () => this._performStartIncrementalIngestion()
                         );
-                        // Use the confirmation helper to check for unsaved changes before proceeding
-                        // It will call _performStartIncrementalIngestion only if config is clean or after successful save
-                        this._confirmUnsavedChanges('Incremental Ingestion', this
-                            ._performStartIncrementalIngestion.bind(this));
-                    },
+                         },
+          
+        // 4) Your existing centroid-creation helper
+        async _createCentroidFile(centroidPath, dataFolder) {
+            try {
+                const response = await fetch('/create_centroid', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams({
+                        centroid_path: centroidPath,
+                        data_folder: dataFolder
+                    })
+                });
+                const result = await response.json();
+                if (result.status === 'created') {
+                    alert("Centroid file created successfully. Starting ingestion...");
+                    await this._performStartIncrementalIngestion();
+                } else {
+                    alert("Failed to create centroid file: " + result.message);
+                }
+            } catch (err) {
+                alert("AJAX error: " + err);
+            }
+        },
+            
+        // 3) Your existing, battle-tested ingestion logic
+        async _performStartIncrementalIngestion() {
+            // Prevent double execution
+            if (this.isLoading()) {
+                console.warn('[Button Click - Core] Incremental Ingestion ignored, already loading:', this.statusMessage);
+                return;
+            }
 
-                    async _performStartIncrementalIngestion() { // Contains the original incremental ingestion logic
-                        // Check loading state *inside* the core logic as well
-                        if (this.isLoading()) {
-                            console.warn('[Button Click - Core] Incremental Ingestion ignored, already loading:',
-                                this.statusMessage);
-                            // if (this.showToast) this.showToast("Operation already in progress.", "info"); // Optional toast
-                            return;
-                        }
+            console.log("[API Call] Starting incremental ingestion via /ingest_block...");
+            this.statusMessage = 'Starting Incremental Ingestion...';
 
-                        console.log("[API Call] Starting incremental ingestion via /ingest_block...");
-                        this.statusMessage = 'Starting Incremental Ingestion...'; // User feedback
+            // Get config values
+            const dataFolder = this.formConfig.paths.DOCUMENT_DIR;
+            const centroidPath = this.formConfig.paths.DOMAIN_CENTROID_PATH;
+            const centroidUpdateMode = this.formConfig.ingestion.CENTROID_UPDATE_MODE; // 'always', 'never', or 'auto'
 
-                        try {
-                            // Call the Flask backend endpoint for incremental ingestion
-                            const response = await fetch('/ingest_block',
-                                {
-                                    method: 'POST'
-                                }); // Ensure Flask endpoint exists
+            try {
+                // Build params safely
+                const params = new URLSearchParams();
+                params.append('data_folder', dataFolder);
+                params.append('centroid_path', centroidPath);
+                params.append('centroid_update_mode', centroidUpdateMode);
+                const rawThreshold = this.formConfig.centroidAutoThreshold;
+                const thresholdNum = typeof rawThreshold === 'number'
+                    ? rawThreshold
+                    : parseFloat(rawThreshold);
+                params.append(
+                    'centroid_auto_threshold',
+                    (Number.isFinite(thresholdNum) ? thresholdNum : 0.05).toString()
+                );
 
-                            // Always try to parse the response
-                            const result = await response.json();
+                const response = await fetch('/ingest_block', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: params.toString()
+                });
 
-                            // Check for HTTP errors first
-                            if (!response.ok) {
-                                let errorDetail = result.error || `HTTP error! Status: ${response.status}`;
-                                if (result.traceback) console.error("Ingestion Traceback:\n", result.traceback);
-                                throw new Error(errorDetail); // Throw to be caught by the catch block
+                const result = await response.json();
+
+                // Handle centroid missing
+                if (result.status === 'centroid_missing') {
+                    const newPath = prompt(
+                        result.message + "\nEnter new centroid file path (or select):",
+                        centroidPath
+                    );
+                    if (newPath) {
+                        await this._createCentroidFile(newPath, dataFolder);
+                        await this._performStartIncrementalIngestion();
+                    }
+                    return;
+                }
+
+                // HTTP errors
+                if (!response.ok) {
+                    const errDetail = result.error || `HTTP error! Status: ${response.status}`;
+                    if (result.traceback) console.error("Ingestion Traceback:\n", result.traceback);
+                    throw new Error(errDetail);
+                }
+
+                // Success: show stats if present
+                let successMsg = result.message || 'Incremental ingestion finished.';
+                if (result.stats) {
+                    const { processed_files, processed_chunks, inserted, errors } = result.stats;
+                    const processed = processed_files ?? processed_chunks ?? 'N/A';
+                    successMsg += ` (Processed: ${processed}, Inserted: ${inserted ?? 'N/A'}, Errors: ${errors ?? 0})`;
+                }
+                this.showToast?.(successMsg, 'success', 6000);
+                this.statusMessage = 'Ingestion Complete';
+
+            } catch (error) {
+                console.error('[API Error] Start Incremental Ingestion FAILED:', error);
+                this.statusMessage = 'Ingestion Error';
+                this.showToast?.(`Incremental ingestion failed: ${error.message}`, 'error', 10000);
+
+            } finally {
+                setTimeout(() => {
+                    if (
+                        this.statusMessage === 'Starting Incremental Ingestion...' ||
+                        this.statusMessage === 'Ingestion Complete' ||
+                        this.statusMessage === 'Ingestion Error'
+                    ) {
+                        this.statusMessage = 'Idle';
+                    }
+                }, 4000);
+            }
+      },
+
+
+        async loadInitialConfig() {
+            console.log("Fetching initial config from /get_config...");
+            try {
+                const response = await fetch('/get_config');
+                if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                const loadedConfig = await response.json();
+
+                // Helper for safe array conversion
+                const ensureArray = (value) => {
+                    if (Array.isArray(value)) return value;
+                    if (typeof value === 'string') return value.split(',').map(s => s.trim());
+                    return [];
+                };
+
+                // Keys in env/document that we want to merge rather than overwrite
+                const MERGE_ARRAY_KEYS = [
+                    'FILE_TYPES',
+                    'DOMAIN_KEYWORDS',
+                    'AUTO_DOMAIN_KEYWORDS',
+                    'USER_ADDED_KEYWORDS'
+                ];
+                const MERGE_KEYS = [...MERGE_ARRAY_KEYS, 'SELECTED_N_TOP'];
+
+                // 1) Merge top-level sections
+                for (const section in loadedConfig) {
+                    if (!Object.hasOwn(loadedConfig, section)) continue;
+                    const src = loadedConfig[section];
+                    const dst = this.formConfig[section];
+
+                    // a) both arrays → replace
+                    if (Array.isArray(dst) && Array.isArray(src)) {
+                        this.formConfig[section] = [...src];
+                        continue;
+                    }
+
+                    // b) both plain objects → deep merge
+                    if (
+                        dst && typeof dst === 'object' && !Array.isArray(dst) &&
+                        src && typeof src === 'object' && !Array.isArray(src)
+                    ) {
+                        this.deepMerge(dst, src);
+                        continue;
+                    }
+
+                    // c) primitive or type mismatch → warn then assign
+                    if (typeof dst !== typeof src) {
+                        console.warn(
+                            `Section ${section} type mismatch: Frontend=${typeof dst}, Backend=${typeof src}`
+                        );
+                    }
+                    // d) special merge for env/document
+                    if (
+                        (section === 'env' || section === 'document') &&
+                        Object.keys(src).some(key => MERGE_KEYS.includes(key))
+                    ) {
+                        for (const key in src) {
+                            if (MERGE_ARRAY_KEYS.includes(key)) {
+                                this.formConfig[section][key] = ensureArray(src[key]);
+                            } else {
+                                this.formConfig[section][key] = src[key];
                             }
-
-                            // --- Success Path ---
-                            // Process successful response, include stats if available
-                            let successMsg = result.message || 'Incremental ingestion finished.';
-                            if (result.stats) { // Check if stats exist in the result
-                                const stats = result.stats;
-                                // Adapt based on what your incremental script actually returns in stats
-                                const processed = stats.processed_files !== undefined ? stats.processed_files :
-                                    stats.processed_chunks !== undefined ? stats.processed_chunks : 'N/A';
-                                const inserted = stats.inserted !== undefined ? stats.inserted : 'N/A';
-                                const errors = stats.errors !== undefined ? stats.errors : 0;
-                                successMsg +=
-                                    ` (Processed: ${processed}, Inserted: ${inserted}, Errors: ${errors})`;
-                            }
-                            if (this.showToast) this.showToast(successMsg, 'success',
-                                6000); // Slightly shorter toast than full
-                            this.statusMessage = 'Ingestion Complete'; // Indicate completion
-
                         }
-                        catch (error) {
-                            // --- Error Path ---
-                            console.error('[API Error] Start Incremental Ingestion FAILED:', error);
-                            this.statusMessage = 'Ingestion Error'; // Set error status
-                            // Show detailed error toast
-                            if (this.showToast) this.showToast(`Incremental ingestion failed: ${error.message}`,
-                                'error', 10000);
+                    } else {
+                        // e) replace whole section
+                        this.formConfig[section] = src;
+                    }
+                }
 
-                        }
-                        finally {
-                            // --- Finally Block ---
-                            // Reset status after a delay, unless another operation started
-                            setTimeout(() => {
-                                if (this.statusMessage === 'Starting Incremental Ingestion...' || this
-                                    .statusMessage === 'Ingestion Complete' || this.statusMessage ===
-                                    'Ingestion Error') {
-                                    this.statusMessage = 'Idle';
-                                }
-                            }, 4000); // 4-second delay before resetting status
-                            // --- END Finally Block ---
-                        }
-                    }, // End of _performStartIncrementalIngestion
+                // 2) Guarantee critical nested arrays exist
+                const arrayFields = {
+                    document: ['FILE_TYPES'],
+                    env: ['DOMAIN_KEYWORDS', 'AUTO_DOMAIN_KEYWORDS', 'USER_ADDED_KEYWORDS']
+                };
+                for (const [sec, fields] of Object.entries(arrayFields)) {
+                    if (!this.formConfig[sec]) this.formConfig[sec] = {};
+                    for (const fld of fields) {
+                        this.formConfig[sec][fld] = ensureArray(this.formConfig[sec][fld]);
+                    }
+                }
 
+                // 3) Populate keyword controls
+                const autoKeys = this.formConfig.env.AUTO_DOMAIN_KEYWORDS;
+                this.autoDomainKeywordsList = [...autoKeys];
+                this.autoDomainKeywords = autoKeys.join(', ');
 
-                    async loadInitialConfig() {
-                        console.log("Fetching initial config from /get_config...");
-                        try {
-                            const response = await fetch('/get_config');
-                            if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                            const loadedConfig = await response.json();
+                // 4) Restore saved Top-N if present
+                const savedN = this.formConfig.env.SELECTED_N_TOP;
+                if (savedN != null) {
+                    this.selectedTopN = savedN;
+                }
+                // Now recompute menu options
+                this.allAutoDomainKeywordsList = ensureArray(autoKeys);
+                this.updateTopNOptions();
+                console.log(`TopN options updated:`, this.topNOptions);
 
-                            // Helper function for safe array conversion
-                            const ensureArray = (value) => {
-                                if (Array.isArray(value)) return value;
-                                if (typeof value === 'string') return value.split(',').map(s => s.trim());
-                                return [];
-                            };
+                // 5) Seed the User-Added textarea
+                this.envUserKeywordsString = (this.formConfig.env.USER_ADDED_KEYWORDS || []).join(', ');
 
-                            // Type-aware config merging
-                            for (const section in loadedConfig) {
-                                if (!Object.hasOwn(loadedConfig, section)) continue;
+                // 6) Mark clean
+                this._markConfigClean();
+                console.log("Config loaded, keywords populated, and state marked clean");
 
-                                const loadedValue = loadedConfig[section];
-                                const currentValue = this.formConfig[section];
-
-                                // 1. Handle array-to-array updates
-                                if (Array.isArray(currentValue) && Array.isArray(loadedValue)) {
-                                    this.formConfig[section] = [...loadedValue];
-                                    continue;
-                                }
-
-                                // 2. Handle object-to-object deep merge
-                                if (typeof currentValue === 'object' && currentValue !== null &&
-                                    typeof loadedValue === 'object' && loadedValue !== null &&
-                                    !Array.isArray(currentValue) && !Array.isArray(loadedValue)) {
-                                    this.deepMerge(currentValue, loadedValue);
-                                }
-                                // 3. Handle type mismatches and primitives
-                                else {
-                                    // Log type mismatch warnings
-                                    if (typeof currentValue !== typeof loadedValue) {
-                                        console.warn(`Section ${section} type mismatch: 
-                        Frontend: ${typeof currentValue}, 
-                        Backend: ${typeof loadedValue}`);
-                                    }
-
-                                    // Special handling for array fields that might come as strings
-                                    if (section === 'document' || section === 'env') {
-                                        if (['FILE_TYPES', 'DOMAIN_KEYWORDS', 'AUTO_DOMAIN_KEYWORDS', 'USER_ADDED_KEYWORDS'].some(f => f === section)) {
-                                            this.formConfig[section] = ensureArray(loadedValue);
-                                            continue;
-                                        }
-                                    }
-
-                                    // Direct assignment for other cases
-                                    this.formConfig[section] = loadedValue;
-                                }
-                            }
-
-                            // Post-merge array validation for critical sections
-                            const arrayFields = {
-                                document: ['FILE_TYPES'],
-                                env: ['DOMAIN_KEYWORDS', 'AUTO_DOMAIN_KEYWORDS', 'USER_ADDED_KEYWORDS']
-                            };
-
-                            for (const [section, fields] of Object.entries(arrayFields)) {
-                                if (!this.formConfig[section]) this.formConfig[section] = {};
-                                for (const field of fields) {
-                                    this.formConfig[section][field] = ensureArray(this.formConfig[section][field]);
-                                }
-                            }
-
-                            // Set clean state after successful merge
-                            this._markConfigClean();
-                            console.log("Config loaded and marked clean");
-
-                        } catch (error) {
-                            console.error("Config load failed:", error);
-                            this.showToast(`Config load error: ${error.message}`, 'error');
-
-                            // Reset critical arrays to safe defaults
-                            this.formConfig.document.FILE_TYPES = [];
-                            this.formConfig.env.DOMAIN_KEYWORDS = [];
-                            this.formConfig.env.AUTO_DOMAIN_KEYWORDS = [];
-                            this.formConfig.env.USER_ADDED_KEYWORDS = [];
-
-                            throw error;
-                        }
-                    },
+            } catch (error) {
+                console.error("Config load failed:", error);
+                this.showToast(`Config load error: ${error.message}`, 'error');
+                // Reset critical arrays to safe defaults
+                this.formConfig.document.FILE_TYPES = [];
+                this.formConfig.env.DOMAIN_KEYWORDS = [];
+                this.formConfig.env.AUTO_DOMAIN_KEYWORDS = [];
+                this.formConfig.env.USER_ADDED_KEYWORDS = [];
+                this.autoDomainKeywordsList = [];
+                this.autoDomainKeywords = '';
+                throw error;
+            }
+        },
+              
 
                     // Add deepMerge helper in your component
-                    deepMerge(target, source) {
-                        for (const key in source) {
-                            if (Object.hasOwn(source, key)) {
-                                const sourceVal = source[key];
-                                const targetVal = target[key];
+                // Deep‐merge two plain‐object structures
+                deepMerge(target, source) {
+                    for (const [key, sourceVal] of Object.entries(source)) {
+                        const targetVal = target[key];
 
-                                if (typeof sourceVal === 'object' && sourceVal !== null &&
-                                    typeof targetVal === 'object' && targetVal !== null &&
-                                    !Array.isArray(sourceVal) && !Array.isArray(targetVal)) {
-                                    this.deepMerge(targetVal, sourceVal);
-                                } else {
-                                    target[key] = sourceVal;
-                                }
-                            }
+                        if (this.isPlainObject(sourceVal) && this.isPlainObject(targetVal)) {
+                            this.deepMerge(targetVal, sourceVal);
+                        } else if (Array.isArray(sourceVal) && Array.isArray(targetVal)) {
+                            // override arrays
+                            target[key] = [...sourceVal];
+                        } else {
+                            // clone objects/arrays to avoid shared refs
+                            target[key] = this.isPlainObject(sourceVal)
+                                ? { ...sourceVal }
+                                : Array.isArray(sourceVal)
+                                    ? [...sourceVal]
+                                    : sourceVal;
                         }
-                    },
-                    
-                    updateConfigWithKeywords(keywords) {
-                        console.log("[Update Config] Updating configuration with new keywords:", keywords);
-                        // replace the user‐added keywords list in your UI
-                        this.formConfig.env.USER_ADDED_KEYWORDS = keywords;
-                        this.showToast(
-                            `Configuration updated with ${keywords.length} keywords.`,
-                            'success'
-                        );
-                    },
+                    }
+                },
 
-                    async fetchAutoDomainKeywords() {
-                        try {
-                            const response = await fetch('/get_auto_domain_keywords');
-                            const data = await response.json();
-                            if (data.success) {
-                                // If you want a comma-separated string:
-                                this.autoDomainKeywords = Array.isArray(data.keywords) ?
-                                    data.keywords.join(', ') :
-                                    data.keywords;
-                            }
-                            else {
-                                this.autoDomainKeywords = '[No auto domain keywords found]';
-                            }
-                        }
-                        catch (error) {
-                            this.autoDomainKeywords = '[Error loading auto domain keywords]';
-                            console.error('Failed to fetch auto domain keywords:', error);
-                        }
-                    },
+                // Check for a plain object
+                isPlainObject(v) {
+                    return Object.prototype.toString.call(v) === '[object Object]';
+                },
+
+                // Example of another helper method
+                updateConfigWithKeywords(keywords) {
+                    console.log("[Update Config] New keywords:", keywords);
+                    this.formConfig.env.USER_ADDED_KEYWORDS = keywords;
+                    this.showToast(`Configuration updated with ${keywords.length} keywords.`, 'success');
+                },
+
+            updateTopNOptions() {
+                const max = this.allAutoDomainKeywordsList.length;
+                this.topNOptions = Array.from(
+                    { length: Math.ceil(max / 10) },
+                    (_, i) => Math.min((i + 1) * 10, max)
+                );
+                if (max > 0 && max % 10 !== 0 && !this.topNOptions.includes(max)) {
+                    this.topNOptions.push(max);
+                }
+                this.topNOptions.sort((a, b) => a - b);
+                this.selectedTopN = this.topNOptions[0] || 0;
+            },
 
 
                     async fetchPresets() {
@@ -1654,6 +2022,31 @@ document.addEventListener('alpine:init', () => {
                                     this.formConfig[section] = result.config[section];
                                 }
                             }
+
+                            // Explicitly update UI state variables from the new config
+                            if (result.config.retrieval && result.config.retrieval.SELECTED_N_TOP !== undefined) {
+                                this.selectedNTop = result.config.retrieval.SELECTED_N_TOP;
+                            }
+                            
+                            if (result.config.paths) {
+                                this.formConfig.paths = { ...result.config.paths };
+                            }
+
+                            // Add this block to refresh auto domain keywords
+                            if (this.formConfig.env && Array.isArray(this.formConfig.env.AUTO_DOMAIN_KEYWORDS)) {
+                                // Update the auto domain keywords lists
+                                this.allAutoDomainKeywordsList = [...this.formConfig.env.AUTO_DOMAIN_KEYWORDS];
+                                this.autoDomainKeywordsList = [...this.allAutoDomainKeywordsList];
+                                this.activeAutoDomainKeywordsSet = new Set(this.autoDomainKeywordsList);
+
+                                this.updateTopNOptions();
+
+                                // Log for debugging
+                                console.log("Updated auto domain keywords after preset application:", this.allAutoDomainKeywordsList.length);
+                            }
+
+                            this._markConfigClean();
+
                             // Ensure arrays are correct after update
                             this.formConfig.document.FILE_TYPES = Array.isArray(this.formConfig.document
                                 .FILE_TYPES) ? this.formConfig.document.FILE_TYPES : [];
@@ -1770,6 +2163,7 @@ document.addEventListener('alpine:init', () => {
                             }
                         }
                     }, // End of async savePreset
+
                     async deletePresetWithConfirmation(presetName) {
                         // Validation: Check if a preset name was provided (should come from selectedPresetName)
                         if (!presetName) {
@@ -1854,10 +2248,171 @@ document.addEventListener('alpine:init', () => {
                                 }
                             }); // End requireConfirmation
                     }, // End of deletePresetWithConfirmation
-                         
-        }; // ✅ Close return
-    }); // ✅ Close Alpine.data
-}); // ✅ Close 'alpine:init' listener
+
+                    
+        async fetchCentroidStats() {
+            try {
+                const resp = await fetch('/api/centroid');
+                if (!resp.ok) {
+                    console.error("Failed to fetch centroid stats:", await resp.text());
+                    return;
+                }
+                const { centroid, meta } = await resp.json();
+                this.centroidStats.centroid = centroid;
+                this.centroidStats.meta = meta;
+            } catch (error) {
+                console.error("Error fetching centroid stats:", error);
+                this.centroidStats.centroid = null;
+                this.centroidStats.meta = null;
+            }
+                      },
+
+
+                    async fetchQueryCentroidInsight(queryEmbedding) {
+                        const resp = await fetch('/api/centroid/query_insight', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ vector: queryEmbedding })
+                        });
+                        if (resp.ok) this.queryCentroidInsight = await resp.json();
+                    },
+
+            async fetchAutoDomainKeywords() {
+                try {
+                    console.log("[Init API] Starting fetchAutoDomainKeywords...");
+                    const res = await fetch('/get_auto_domain_keywords');
+                    const data = await res.json();
+
+                    // Check if data.keywords exists and is an array
+                    this.allAutoDomainKeywordsList = Array.isArray(data.keywords) ? data.keywords : [];
+
+                    // 2. Comma-string for the       display
+                    this.autoDomainKeywords = this.allAutoDomainKeywordsList.length
+                        ? this.allAutoDomainKeywordsList.join(', ')
+                        : '[No auto domain keywords found]';
+
+                    // 3. Set for toggling individual keywords
+                    this.activeAutoDomainKeywordsSet = new Set(this.allAutoDomainKeywordsList);
+
+                    // 4. Build options using the helper method
+                    this.updateTopNOptions();
+                    this.applyTopNKeywords();
+
+                    console.log("[Init API] Finished fetchAutoDomainKeywords with",
+                        this.allAutoDomainKeywordsList.length, "keywords");
+                }
+                catch (error) {
+                    console.error('Failed to fetch auto domain keywords:', error);
+                    this.allAutoDomainKeywordsList = [];
+                    this.autoDomainKeywords = '[Error loading auto domain keywords]';
+                    this.activeAutoDomainKeywordsSet = new Set();
+
+                    // Still call updateTopNOptions to ensure UI is consistent
+                    this.updateTopNOptions();
+                }
+            },
+
+
+            // open the modal, fetch data
+            async inspectInstance() {
+                try {
+                    this.inspectModal.show = true;
+                    const res = await fetch('/inspect_instance');
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    this.inspectModal.data = await res.json();
+                } catch (err) {
+                    console.error("Inspect failed:", err);
+                    this.showToast(`Inspect error: ${err.message}`, 'error');
+                    this.inspectModal.show = false;
+                }
+            },
+            closeInspectModal() {
+                this.inspectModal.show = false;
+                this.inspectModal.data = null;
+            },
+            
+            
+            // Send the active keywords to backend (update config/file)
+            async syncActiveKeywordsToBackend() {
+                try {
+                    console.log("Syncing keywords to backend:", Array.from(this.activeAutoDomainKeywordsSet));
+                    const response = await fetch('/update_auto_domain_keywords', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            keywords: Array.from(this.activeAutoDomainKeywordsSet),
+                            target_field: "AUTO_DOMAIN_KEYWORDS"  // Add this line to specify the target field
+                        })
+                    });
+                    const result = await response.json();
+                    if (!result.success) {
+                        console.error("Backend sync failed:", result.error);
+                        throw new Error(result.error || "Unknown error");
+                    }
+                    console.log("Keywords synced successfully");
+                } catch (e) {
+                    console.error("Sync error:", e);
+                    this.showToast(`Failed to update keywords: ${e.message}`, "error");
+                }
+            },
+            clearChatWithConfirmation() {
+                if (confirm('Are you sure you want to clear the chat history?')) {
+                    this.chatHistory = []; // Change from this.messages to this.chatHistory
+
+                    // If saving to localStorage
+                    localStorage.removeItem('chatMessages');
+
+                    // If using server-side storage, add an API call
+                    fetch('/clear-chat', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                });
+                    // Scroll to top (optional)
+                    this.scrollToBottom();
+                }
+},
+        // ─── Markdown + Sanitization Helper ───────────────────────
+        safeRenderMarkdown(text) {
+            if (!text) return '';
+            if (!window.marked || !window.DOMPurify) {
+                return text
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/\n/g, '<br>');
+            }
+            // 1) Markdown → HTML
+            const rawHtml = window.marked.parse(text);
+            // 2) Sanitize allowing only specific attributes
+            return DOMPurify.sanitize(rawHtml, {
+                ALLOWED_ATTR: ['src', 'class', 'alt', 'title'],
+            });
+        },
+// ─── Markdown + Sanitization Helper ───
+safeRenderMarkdown(text) {
+    if (!text) return '';
+    // If marked or DOMPurify missing, fall back to escaping
+    if (!window.marked || !window.DOMPurify) {
+        return text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/\n/g, '<br>');
+    }
+    // 1) Markdown → HTML
+    const rawHtml = window.marked.parse(text);
+    // 2) Sanitize allowing images, classes, alt, title
+    return DOMPurify.sanitize(rawHtml, {
+        ALLOWED_ATTR: ['src', 'class', 'alt', 'title']
+    });
+},
+
+    }) // <-- End of Alpine.data object
+    )
+}); // <-- End of event listener
+
 
 function addTooltips() {
     // Create a function to add tooltips to labels
@@ -1897,29 +2452,13 @@ function addTooltips() {
         const key = label.getAttribute('data-tooltip');
         createTooltip(label, key);
     });
+
 }
-
-
-// Consolidated listener for non-Alpine DOM setup
-let domContentLoadedFired_setup = false; // Use a specific flag name
-
-document.addEventListener('DOMContentLoaded', function () {
-    if (domContentLoadedFired_setup) {
-        console.warn('[DOM Setup] Consolidated listener fired AGAIN. Preventing re-execution.');
-        return;
-    }
-    domContentLoadedFired_setup = true;
-    console.log('[DOM Setup] Consolidated listener running...');
-
-    // --- NOTE on Keyword Update ---
-    // The logic to call updateConfigWithKeywords should NOT be here.
-    // It needs to be called *after* the keyword builder API call SUCCEEDS
-    // and provides the keywords. This likely needs modification inside
-    // the _performRunKeywordBuilder method.
-    console.log('[DOM Setup] Consolidated listener finished.');
-});
 
 // Final log to confirm script parsing
 console.log('static/ragapp.js parsed successfully.');
 
 // --- END static/ragapp.js ---//
+
+
+
