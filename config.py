@@ -235,6 +235,7 @@ class PathConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     DOCUMENT_DIR: str = "./data"
     DOMAIN_CENTROID_PATH: str = "./domain_centroid.npy"
+    CENTROID_DIR: str = "./centroids"
 
 class EnvironmentConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -249,7 +250,7 @@ class EnvironmentConfig(BaseModel):
 
 class IngestionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    CENTROID_AUTO_THRESHOLD: float = Field(0.05)
+    CENTROID_AUTO_THRESHOLD: float = Field(0.5)
     CENTROID_DIVERSITY_THRESHOLD: float = Field(0.01)
     CENTROID_UPDATE_MODE: Literal['auto', 'manual'] = Field('auto')
     MIN_QUALITY_SCORE: float = Field(0.3)
@@ -305,6 +306,12 @@ class AppConfig(BaseModel):
                 setattr(self, field, getattr(validated, field))
             return True
         return False
+
+    def reload(self):
+            """Reloads the configuration from the YAML file path."""
+            with open(CONFIG_YAML_PATH, "r", encoding="utf-8") as f:
+                new_data = yaml.safe_load(f) or {}
+            self.__init__(**new_data)
 
 # Instantiate config
 try:

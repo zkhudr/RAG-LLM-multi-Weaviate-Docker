@@ -18,7 +18,7 @@ from ingest_docs_v3 import process_documents as ingest_process_documents
 from TF_IDF_BERT_Clean import process_documents as tfidf_bert_process_documents
 from text_ranker import process_documents as text_ranker_process_documents
 from build_domain_keywords import build_domain_keywords
-from pipeline import IndustrialAutomationPipeline
+from pipeline import UnifiedPipeline
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -252,7 +252,7 @@ def option_domain_keywords(data_directory, top_n):
 def option_generation_test(gen_query, gen_temp, gen_max_tokens, gen_top_p, gen_freq_penalty):
     print(f"\n[Mode 6] Running Generation Test for query: '{gen_query}'")
     try:
-        pipeline = IndustrialAutomationPipeline()
+        pipeline = UnifiedPipeline()
         # Update generation parameters on the pipeline config:
         pipeline.cfg.model.LLM_TEMPERATURE = gen_temp
         pipeline.cfg.model.MAX_TOKENS = gen_max_tokens

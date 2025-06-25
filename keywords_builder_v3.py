@@ -9,7 +9,6 @@ import weaviate
 
 
 
-# NLP & ML Libs
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import KMeans
 
@@ -19,9 +18,7 @@ from collections import Counter # To count keyword frequency
 from pathlib import Path
 from config import cfg # Import the central config object
 from weaviate.exceptions import WeaviateConnectionError
-from weaviate.classes.config import Property, DataType
-#from weaviate.connect import ConnectionParams # Needed if using connect_to_custom
-from weaviate.config import AdditionalConfig # Needed for timeout
+from weaviate.classes.config import DataType
 # --- Configuration & Parameters ---
 DEFAULT_COLLECTION_NAME = "Industrial_tech" # Keep this or read from cfg later?
 DEFAULT_KEYBERT_MODEL = 'all-MiniLM-L6-v2'
@@ -231,6 +228,7 @@ def run_keybert_per_document(texts: list[str], model_name: str, top_n_per_doc: i
         logger.info(f"Running KeyBERT extraction per document (top_n={top_n_per_doc}, ngram_range={ngram_range}, diversity={extraction_diversity})...")
         processed_docs = 0
         for i, text in enumerate(texts):
+            print(f"🔄 Running KeyBERT on doc {i+1}/{len(texts)}")
             try:
                 # Limit text length if necessary to avoid individual doc issues
                 # max_len = 50000 # Example limit
@@ -396,6 +394,58 @@ if __name__ == "__main__":
     args = parse_arguments()
     client = None
     nlp_model = None
+    try:
+        # 1) Load spaCy model
+        nlp_model = load_spacy_model(args.spacy_model)
+
+        # 2) Initialize Weaviate client via your central factory
+        from ingest_docs_v7 import PipelineConfig
+        client = PipelineConfig.get_client()
+        if client is None or not client.is_live():
+            logger.critical("Fatal: Could not obtain a live Weaviate client.")
+            sys.exit(1)
+
+        # 3) Fetch all texts from Weaviate
+        all_texts = get_all_content_from_weaviate(client, args.collection)
+
+        # 4) Run KeyBERT → aggregation → filtering → clustering
+        if all_texts:
+            aggregated, freqs = run_keybert_per_document(
+                all_texts,
+                args.keybert_model,
+                args.top_n_per_doc,
+                args.ngram_range,
+                args.extraction_diversity
+            )
+            final_keywords = apply_final_filters(
+                aggregated, freqs, nlp_model,
+                set(args.pos_tags), args.min_len, 
+                args.min_doc_freq_abs or math.ceil(args.min_doc_freq_frac * len(all_texts)),
+                apply_pos_filter=not args.no_pos_filter
+            )
+            # (… your existing print(), file-write, cluster_keywords() code …)
+        else:
+            print("No content retrieved from Weaviate. Cannot perform keyword extraction.")
+
+    except Exception as e:
+        logger.critical(f"Unexpected error in keyword builder: {e}", exc_info=True)
+        print(f" [ ERROR] Keyword Builder failed: {e}")
+        sys.exit(1)
+
+    finally:
+        # 5) Always close the Weaviate client
+        if client:
+            try:
+                if client.is_live():
+                    client.close()
+                    logger.info("Weaviate client closed after keyword builder run.")
+                else:
+                    client.close()
+                    logger.warning("Closed Weaviate client (was not live).")
+            except Exception as close_err:
+                logger.error(f"Error closing Weaviate client: {close_err}", exc_info=True)
+
+                 
     # 1. Load ingested_docs.json
     docs_file = Path(cfg.paths.DOCUMENT_DIR) / "ingested_docs.json"
     if docs_file.exists():

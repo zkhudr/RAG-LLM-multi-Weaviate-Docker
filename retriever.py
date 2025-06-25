@@ -3,11 +3,9 @@
 import logging
 from typing import Optional
 
-import weaviate
 from weaviate import WeaviateClient
 from weaviate.connect import ConnectionParams
 from weaviate.config import AdditionalConfig, Timeout
-
 from langchain_weaviate import WeaviateVectorStore
 from langchain_ollama import OllamaEmbeddings
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -43,17 +41,14 @@ class TechnicalRetriever:
             raise
 
     def _init_client_and_store(self) -> None:
-        # Host & ports
         host       = getattr(self.cfg.retrieval, "WEAVIATE_HOST", "127.0.0.1")
         http_port  = self.cfg.retrieval.WEAVIATE_HTTP_PORT
         grpc_port  = self.cfg.retrieval.WEAVIATE_GRPC_PORT
         collection = self.cfg.retrieval.COLLECTION_NAME
-        # Timeouts: (connect, call)
         conn_to, call_to = getattr(self.cfg.retrieval, "WEAVIATE_TIMEOUT", (5, 30))
 
         self.logger.info(f"Initializing Weaviate gRPC client at {host}:{grpc_port}")
         try:
-            # Build plaintext‐TCP gRPC params
             params = ConnectionParams.from_params(
                 http_host=host,
                 http_port=http_port,
@@ -63,25 +58,21 @@ class TechnicalRetriever:
                 grpc_secure=False,
             )
 
-            # Instantiate v4 client
             self.client = WeaviateClient(
                 connection_params=params,
-                additional_headers=getattr(self.cfg.retrieval, "WEAVIATE_HEADERS", {}),
                 additional_config=AdditionalConfig(
                     timeout=Timeout(init=conn_to, call=call_to)
-                )
+                ),
+                additional_headers=getattr(self.cfg.retrieval, "WEAVIATE_HEADERS", {})
             )
 
-            # -- ensure the gRPC channel is open before use --
             self.client.connect()
 
-            # --- v4 sanity check: list all collections ---
             col_configs = self.client.collections.list_all()
             self.logger.info(
                 f"Weaviate connection OK, found {len(col_configs)} collections"
             )
 
-            # Wrap in LangChain Vector Store
             self.vectorstore = WeaviateVectorStore(
                 client=self.client,
                 index_name=collection,
@@ -94,6 +85,8 @@ class TechnicalRetriever:
             self.logger.exception("Failed to initialize Weaviate gRPC client or vector store")
             raise VectorStoreInitError("Could not connect to Weaviate via gRPC")
 
+
+
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     def get_context(self, query: str) -> str:
         """
@@ -105,6 +98,15 @@ class TechnicalRetriever:
             self.logger.error("Vector store not initialized.")
             return ""
 
+        # ✅ Ensure client is live before querying
+        try:
+            if not self.client.is_live():
+                self.logger.warning("Weaviate client was closed. Reconnecting…")
+                self.client.connect()
+        except Exception:
+            self.logger.exception("Failed to reconnect Weaviate client")
+            return ""
+
         s_type = self.cfg.retrieval.SEARCH_TYPE.lower()
         k      = self.cfg.retrieval.K_VALUE
         α      = self.cfg.retrieval.LAMBDA_MULT
@@ -113,7 +115,7 @@ class TechnicalRetriever:
         try:
             if s_type == 'mmr':
                 docs = vs.max_marginal_relevance_search(
-                    query, k=k, fetch_k=k*2, lambda_mult=α
+                    query, k=k, fetch_k=k * 2, lambda_mult=α
                 )
             elif s_type == 'similarity':
                 docs = vs.similarity_search(query, k=k)
@@ -128,10 +130,16 @@ class TechnicalRetriever:
                 self.logger.warning(f"Unknown search type '{s_type}', falling back to similarity.")
                 docs = vs.similarity_search(query, k=k)
 
-            return "\n\n".join(doc.page_content for doc in docs)
+            if not docs:
+                self.logger.warning("No documents returned from vectorstore search.")
+                return ""
+
+            return "\n\n".join(getattr(doc, "page_content", "") for doc in docs if getattr(doc, "page_content", "").strip())
+
         except Exception:
             self.logger.exception("Error during context retrieval")
             return ""
+
 
     def close(self) -> None:
         """Gracefully close the Weaviate client."""
@@ -146,12 +154,23 @@ class TechnicalRetriever:
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
-    retriever: Optional[TechnicalRetriever] = None
     try:
         retriever = TechnicalRetriever()
         print("Context:", retriever.get_context("test query"))
     except Exception as e:
         print("Error:", e)
     finally:
-        if retriever:
+        try:
             retriever.close()
+        except Exception:
+            pass
+
+
+class RetrieverSingleton:
+    _instance: Optional[TechnicalRetriever] = None
+
+    @classmethod
+    def get(cls) -> TechnicalRetriever:
+        if cls._instance is None:
+            cls._instance = TechnicalRetriever()
+        return cls._instance

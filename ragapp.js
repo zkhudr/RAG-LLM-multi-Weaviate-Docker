@@ -6,6 +6,10 @@ document.addEventListener('alpine:init', () => {
     console.log('[Alpine Event] alpine:init fired. Defining ragApp component...');
     Alpine.data('ragApp', () => ({
         
+        collections: [],
+        selected: null,
+        status: 'Loading collections…',
+
 
         envUserKeywordsString: '',
         // ─── CORE STATE ───
@@ -31,6 +35,7 @@ document.addEventListener('alpine:init', () => {
         autoDomainKeywords: '',
         lastAutoDomainKeywordsList: [],
         centroidStats: { centroid: null, meta: null},
+        histogramUrl: '/static/placeholder.png',
         queryCentroidInsight: { similarity: 0, distance: 0 },
         centroidUpdateMode: 'auto',
         centroidAutoThreshold: 5,
@@ -92,7 +97,8 @@ document.addEventListener('alpine:init', () => {
             },
             paths: {
                 DOCUMENT_DIR: './data',
-                DOMAIN_CENTROID_PATH: './domain_centroid.npy'
+                //DOMAIN_CENTROID_PATH: './domain_centroid.npy'
+                CENTROID_DIR: './centroids'
             },
             env: {
                 DOMAIN_KEYWORDS: [],
@@ -116,56 +122,135 @@ document.addEventListener('alpine:init', () => {
 
         // ─── LIFECYCLE METHODS ───
         init() {
+            console.log("[UI Init] Starting UI initialization...");
 
-                       // ─── GUARD: ensure domain_keyword_extraction and a numeric extraction_diversity ───
-                           if (!this.formConfig.domain_keyword_extraction) {
-                                 this.formConfig.domain_keyword_extraction = {
-                                       diversity: 0,
-                                           extraction_diversity: 0,
-                                               top_n_per_doc: 1,
-                                                   min_doc_freq_abs: 0,
-                                                       min_doc_freq_frac: 0
-                                                         };
-                               }
-                       const kde = this.formConfig.domain_keyword_extraction;
-                       if (kde.extraction_diversity == null) {
-                             kde.extraction_diversity = typeof kde.diversity === 'number'
-                                   ? kde.diversity
-                               : 0;
-                           }
-            
-            if (this.initCalled) return;
+            if (this.initCalled) {
+                console.warn("[UI Init] Skipping duplicate init() call.");
+                return;
+            }
             this.initCalled = true;
 
-            // list of [propertyPath, min, max]
+            this.statusMessage = 'Initializing...';
+            this.status = 'Loading collections...';
+
+            this.checkApiKeys();
+
+            this.isLoadingConfig = true;
+            this.isLoadingPresets = true;
+            this.isLoadingAutoKeywords = true;
+
+            Promise.all([
+                fetch('/api/config').then(r => r.json()),
+                fetch('/api/collections').then(r => r.json())
+            ])
+                .then(([configData, collectionsData]) => {
+                    this.formConfig = configData;
+                    this.presets = configData.presets || {};
+
+                    const arr = Array.isArray(collectionsData)
+                        ? collectionsData
+                        : (collectionsData?.collections || []);
+
+                    if (!Array.isArray(arr)) {
+                        console.error('Invalid /api/collections payload:', collectionsData);
+                        throw new TypeError('Expected array or { collections: array }');
+                    }
+
+                    this.collections = arr;
+
+                    const stored = localStorage.getItem('selected_collection');
+                    const collectionFromConfig = this.formConfig?.retrieval?.COLLECTION_NAME || null;
+                    const isStoredValid = stored && arr.includes(stored);
+                    const isConfigValid = collectionFromConfig && arr.includes(collectionFromConfig);
+
+                    if (isStoredValid) {
+                        console.log(`[Init] Restoring collection from localStorage: ${stored}`);
+                        this.selected = stored;
+                    } else if (isConfigValid) {
+                        console.log(`[Init] Using config-specified collection: ${collectionFromConfig}`);
+                        this.selected = collectionFromConfig;
+                    } else {
+                        console.warn(`[Init] No valid stored/config collection — defaulting to: ${arr[0] || 'none'}`);
+                        this.selected = arr[0] || null;
+                    }
+
+                    if (this.selected) {
+                        this.status = `Loading centroid for '${this.selected}'…`;
+                        this.loadCentroid();
+                    } else {
+                        this.status = 'No collections available.';
+                    }
+
+                    if (!this.presetsLoaded) {
+                        this.presetsLoaded = true;
+                        this.fetchPresets?.();
+                    }
+
+                    if (!this.weaviateInstancesLoaded) {
+                        this.weaviateInstancesLoaded = true;
+                        this.fetchWeaviateInstances?.();
+                    }
+
+                    if (!this.savedChatsLoaded) {
+                        this.savedChatsLoaded = true;
+                        this.fetchSavedChats?.();
+                    }
+
+                    if (!this.autoKeywordsLoaded) {
+                        this.autoKeywordsLoaded = true;
+                        this.fetchAutoDomainKeywords?.();
+                    }
+
+                })
+                .catch(err => {
+                    console.error('Initialization error in Promise.all:', err);
+                    this.status = 'Initialization error.';
+                })
+                .finally(() => {
+                    this.isLoadingConfig = false;
+                    this.isLoadingPresets = false;
+                    this.isLoadingAutoKeywords = false;
+                });
+
+            if (!this.formConfig.domain_keyword_extraction) {
+                this.formConfig.domain_keyword_extraction = {
+                    diversity: 0,
+                    extraction_diversity: 0,
+                    top_n_per_doc: 1,
+                    min_doc_freq_abs: 0,
+                    min_doc_freq_frac: 0
+                };
+            }
+
+            const kde = this.formConfig.domain_keyword_extraction;
+            if (kde.extraction_diversity == null) {
+                kde.extraction_diversity = typeof kde.diversity === 'number' ? kde.diversity : 0;
+            }
+
             const clamps = [
-                ['formConfig.ingestion.CENTROID_AUTO_THRESHOLD', 0, 100],               // % new vectors :contentReference[oaicite:0]{index=0}:contentReference[oaicite:1]{index=1}
-                ['formConfig.domain_keyword_extraction.top_n_per_doc', 1, 50],         // keywords/doc :contentReference[oaicite:2]{index=2}:contentReference[oaicite:3]{index=3}
-                ['formConfig.document.CHUNK_SIZE', 1, null],                           // chunk size :contentReference[oaicite:4]{index=4}:contentReference[oaicite:5]{index=5}
-                ['formConfig.document.CHUNK_OVERLAP', 0, null],                        // overlap :contentReference[oaicite:6]{index=6}:contentReference[oaicite:7]{index=7}
-                ['formConfig.model.MAX_TOKENS', 1, null],                              // max tokens :contentReference[oaicite:8]{index=8}:contentReference[oaicite:9]{index=9}
-                ['formConfig.domain_keyword_extraction.min_doc_freq_abs', 0, null],    // min-doc-freq-abs :contentReference[oaicite:10]{index=10}:contentReference[oaicite:11]{index=11}
-                ['formConfig.domain_keyword_extraction.min_doc_freq_frac', 0, 1],       // min-doc-freq-frac :contentReference[oaicite:12]{index=12}:contentReference[oaicite:13]{index=13}
-                ['formConfig.security.RATE_LIMIT', 0, null],                            // rate limit :contentReference[oaicite:14]{index=14}:contentReference[oaicite:15]{index=15}
-                ['formConfig.security.API_TIMEOUT', 0, null],                           // API timeout :contentReference[oaicite:16]{index=16}:contentReference[oaicite:17]{index=17}
-                ['formConfig.retrieval.K_VALUE', 1, null],                             // K value :contentReference[oaicite:18]{index=18}:contentReference[oaicite:19]{index=19}
-                
+                ['formConfig.ingestion.CENTROID_AUTO_THRESHOLD', 0, 100],
+                ['formConfig.domain_keyword_extraction.top_n_per_doc', 1, 50],
+                ['formConfig.document.CHUNK_SIZE', 1, null],
+                ['formConfig.document.CHUNK_OVERLAP', 0, null],
+                ['formConfig.model.MAX_TOKENS', 1, null],
+                ['formConfig.domain_keyword_extraction.min_doc_freq_abs', 0, null],
+                ['formConfig.domain_keyword_extraction.min_doc_freq_frac', 0, 1],
+                ['formConfig.security.RATE_LIMIT', 0, null],
+                ['formConfig.security.API_TIMEOUT', 0, null],
+                ['formConfig.retrieval.K_VALUE', 1, null],
             ];
 
             for (const [path, min, max] of clamps) {
                 this.$watch(path, v => {
-                    let val = v;
-                    // only clamp if it’s a number
-                    if (typeof val === 'number') {
-                        let clamped = val;
-                        if (min !== null && val < min) clamped = min;
-                        if (max !== null && val > max) clamped = max;
-                        if (clamped !== val) {
+                    if (typeof v === 'number') {
+                        let clamped = v;
+                        if (min !== null && v < min) clamped = min;
+                        if (max !== null && v > max) clamped = max;
+                        if (clamped !== v) {
                             this.showToast(
                                 `${path.split('.').pop()} must be between ${min ?? '-∞'} and ${max ?? '∞'}.`,
                                 'error'
                             );
-                            // write it back
                             const keys = path.split('.');
                             let obj = this;
                             while (keys.length > 1) obj = obj[keys.shift()];
@@ -173,44 +258,196 @@ document.addEventListener('alpine:init', () => {
                         }
                     }
                 });
-      }
+            }
+        },
+        
 
 
-
-                        // Kick off data load
-            this.loadInitialData();
-            this.fetchCentroidStats()
+        formatKey(key) {
+            if (!key) return '';
+            return key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
         },
 
-        async loadInitialData() {
-            // Fetch totalDocs
-            console.log("[Init API] Fetching document count...");
+        formatValue(value) {
+            if (typeof value === 'number') {
+                return value.toFixed(4);
+            }
+            return String(value);
+        },
+
+
+        
+        async loadCentroid() {
+            if (!this.selected) return;
+
+            console.warn(`[loadCentroid] for '${this.selected}'`);
+            this.status = `Loading centroid for '${this.selected}'…`;
+
             try {
-                const res = await fetch('/get-doc-count');
-                const json = await res.json();
-                this.totalDocs = json.total_docs;
-                console.log("[Init API] Document count loaded:", this.totalDocs);
-            } catch (e) {
-                console.warn("[Init API] Could not fetch doc count", e);
-                this.totalDocs = 0;
-            }
+                const res = await fetch(`/api/centroid?collection=${encodeURIComponent(this.selected)}`);
+                const text = await res.text();
+                const contentType = res.headers.get("content-type") || "";
 
-            // Initialize both abs ↔ frac from whichever the server provided
-            const dke = this.formConfig.domain_keyword_extraction;
-            if (dke.min_doc_freq_abs != null) {
-                dke.min_doc_freq_frac = this.totalDocs
-                    ? +(dke.min_doc_freq_abs / this.totalDocs).toFixed(3)
-                    : 0;
-            } else if (dke.min_doc_freq_frac != null) {
-                dke.min_doc_freq_abs = this.totalDocs
-                    ? Math.ceil(dke.min_doc_freq_frac * this.totalDocs)
-                    : 0;
-            } else {
-                dke.min_doc_freq_abs = 0;
-                dke.min_doc_freq_frac = 0;
+                if (!res.ok || !contentType.includes("application/json")) {
+                    console.error('[Load Error]', text);
+                    this.status = `Load failed: unexpected response`;
+                    this.centroidStats.meta = null;
+                    this.histogramUrl = '/static/placeholder.png';
+                    return;
+                }
+
+                let json;
+                try {
+                    json = JSON.parse(text);
+                } catch (err) {
+                    console.error('[Load JSON error]', text);
+                    this.status = 'Load failed: invalid JSON';
+                    this.centroidStats.meta = null;
+                    this.histogramUrl = '/static/placeholder.png';
+                    return;
+                }
+
+                if (!json || !Array.isArray(json.shape) || !json.shape.length) {
+                    this.status = 'Centroid not found. Run calculate?';
+                    this.centroidStats.meta = null;
+                    this.histogramUrl = '/static/placeholder.png';
+                    this.centroidStats.centroid = false;
+                    return;
+                  }
+
+                // ✅ Safe update only when fully loaded
+                this.centroidStats = {
+                    centroid: true,
+                    shape: json.shape,
+                    path: json.path,
+                    meta: null,
+                    loaded: true
+                };
+
+                this.histogramUrl = `/centroid_histogram.png?collection=${encodeURIComponent(this.selected)}&t=${Date.now()}`;
+                console.warn(`[loadCentroid] Centroid loaded for '${this.selected}', fetching stats`);
+                await this.fetchCentroidStats();
+
+            } catch (err) {
+                console.error('[Load Fetch error]', err);
+                this.status = 'Error loading centroid.';
+                this.centroidStats.meta = null;
+                this.histogramUrl = '/static/placeholder.png';
+                this.centroidStats.centroid = false;
             }
         },
+        
+        
+        
+        
+        fetchCentroidStats() {
 
+            console.warn('[CentroidStats] Fetch triggered. this.selected =', this.selected);
+            console.warn('[FETCH FUNC] fetchCentroidStats() called, this.selected =', this.selected);
+
+            if (!this.selected) return;
+
+            fetch(`/centroid_stats?collection=${encodeURIComponent(this.selected)}`)
+                .then(res => res.json())
+                .then(data => {
+                    const meta = data?.stats?.meta;  // ✅ Properly nested
+                    const ok = data?.success && meta && Object.keys(meta).length;
+
+                    if (ok) {
+                        console.log("[CentroidStats] Meta received:", meta);
+                        this.centroidStats.meta = meta;
+                        console.log("Final centroidStats.meta", this.centroidStats.meta);
+                        this.centroidStats.centroid = true;
+                    } else {
+                        console.warn("[CentroidStats] Empty or missing meta payload.");
+                        this.centroidStats.meta = {};
+                        this.centroidStats.centroid = false;
+                    }
+                })
+                .catch(err => {
+                    console.error("[CentroidStats] Failed to fetch:", err);
+                    this.centroidStats.meta = {};
+                    this.centroidStats.centroid = false;
+                });
+        },
+        
+            
+        emptyCentroid() {
+            return {
+                centroid: null,
+                shape: null,
+                path: null,
+                meta: null,
+                loaded: false
+            };
+        },
+
+        async recalculate() {
+            if (!this.selected) return;
+
+            console.log('[Recalc] skipCollection:', true, 'payload.retrieval.COLLECTION_NAME:', this.selected);
+            await this.saveConfig({ skipCollection: true });
+
+            this.status = `Recalculating centroid for '${this.selected}'…`;
+
+            try {
+                const res = await fetch(`/api/centroid?collection=${encodeURIComponent(this.selected)}`, {
+                    method: 'POST'
+                });
+
+                const text = await res.text();
+
+                if (!res.ok) {
+                    console.error('[Recalc Error]', text);
+                    this.status = `Recalc failed: ${res.status}`;
+                    this.centroidStats = this.emptyCentroid();
+                    this.histogramUrl = '/static/placeholder.png';
+                    return;
+                }
+
+                let json;
+                try {
+                    json = JSON.parse(text);
+                } catch {
+                    console.error('[Recalc JSON error]', text);
+                    this.status = 'Recalc failed: invalid JSON';
+                    this.centroidStats = this.emptyCentroid();
+                    this.histogramUrl = '/static/placeholder.png';
+                    return;
+                }
+
+                if (json.ok) {
+                    this.status = `Recalculated! New shape ${json.shape} at ${json.path}`;
+                    this.centroidStats = this.emptyCentroid();
+                    this.histogramUrl = '/static/placeholder.png';
+
+                    console.log("[Recalc] Loading centroid...");
+                    await this.loadCentroid(); // ✅ ensure loadCentroid completes first
+
+                    console.log("[Recalc] Scheduling centroidStats fetch");
+                    setTimeout(() => {
+                        const root = document.querySelector('[x-data]');
+                        const ctx = Alpine.$data(root);
+                        if (typeof ctx.fetchCentroidStats === 'function') {
+                            console.warn('[CTX FIX] Forcing Alpine-bound fetchCentroidStats');
+                            ctx.fetchCentroidStats();
+                        } else {
+                            console.error('[CTX FIX] Alpine fetchCentroidStats is missing');
+                        }
+                      }, 200); // ⏱ allow slight delay for UI + file sync
+                } else {
+                    this.status = `Recalc error: ${json.error || 'Centroid could not be calculated or saved.'}`;
+                    this.centroidStats = this.emptyCentroid();
+                    this.histogramUrl = '/static/placeholder.png';
+                }
+            } catch (err) {
+                console.error('[Recalc Fetch error]', err);
+                this.status = 'Error during recalculation.';
+                this.centroidStats = this.emptyCentroid();
+                this.histogramUrl = '/static/placeholder.png';
+            }
+        },
+         
         // === Auto Domain Keywords Controls ===
 
             autoDomainKeywordsList: [],        // Currently active auto keywords
@@ -225,18 +462,29 @@ document.addEventListener('alpine:init', () => {
         
 
         applyTopNKeywords() {
-            console.log(`[TopN] Applying top ${this.selectedTopN} keywords`);
-            // Save current for restore
+            if (this.isSavingTopN) return;
+
+            const n = this.selectedTopN;
+
+            // Skip if already applied
+            if (n === this.lastSavedTopN) {
+                console.log(`[TopN] Skipped — TopN=${n} already saved.`);
+                return;
+            }
+
+            console.log(`[TopN] Applying top ${n} keywords`);
             this.lastAutoDomainKeywordsList = [...this.autoDomainKeywordsList];
-            // Truncate to Top N
-            this.autoDomainKeywordsList = this.allAutoDomainKeywordsList.slice(0, this.selectedTopN);
+            this.autoDomainKeywordsList = this.allAutoDomainKeywordsList.slice(0, n);
             this._updateActiveSet();
             this.syncActiveKeywordsToBackend();
-            // Persist selection
-            this.saveTopNToConfig(this.selectedTopN);
-              },
 
+            this.saveTopNToConfig(n);
+        },
+        
         async saveTopNToConfig(topN) {
+            if (this.isSavingTopN) return;
+            this.isSavingTopN = true;
+
             try {
                 console.log(`[Config] Saving TopN=${topN} to config`);
                 const response = await fetch('/update_topn_config', {
@@ -244,16 +492,23 @@ document.addEventListener('alpine:init', () => {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ topN })
                 });
+
                 const result = await response.json();
                 if (!result.success) {
                     console.error("[Config] Failed to save TopN:", result.error);
                 } else {
                     console.log("[Config] TopN saved successfully");
+                    this.lastSavedTopN = topN;
+                    this.showToast("Top-N saved", "success");
                 }
             } catch (e) {
                 console.error("[Config] Error saving TopN to config:", e);
+                this.showToast(`Failed to save Top-N: ${e}`, "error");
+            } finally {
+                this.isSavingTopN = false;
             }
-              },
+        },
+            
 
             // === Toggle / Restore ===
         toggleAutoKeywords() {
@@ -309,38 +564,49 @@ document.addEventListener('alpine:init', () => {
             },
 
             // === Backend Sync ===
-            async syncActiveKeywordsToBackend() {
-                try {
-                    console.log("Syncing keywords to backend:", Array.from(this.activeAutoDomainKeywordsSet));
-                    const response = await fetch('/update_auto_domain_keywords', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            keywords: Array.from(this.activeAutoDomainKeywordsSet)
-                        })
-                    });
-                    const result = await response.json();
-                    if (!result.success) {
-                        console.error("Backend sync failed:", result.error);
-                        throw new Error(result.error || "Unknown error");
-                    }
-                    console.log("Keywords synced successfully");
-                } catch (e) {
-                    console.error("Sync error:", e);
-                    this.showToast(`Failed to update keywords: ${e.message}`, "error");
+        async syncActiveKeywordsToBackend() {
+            const keywords = Array.from(this.activeAutoDomainKeywordsSet || []);
+
+            // Skip if same keywords as last sync
+            if (JSON.stringify(keywords) === JSON.stringify(this.lastSyncedAutoKeywords || [])) {
+                console.log("[Keywords] No change. Skipping backend sync.");
+                return;
+            }
+
+            if (this.isSyncingKeywords) {
+                console.warn("[Keywords] Sync already in progress. Skipping.");
+                return;
+            }
+
+            this.isSyncingKeywords = true;
+
+            try {
+                console.log("[Keywords] Syncing to backend:", keywords);
+                const response = await fetch('/update_auto_domain_keywords', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        keywords,
+                        target_field: "AUTO_DOMAIN_KEYWORDS"
+                    })
+                });
+
+                const result = await response.json();
+                if (!result.success) {
+                    console.error("[Keywords] Backend sync failed:", result.error);
+                    throw new Error(result.error || "Unknown error");
                 }
-            },
 
-
-            // === UI Feedback ===
-            showToast(message, type = 'info', duration = 3000) {
-                this.toast.message = message;
-                this.toast.type = type;
-                this.toast.show = true;
-                clearTimeout(this.toast.timeout);
-                this.toast.timeout = setTimeout(() => this.toast.show = false, duration);
-            },
-        
+                console.log("[Keywords] Synced successfully");
+                this.lastSyncedAutoKeywords = keywords;
+            } catch (e) {
+                console.error("[Keywords] Sync error:", e);
+                this.showToast(`Failed to update keywords: ${e.message}`, "error");
+            } finally {
+                this.isSyncingKeywords = false;
+            }
+        },
+            
 
     // === UTILITY METHODS ===
     isLoading() {
@@ -378,393 +644,346 @@ document.addEventListener('alpine:init', () => {
             data() {
                 return {
                     isSavingTopN: false,
+                    lastSavedTopN: null,
+                    lastSyncedAutoKeywords: [],
+                    isSyncingKeywords: false,
                     // …other state…
                 }
             },
-            
-            methods: {
-                async applyTopNKeywords() {
-                    if (this.isSavingTopN) return;        // drop any extra clicks
-                    this.isSavingTopN = true;
-                    try {
-                        await this.saveTopNToConfig();      // your existing save method
-                        this.showToast("Top-N saved", "success");
-                    } catch (e) {
-                        this.showToast(`Failed to save Top-N: ${e}`, "error");
-                    } finally {
-                        this.isSavingTopN = false;
-                    }
-                },
-                // …
-            },        
-
-        async saveConfig() {
-            // Prevent double‐submit
-            if (this.isLoading()) {
+              
+        async saveConfig({ skipCollection = false } = {}) {
+            if (this.isLoading() && !skipCollection) {
                 console.warn('[Button Click] Save Config ignored, already loading:', this.statusMessage);
                 if (this.showToast) this.showToast("Please wait for the current operation to finish.", "info");
                 return false;
             }
+
             console.log(
-                "formConfig structure:",
-            Object.keys(this.formConfig),                // top-level sections
+                "formConfig structure:", Object.keys(this.formConfig),
                 "\nretrieval keys:", Object.keys(this.formConfig.retrieval),
                 "\nfull config:\n", JSON.stringify(this.formConfig, null, 2),
-            )
+            );
             console.log("Saving configuration via /save_config...");
-            this.statusMessage = 'Saving Config...';
+            this.statusMessage = 'Saving config';
 
-            // ── 1) Sync doc‐freq mode & compute the one true min_doc_freq ──
             const dke = this.formConfig.domain_keyword_extraction;
-            // Persist the chosen mode
             dke.min_doc_freq_mode = this.docFreqMode;
 
-            // Compute canonical min_doc_freq
             if (this.docFreqMode === 'absolute') {
-                // Use the absolute input (or fall back to existing min_doc_freq)
                 dke.min_doc_freq = dke.min_doc_freq_abs ?? dke.min_doc_freq;
             } else {
-                // Fraction mode → compute count from totalDocs
                 dke.min_doc_freq = (this.totalDocs && dke.min_doc_freq_frac != null)
                     ? Math.ceil(dke.min_doc_freq_frac * this.totalDocs)
                     : dke.min_doc_freq;
             }
 
-            // (Optional) Remove UI‐only helpers so backend only sees the one field
-            //delete dke.min_doc_freq_abs;
-            //delete dke.min_doc_freq_frac;
-
             try {
-                // ── 2) POST to backend ──
+                const payload = JSON.parse(JSON.stringify(this.formConfig));
+                console.log("[saveConfig] skipCollection:", skipCollection, "payload.retrieval.COLLECTION_NAME:", payload.retrieval?.COLLECTION_NAME);
+
+                // Protect backend from poisoned config
+                if (skipCollection && payload?.retrieval?.COLLECTION_NAME) {
+                    console.warn('[saveConfig] Skipping COLLECTION_NAME during save');
+                    delete payload.retrieval.COLLECTION_NAME;
+                }
+
+                delete payload.presets;
+
                 const response = await fetch('/save_config', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(this.formConfig)
+                    body: JSON.stringify(payload)
                 });
-                const result = await response.json();
 
-                // 3) Error handling
-                if (!response.ok || !result.success) {
-                    const errorMsg = result.error || result.message || `HTTP error ${response.status}`;
+                const result = await response.json();
+                const msg = result.message || '';
+                const isSoft = msg.includes("pipeline reload");
+
+                // 🔥 FIX HERE: check `result.success` not `result.ok`
+                if (!response.ok || (result.success === false && !isSoft)) {
+                    const errorMsg = result.error || msg || `HTTP error ${response.status}`;
                     throw new Error(errorMsg);
                 }
 
-                // 4) Merge back any validated defaults from server
                 if (result.config) {
                     console.log("[saveConfig] Merging validated config from backend");
                     this.deepMerge(this.formConfig, result.config);
                 }
 
-                // 5) Notify & mark clean
-                this.showToast(result.message || 'Configuration saved successfully!', 'success');
+                this.showToast(msg || 'Configuration saved successfully!', isSoft ? 'info' : 'success');
                 this._markConfigClean();
                 return true;
 
             } catch (error) {
                 console.error('Configuration Save Error:', error);
-                this.statusMessage = 'Save Error';
-                this.showToast(`Error saving config: ${error.message}`, 'error');
-                return false;
+                const msg = error?.message || error?.toString() || 'Unknown error';
+                const isSoft = msg.includes('pipeline reload');
+                this.statusMessage = isSoft ? 'Idle' : 'Save Error';
+                this.showToast(msg, isSoft ? 'info' : 'error');
+                return !isSoft;
 
             } finally {
-                // Reset status
-                if (this.statusMessage === 'Saving Config...') {
+                if (this.statusMessage === 'Saving config') {
                     this.statusMessage = 'Idle';
-                } else if (this.statusMessage === 'Save Error') {
-                    setTimeout(() => {
-                        if (this.statusMessage === 'Save Error') this.statusMessage = 'Idle';
-                    }, 2000);
                 }
             }
         },
-              
+            
+            
+                       // === INITIALIZATION METHOD (Called manually below) ===
+        async loadInitialData() {
+            console.log("[Init Method] loadInitialData() called.");
+            this.statusMessage = 'Loading UI data...';
 
+            try {
+                console.log("[Init Method] Starting API calls in Promise.all...");
+                await Promise.all([
+                    (async () => {
+                        console.log("[Init API] Starting loadInitialConfig...");
+                        try {
+                            await this.loadInitialConfig();
+                            console.log("[Init API] Finished loadInitialConfig.");
+                        } catch (e) {
+                            console.error("[Init API] loadInitialConfig FAILED:", e);
+                            throw e;
+                        }
+                    })(),
+                    (async () => {
+                        console.log("[Init API] Fetching document count...");
+                        try {
+                            const response = await fetch('/get-doc-count');
+                            const data = await response.json();
+                            this.totalDocs = data.total_docs;
+                            console.log("[Init API] Document count loaded:", this.totalDocs);
+                        } catch (e) {
+                            console.warn("[Init API] Could not fetch doc count", e);
+                            this.totalDocs = 0;
+                        }
 
-                    // === INITIALIZATION METHOD (Called manually below) ===
-            async loadInitialData() {
-                console.log("[Init Method] loadInitialData() called.");
-                this.statusMessage = 'Loading UI data...';
-                try {
-                    console.log("[Init Method] Starting API calls in Promise.all...");
-                    await Promise.all([
-                        (async () => {
-                            console.log("[Init API] Starting loadInitialConfig...");
-                            try {
-                                await this.loadInitialConfig();
-                                console.log("[Init API] Finished loadInitialConfig.");
-                            } catch (e) {
-                                console.error("[Init API] loadInitialConfig FAILED:", e);
-                                throw e;
-                            }
-                        })(),
-                        (async () => {
-                            console.log("[Init API] Fetching document count...");
-                            try {
-                                const response = await fetch('/get-doc-count');
-                                const data = await response.json();
-                                this.totalDocs = data.total_docs;
-                                console.log("[Init API] Document count loaded:", this.totalDocs);
-                            } catch (e) {
-                                console.warn("[Init API] Could not fetch doc count", e);
-                            }
-                        })(),
-                        (async () => {
-                            console.log("[Init API] Starting checkApiKeys...");
-                            try {
-                                await this.checkApiKeys();
-                                console.log("[Init API] Finished checkApiKeys.");
-                            } catch (e) {
-                                console.error("[Init API] checkApiKeys FAILED:", e);
-                            }
-                        })(),
-                        (async () => {
-                            console.log("[Init API] Starting fetchPresets...");
-                            try {
-                                await this.fetchPresets();
-                                console.log("[Init API] Finished fetchPresets.");
-                            } catch (e) {
-                                console.error("[Init API] fetchPresets FAILED:", e);
-                            }
-                        })(),
-                        (async () => {
-                            console.log("[Init API] Starting fetchWeaviateInstances...");
-                            try {
-                                await this.fetchWeaviateInstances();
-                                console.log("[Init API] Finished fetchWeaviateInstances.");
-                            } catch (e) {
-                                console.error("[Init API] fetchWeaviateInstances FAILED:", e);
-                            }
-                        })(),
-                        (async () => {
-                            console.log("[Init API] Starting fetchSavedChats...");
-                            try {
-                                await this.fetchSavedChats();
-                                console.log("[Init API] Finished fetchSavedChats.");
-                            } catch (e) {
-                                console.error("[Init API] fetchSavedChats FAILED:", e);
-                            }
-                        })(),
-                        (async () => {
-                            console.log("[Init API] Starting fetchAutoDomainKeywords...");
-                            try {
-                                await this.fetchAutoDomainKeywords();
-                                console.log("[Init API] Finished fetchAutoDomainKeywords.");
-                            } catch (e) {
-                                console.error("[Init API] fetchAutoDomainKeywords FAILED:", e);
-                            }
-                        })(),
-                    ]);
+                        // 🧠 Merge logic from old version here
+                        const dke = this.formConfig.domain_keyword_extraction;
+                        if (dke.min_doc_freq_abs != null) {
+                            dke.min_doc_freq_frac = this.totalDocs
+                                ? +(dke.min_doc_freq_abs / this.totalDocs).toFixed(3)
+                                : 0;
+                        } else if (dke.min_doc_freq_frac != null) {
+                            dke.min_doc_freq_abs = this.totalDocs
+                                ? Math.ceil(dke.min_doc_freq_frac * this.totalDocs)
+                                : 0;
+                        } else {
+                            dke.min_doc_freq_abs = 0;
+                            dke.min_doc_freq_frac = 0;
+                        }
+                    })(),
+                    (async () => {
+                        console.log("[Init API] Starting checkApiKeys...");
+                        try {
+                            await this.checkApiKeys();
+                            console.log("[Init API] Finished checkApiKeys.");
+                        } catch (e) {
+                            console.error("[Init API] checkApiKeys FAILED:", e);
+                        }
+                    })(),
+                    (async () => {
+                        console.log("[Init API] Starting fetchPresets...");
+                        try {
+                            await this.fetchPresets();
+                            console.log("[Init API] Finished fetchPresets.");
+                        } catch (e) {
+                            console.error("[Init API] fetchPresets FAILED:", e);
+                        }
+                    })(),
+                    (async () => {
+                        console.log("[Init API] Starting fetchWeaviateInstances...");
+                        try {
+                            await this.fetchWeaviateInstances();
+                            console.log("[Init API] Finished fetchWeaviateInstances.");
+                        } catch (e) {
+                            console.error("[Init API] fetchWeaviateInstances FAILED:", e);
+                        }
+                    })(),
+                    (async () => {
+                        console.log("[Init API] Starting fetchSavedChats...");
+                        try {
+                            await this.fetchSavedChats();
+                            console.log("[Init API] Finished fetchSavedChats.");
+                        } catch (e) {
+                            console.error("[Init API] fetchSavedChats FAILED:", e);
+                        }
+                    })(),
+                    (async () => {
+                        console.log("[Init API] Starting fetchAutoDomainKeywords...");
+                        try {
+                            await this.fetchAutoDomainKeywords();
+                            console.log("[Init API] Finished fetchAutoDomainKeywords.");
+                        } catch (e) {
+                            console.error("[Init API] fetchAutoDomainKeywords FAILED:", e);
+                        }
+                    })(),
+                ]);
 
-                    console.log("[Init Method] Promise.all finished.");
+                console.log("[Init Method] Promise.all finished.");
 
-                    if (this.chatHistory.length === 0) {
-                        console.log("[Init Method] Adding welcome message.");
-                        this.chatHistory.push({
-                            role: 'assistant',
-                            text: 'Hello! Ask me anything.',
-                            timestamp: new Date().toISOString()
-                        });
-                    } else {
-                        console.log("[Init Method] Skipping welcome message (history already present).");
-                    }
-
-                    this.statusMessage = 'Idle';
-                    console.log("[Init Method] init() finished successfully.");
-                    this.scrollToBottom();
-                    this.$nextTick(() => {
-                        console.log("[Init Method] Focusing input area.");
-                        this.$refs.inputArea?.focus();
+                if (this.chatHistory.length === 0) {
+                    console.log("[Init Method] Adding welcome message.");
+                    this.chatHistory.push({
+                        role: 'assistant',
+                        text: 'Hello! Ask me anything.',
+                        timestamp: new Date().toISOString()
                     });
-
-                } catch (error) {
-                    console.error("[Init Method] CRITICAL Error during init:", error);
-                    this.statusMessage = 'Initialization Error!';
-                    this.showToast(`Initialization failed: ${error.message}. Check console & backend.`, 'error', 10000);
+                } else {
+                    console.log("[Init Method] Skipping welcome message (history already present).");
                 }
-            },
 
+                this.statusMessage = 'Idle';
+                console.log("[Init Method] init() finished successfully.");
+                this.scrollToBottom();
+                this.$nextTick(() => {
+                    console.log("[Init Method] Focusing input area.");
+                    this.$refs.inputArea?.focus();
+                });
 
+            } catch (error) {
+                console.error("[Init Method] CRITICAL Error during init:", error);
+                this.statusMessage = 'Initialization Error!';
+                this.showToast(`Initialization failed: ${error.message}. Check console & backend.`, 'error', 10000);
+            }
+        },
+                    
 
-                    // ADD THIS METHOD: Called by the button click in index.html
-                    async runKeywordBuilderWithCheck() {
-                        console.log(
-                            '[Button Click] Extract Domain Keywords clicked. Checking for unsaved changes...');
-                        // Use the confirmation helper to check for unsaved changes before proceeding
-                        // It will call _performRunKeywordBuilder only if config is clean or after successful save
-                        this._confirmUnsavedChanges('Extract Domain Keywords', this._performRunKeywordBuilder
-                            .bind(this));
-                    },
+            // ADD THIS METHOD: Called by the button click in index.html
+        async runKeywordBuilderWithCheck() {
+            console.log('[Button Click] Extract Domain Keywords clicked. Checking for unsaved changes...');
+
+            const callback = () => {
+                this.$nextTick(() => {
+                    console.log('[ConfirmUnsaved] Proceeding (deferred) to run _performRunKeywordBuilder...');
+                    this._performRunKeywordBuilder();
+                });
+            };
+
+            this._confirmUnsavedChanges('Extract Domain Keywords', callback);
+        },
+            
 
                     // ADD THIS METHOD: Contains the original keyword builder logic
-                    async _performRunKeywordBuilder() {
-                        // Check loading state *inside* the core logic as well
-                        if (this.isLoading()) {
-                            console.warn('[Button Click - Core] Keyword Builder ignored, already loading:', this
-                                .statusMessage);
-                            return;
-                        }
+        async _performRunKeywordBuilder() {
+            if (this.isLoading()) {
+                console.warn('[Keyword Builder] Ignored: already loading:', this.statusMessage);
+                return;
+            }
 
-                        console.log("[Keyword Builder] Running core logic...");
-                        this.statusMessage = 'Extracting keywords...'; // Set loading status
+            console.log("[Keyword Builder] Running core logic...");
+            this.statusMessage = 'Extracting keywords...';
 
-                        // Get references to UI elements (consider using x-ref in HTML for cleaner Alpine integration later)
-                        const formElement = document.getElementById('keywordBuilderForm');
-                        const keywordResultsDiv = document.getElementById('keywordResults');
-                        const keywordListDiv = document.getElementById('keywordList');
+            // === DOM LOOKUP - SAFE ===
+            const formElement = document.getElementById('keywordBuilderForm');
+            const keywordResultsDiv = formElement?.querySelector('[x-ref="keywordResults"]');
+            const keywordListDiv = formElement?.querySelector('[x-ref="keywordList"]');
 
-                        if (!formElement || !keywordResultsDiv || !keywordListDiv) {
-                            console.error(
-                                "[Keyword Builder] Required DOM elements (form, results area) not found.");
-                            this.statusMessage = 'UI Error';
-                            if (this.showToast) this.showToast("Keyword builder UI elements missing.", "error");
-                            setTimeout(() => {
-                                if (this.statusMessage === 'UI Error') this.statusMessage = 'Idle';
-                            }, 3000);
-                            return;
-                        }
+            console.debug("[DOM Check]", { formElement, keywordResultsDiv, keywordListDiv });
 
-                        // Hide previous results
-                        keywordResultsDiv.style.display = 'none';
-                        keywordListDiv.innerHTML = ''; // Clear previous list
+            if (!formElement || !keywordResultsDiv || !keywordListDiv) {
+                console.error("[Keyword Builder] Missing required UI elements.");
+                this.statusMessage = 'UI Error';
+                this.showToast?.("Keyword builder UI elements missing.", "error");
+                setTimeout(() => {
+                    if (this.statusMessage === 'UI Error') this.statusMessage = 'Idle';
+                }, 3000);
+                return;
+            }
 
-                        // Prepare data from the form
-                        const formData = new FormData(formElement);
-                        const jsonData = {};
-                        try {
-                            for (const [key, value] of formData.entries()) {
-                                if (key === 'no_pos_filter') {
-                                    jsonData[key] = true; // Checkbox value
-                                }
-                                else if (key === 'extraction_diversity') {
-                                    jsonData[key] = parseFloat(value);
-                                }
-                                else if (key === 'min_doc_freq_abs') {
-                                    jsonData.min_doc_freq_abs = parseInt(value, 10) || null;
-                                }
-                                else if (key === 'min_doc_freq_frac') {
-                                    jsonData.min_doc_freq_frac = parseFloat(value) || null;
-                                    // Ensure conversion to number, handle potential NaN
-                                    const numValue = parseInt(value, 10);
-                                    jsonData[key] = isNaN(numValue) ? null :
-                                        numValue; // Send null if not a number? Or default?
-                                    if (isNaN(numValue)) console.warn(
-                                        `[Keyword Builder] Invalid number for ${key}: ${value}`);
-                                }
-                                else {
-                                    jsonData[key] = value;
-                                }
-                            }
-                            // Manually add Weaviate port from config if needed by script
-                            // jsonData['weaviate_http_port'] = this.formConfig.retrieval.WEAVIATE_HTTP_PORT;
-                            // jsonData['collection'] = this.formConfig.retrieval.COLLECTION_NAME;
-                            // Note: The backend route seems to get these from cfg now, so maybe not needed here. Verify backend logic.
-                        }
-                        catch (formError) {
-                            console.error('[Keyword Builder] Error processing form data:', formError);
-                            this.statusMessage = 'Form Error';
-                            if (this.showToast) this.showToast("Error reading keyword settings.", "error");
-                            setTimeout(() => {
-                                if (this.statusMessage === 'Form Error') this.statusMessage = 'Idle';
-                            }, 3000);
-                            return;
-                        }
+            keywordResultsDiv.style.display = 'none';
+            keywordListDiv.innerHTML = '';
 
+            // === FORM DATA ===
+            const formData = new FormData(formElement);
+            const jsonData = {};
 
-                        console.log("[API Call] Sending request to /run_keyword_builder with data:", jsonData);
+            try {
+                for (const [key, value] of formData.entries()) {
+                    if (key === 'no_pos_filter') {
+                        jsonData[key] = true;
+                    } else if (key === 'extraction_diversity') {
+                        jsonData[key] = parseFloat(value);
+                    } else if (key === 'min_doc_freq_abs') {
+                        jsonData.min_doc_freq_abs = parseInt(value, 10) || null;
+                    } else if (key === 'min_doc_freq_frac') {
+                        const frac = parseFloat(value);
+                        jsonData[key] = isNaN(frac) ? null : frac;
+                        if (isNaN(frac)) console.warn(`[Keyword Builder] Invalid number for ${key}: ${value}`);
+                    } else {
+                        jsonData[key] = value;
+                    }
+                }
+            } catch (formError) {
+                console.error('[Keyword Builder] Error processing form data:', formError);
+                this.statusMessage = 'Form Error';
+                this.showToast?.("Error reading keyword settings.", "error");
+                setTimeout(() => {
+                    if (this.statusMessage === 'Form Error') this.statusMessage = 'Idle';
+                }, 3000);
+                return;
+            }
 
-                        try {
-                            // Call the backend endpoint
-                            const response = await fetch('/run_keyword_builder',
-                                {
-                                    method: 'POST',
-                                    headers:
-                                    {
-                                        'Content-Type': 'application/json'
-                                    },
-                                    body: JSON.stringify(jsonData)
-                                });
+            console.log("[API Call] POST /run_keyword_builder", jsonData);
 
-                            const data = await response.json(); // Always try to parse
+            try {
+                const response = await fetch('/run_keyword_builder', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(jsonData)
+                });
 
-                            // Check for HTTP errors or backend reported failure
-                            if (!response.ok || !data.success) {
-                                // Extract detailed error message
-                                let errorDetail = data.error || `HTTP error! Status: ${response.status}`;
-                                if (data.details) errorDetail += ` Details: ${data.details}`;
-                                if (data.full_error) console.error("Full Keyword Builder Error:\n", data
-                                    .full_error);
-                                throw new Error(errorDetail); // Throw to be caught by catch block
-                            }
+                const data = await response.json();
 
-                            // --- Success Path ---
-                            console.log("[API Resp] Keyword builder success:", data);
-                            keywordResultsDiv.style.display = 'block'; // Show results area
+                if (!response.ok || !data.success) {
+                    const detail = data.error || `HTTP ${response.status}`;
+                    if (data.full_error) console.error("Full Keyword Builder Error:", data.full_error);
+                    throw new Error(detail + (data.details ? ` | ${data.details}` : ''));
+                }
 
-                            if (data.keywords && data.keywords.length > 0) {
-                                // Format and display keywords
-                                const keywordsHtml = data.keywords.map(kw =>
-                                    `<li class="text-xs">${kw.term}: ${kw.score.toFixed(4)}</li>` // Use list items
-                                ).join('');
-                                keywordListDiv.innerHTML =
-                                    `<ul class="list-disc list-inside">${keywordsHtml}</ul>`; // Wrap in UL
+                console.log("[API Success] Extracted keywords:", data);
+                keywordResultsDiv.style.display = 'block';
 
-                                // Add "Update Config" button dynamically
-                                const updateConfigBtn = document.createElement('button');
-                                updateConfigBtn.className =
-                                    'btn btn-success mt-3 text-xs py-1 px-2'; // Use btn classes
-                                updateConfigBtn.textContent = 'Update Config with These Keywords';
-                                // IMPORTANT: Ensure updateConfigWithKeywords is accessible globally or via Alpine component instance
-                                // If global:
-                                
-                                // If inside Alpine component (preferred):
-                                // updateConfigBtn.onclick = () => Alpine.$data(document.getElementById('rootAppComponent')).updateConfigWithKeywords(data.keywords.map(kw => kw.term));
-                                // call the Alpine component method
-                                updateConfigBtn.onclick = () => this.updateConfigWithKeywords( data.keywords.map(kw => kw.term)   );
-                                keywordListDiv.appendChild(updateConfigBtn);
+                if (Array.isArray(data.keywords) && data.keywords.length > 0) {
+                    const html = data.keywords.map(kw =>
+                        `<li class="text-xs">${kw.term}: ${kw.score.toFixed(4)}</li>`
+                    ).join('');
+                    keywordListDiv.innerHTML = `<ul class="list-disc list-inside">${html}</ul>`;
 
-                                if (this.showToast) this.showToast(`Extracted ${data.keywords.length} keywords.`,
-                                    "success");
-                                this.statusMessage = 'Keywords Extracted'; // Set completion status
+                    const updateConfigBtn = document.createElement('button');
+                    updateConfigBtn.className = 'btn btn-success mt-3 text-xs py-1 px-2';
+                    updateConfigBtn.textContent = 'Update Config with These Keywords';
+                    updateConfigBtn.onclick = () => this.updateConfigWithKeywords(
+                        data.keywords.map(kw => kw.term)
+                    );
+                    keywordListDiv.appendChild(updateConfigBtn);
 
-                            }
-                            else {
-                                // Success response but no keywords found
-                                keywordListDiv.innerHTML =
-                                    `<p class="text-xs text-slate-600">${data.message || 'No keywords extracted based on current settings.'}</p>`;
-                                if (this.showToast) this.showToast(data.message || 'No keywords extracted.',
-                                    'info');
-                                this.statusMessage = 'No Keywords Found'; // Set completion status
-                            }
+                    this.showToast?.(`Extracted ${data.keywords.length} keywords.`, "success");
+                    this.statusMessage = 'Keywords Extracted';
+                } else {
+                    keywordListDiv.innerHTML = `<p class="text-xs text-slate-600">${data.message || 'No keywords extracted.'}</p>`;
+                    this.showToast?.(data.message || 'No keywords extracted.', 'info');
+                    this.statusMessage = 'No Keywords Found';
+                }
 
-                        }
-                        catch (error) {
-                            // --- Error Path ---
-                            console.error('[API Error] Run Keyword Builder FAILED:', error);
-                            this.statusMessage = 'Keyword Error'; // Set error status
-                            // Display error in the results area
-                            keywordListDiv.innerHTML =
-                                `<p class="text-xs text-red-600">Error: ${error.message}</p>`;
-                            keywordResultsDiv.style.display = 'block';
-                            // Show error toast
-                            if (this.showToast) this.showToast(`Keyword extraction failed: ${error.message}`,
-                                'error', 10000);
-
-                        }
-                        finally {
-                            // --- Finally Block ---
-                            // Reset status after a delay, unless another operation started
-                            setTimeout(() => {
-                                // Check against all possible completion/error statuses for this action
-                                const relevantStatuses = ['Extracting keywords...', 'Keywords Extracted',
-                                    'No Keywords Found', 'Keyword Error', 'Form Error', 'UI Error'];
-                                if (relevantStatuses.includes(this.statusMessage)) {
-                                    this.statusMessage = 'Idle';
-                                }
-                            }, 4000); // 4-second delay
-                            // --- END Finally Block ---
-                        }
-                    }, // End of _performRunKeywordBuilder
-
+            } catch (error) {
+                console.error('[API Error] Keyword Builder failed:', error);
+                keywordListDiv.innerHTML = `<p class="text-xs text-red-600">Error: ${error.message}</p>`;
+                keywordResultsDiv.style.display = 'block';
+                this.showToast?.(`Keyword extraction failed: ${error.message}`, 'error', 10000);
+                this.statusMessage = 'Keyword Error';
+            } finally {
+                setTimeout(() => {
+                    const completeStates = ['Extracting keywords...', 'Keywords Extracted', 'No Keywords Found', 'Keyword Error', 'Form Error', 'UI Error'];
+                    if (completeStates.includes(this.statusMessage)) {
+                        this.statusMessage = 'Idle';
+                    }
+                }, 4000);
+            }
+        },
+                    
                     configIsDirty() {
                         if (!this.savedConfig) {
                             // If savedConfig hasn't been loaded yet, assume not dirty (or handle as needed)
@@ -989,62 +1208,88 @@ document.addEventListener('alpine:init', () => {
 
                     // === ASYNC ACTIONS (Backend Interaction - Implementations unchanged, ensure endpoints exist) ===
                     // --- API Keys ---
-                    async checkApiKeys() {
-                        console.log("[API Call] Checking API keys via /api/key_status...");
-                        try {
-                            const response = await fetch('/api/key_status'); // Ensure Flask has this GET endpoint
-                            if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                            const status = await response.json();
-                            // Ensure structure matches default before assigning
-                            this.apiKeyStatus.deepseek = status.deepseek || false;
-                            this.apiKeyStatus.openai = status.openai || false;
-                            this.apiKeyStatus.anthropic = status.anthropic || false;
-                            this.apiKeyStatus.cohere = status.cohere || false;
-                            console.log("[API Resp] API Key status loaded:", this.apiKeyStatus);
-                        }
-                        catch (error) {
-                            console.error("[API Error] checkApiKeys FAILED:", error);
-                            // Keep defaults (all false) on error
-                            this.apiKeyStatus = {
-                                deepseek: false,
-                                openai: false,
-                                anthropic: false,
-                                cohere: false
-                            };
-                            if (this.showToast) this.showToast('Could not check API key status.', 'error');
-                        }
+        async checkApiKeys() {
+            console.log("[API Call] Checking API keys via /api/key_status...");
+
+            const adminKey = this.adminApiKey || "";
+
+            try {
+                const response = await fetch('/api/key_status', {
+                    method: 'GET',
+                    headers: {
+                        "X-ADMIN-KEY": adminKey,
+                        "Accept": "application/json"
+                    }
+                });
+
+                if (!response.ok)
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+
+                const status = await response.json();
+                this.apiKeyStatus.deepseek = status.deepseek || false;
+                this.apiKeyStatus.openai = status.openai || false;
+                this.apiKeyStatus.anthropic = status.anthropic || false;
+                this.apiKeyStatus.cohere = status.cohere || false;
+
+                console.log("[API Resp] API Key status loaded:", this.apiKeyStatus);
+                this.statusMessage = "Idle";  // ✅ this line fixes it
+            }
+            catch (error) {
+                console.error("[API Error] checkApiKeys FAILED:", error);
+                this.apiKeyStatus = {
+                    deepseek: false,
+                    openai: false,
+                    anthropic: false,
+                    cohere: false
+                };
+                if (this.showToast)
+                    this.showToast('Could not check API key status.', 'error');
+                this.statusMessage = "Error";
+            }
                     },
 
                     // --- Weaviate Instance Management ---
-                    async fetchWeaviateInstances() {
-                        console.log("[API Call] Fetching Weaviate instances from /list_weaviate_instances...");
-                        this.statusMessage = 'Loading Weaviate instances...'; // Show loading status
-                        try {
-                            const response = await fetch(
-                                '/list_weaviate_instances'); // Ensure Flask has this GET endpoint
-                            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-                            const data = await response.json();
-                            console.log("[API Resp] Received Weaviate data:", data);
-                            if (!Array.isArray(data)) throw new Error(
-                                "Received invalid data format for instances.");
+        async fetchWeaviateInstances() {
+            console.log("[API Call] Fetching Weaviate instances from /list_weaviate_instances...");
+            const LOADING_STATUS = 'Loading Weaviate instances...';
+            this.statusMessage = LOADING_STATUS;
 
-                            // Use the received list directly (active flag is set by backend)
-                            this.weaviateInstances = data;
+            try {
+                const response = await fetch('/list_weaviate_instances');
 
-                            console.log("[API Logic] Processed Weaviate instances:", this.weaviateInstances);
-                            // Only set status to Idle if this specific fetch succeeded
-                            if (this.statusMessage === 'Loading Weaviate instances...') {
-                                this.statusMessage = 'Idle';
-                            }
-                        }
-                        catch (error) {
-                            console.error("[API Error] fetchWeaviateInstances FAILED:", error);
-                            if (this.showToast) this.showToast(
-                                `Error loading Weaviate instances: ${error.message}`, 'error');
-                            this.weaviateInstances = []; // Clear list on error
-                            this.statusMessage = 'Error loading instances'; // Keep error status
-                        }
-                    },
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+
+                if (!Array.isArray(data)) {
+                    throw new Error("Expected array but got: " + typeof data);
+                }
+
+                this.weaviateInstances = data;
+                console.log("[API Logic] Processed Weaviate instances:", this.weaviateInstances);
+
+                // Clear status *only* if no other fetch overwrote it
+                if (this.statusMessage === LOADING_STATUS) {
+                    this.statusMessage = 'Idle';
+                }
+
+            } catch (error) {
+                console.error("[API Error] fetchWeaviateInstances FAILED:", error);
+                this.weaviateInstances = [];
+
+                if (this.showToast) {
+                    this.showToast(`Weaviate instance list failed: ${error.message}`, "error");
+                }
+
+                if (this.statusMessage === LOADING_STATUS) {
+                    this.statusMessage = 'Instance fetch error';
+                }
+            }
+        },
+                    
+                    
 
                     async createWeaviateInstance() {
                         // Added console log from previous step for debugging click
@@ -1360,13 +1605,17 @@ document.addEventListener('alpine:init', () => {
                     
                      
                     // Scroll chat window to bottom after any append
-                     
-                     scrollToBottom() {
-                     this.$nextTick(() => {
-                     const win = this.$root.querySelector('#chat-window');
-                     win.scrollTop = win.scrollHeight;
-                     });
-                    },
+                                
+                    scrollToBottom() {
+                        this.$nextTick(() => {
+                            const win = this.$refs.chatHistoryContainer;
+                            if (!win) {
+                                console.warn('[scrollToBottom] ⚠️ $refs.chatHistoryContainer missing');
+                                return;
+                            }
+                            win.scrollTop = win.scrollHeight;
+                        });
+                                },
                     
                     // --- Saved Chats ---
                     async fetchSavedChats() {
@@ -1636,7 +1885,7 @@ document.addEventListener('alpine:init', () => {
                             // --- Response Handling ---
                             if (result.status === 'centroid_missing') {
                                 // Show popup for user to enter/select centroid path
-                                let newPath = prompt(result.message + "\nEnter new centroid file path (or select):", this.formConfig.paths.DOMAIN_CENTROID_PATH);
+                                let newPath = prompt(result.message + "\nEnter new centroid file path (or select):", this.formConfig.paths.CENTROID_DIR);
                                 if (newPath) {
                                     await this._createCentroidFile(newPath, this.formConfig.paths.DOCUMENT_DIR);
                                     // Optionally, retry ingestion after centroid creation:
@@ -1730,7 +1979,7 @@ document.addEventListener('alpine:init', () => {
 
             // Get config values
             const dataFolder = this.formConfig.paths.DOCUMENT_DIR;
-            const centroidPath = this.formConfig.paths.DOMAIN_CENTROID_PATH;
+            const centroidPath = this.formConfig.paths.CENTROID_DIR;
             const centroidUpdateMode = this.formConfig.ingestion.CENTROID_UPDATE_MODE; // 'always', 'never', or 'auto'
 
             try {
@@ -1745,7 +1994,7 @@ document.addEventListener('alpine:init', () => {
                     : parseFloat(rawThreshold);
                 params.append(
                     'centroid_auto_threshold',
-                    (Number.isFinite(thresholdNum) ? thresholdNum : 0.05).toString()
+                    (Number.isFinite(thresholdNum) ? thresholdNum : 0.5).toString()
                 );
 
                 const response = await fetch('/ingest_block', {
@@ -1970,21 +2219,32 @@ document.addEventListener('alpine:init', () => {
             },
 
 
-                    async fetchPresets() {
-                        console.log("Fetching presets from /list_presets...");
-                        try {
-                            const response = await fetch('/list_presets'); // MUST EXIST IN FLASK
-                            if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                            this.presets = await response.json();
-                            console.log("Presets loaded via API:", Object.keys(this.presets).length);
-                        }
-                        catch (error) {
-                            console.error("Failed to fetch presets via API:", error);
-                            this.presets = {};
-                            this.showToast(`Error loading presets: ${error.message}`, 'error');
-                            // Non-critical, don't re-throw
-                        }
-                    },
+        async fetchPresets() {
+            if (this.isLoadingPresets) {
+                console.warn("[UI] Skipping duplicate fetchPresets call.");
+                return;
+            }
+
+            this.isLoadingPresets = true;
+            console.log("[UI] Fetching presets from /list_presets...");
+
+            try {
+                const response = await fetch('/list_presets');
+                if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+
+                this.presets = await response.json();
+                this.presetsLoaded = true;
+
+                console.log("[UI] Presets loaded via API:", Object.keys(this.presets).length);
+            } catch (error) {
+                console.error("[UI] Failed to fetch presets via API:", error);
+                this.presets = {};
+                this.showToast(`Error loading presets: ${error.message}`, 'error');
+            } finally {
+                this.isLoadingPresets = false;
+            }
+        },
+            
 
                     async applyPreset(presetName) {
                         // presetName comes from $event.target.value
@@ -2210,8 +2470,8 @@ document.addEventListener('alpine:init', () => {
                                         if (this.showToast) this.showToast(result.message ||
                                             `Preset '${presetName}' deleted.`, 'success');
                                         await this.fetchPresets(); // Refresh the preset list dropdown
-                                        this.selectedPresetName = ''; // Clear the selection as the preset is gone
-
+                                        this.selectedPresetName = '';           // force x-model change
+                                        this.presets = { ...this.presets };     // force x-for refresh
                                         // statusMessage will be reset in finally block
 
                                     }
@@ -2251,66 +2511,76 @@ document.addEventListener('alpine:init', () => {
 
                     
         async fetchCentroidStats() {
+            if (!this.selected) return;
+
             try {
-                const resp = await fetch('/api/centroid');
-                if (!resp.ok) {
-                    console.error("Failed to fetch centroid stats:", await resp.text());
-                    return;
+                const res = await fetch(`/centroid_stats?collection=${encodeURIComponent(this.selected)}`);
+                const data = await res.json();
+
+                const meta = data?.stats?.meta;
+                const ok = data?.success && meta && Object.keys(meta).length;
+
+                if (ok) {
+                    this.centroidStats.meta = meta;
+                    this.centroidStats.centroid = true;
+                    this.status = "Centroid stats loaded.";
+                } else {
+                    console.warn("No stats returned for centroid.");
+                    this.centroidStats.meta = {};
+                    this.centroidStats.centroid = false;
+                    this.status = "No centroid stats available.";
                 }
-                const { centroid, meta } = await resp.json();
-                this.centroidStats.centroid = centroid;
-                this.centroidStats.meta = meta;
-            } catch (error) {
-                console.error("Error fetching centroid stats:", error);
-                this.centroidStats.centroid = null;
-                this.centroidStats.meta = null;
+            } catch (err) {
+                console.error("Failed to fetch centroid stats:", err);
+                this.centroidStats.meta = {};
+                this.centroidStats.centroid = false;
+                this.status = "Error fetching centroid stats.";
             }
-                      },
+        },
+                           
+                      
+                      
 
+        async fetchAutoDomainKeywords() {
+            if (this.isLoadingAutoKeywords || this.autoKeywordsLoaded) {
+                console.warn("[UI] Skipping duplicate fetchAutoDomainKeywords call.");
+                return;
+            }
 
-                    async fetchQueryCentroidInsight(queryEmbedding) {
-                        const resp = await fetch('/api/centroid/query_insight', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ vector: queryEmbedding })
-                        });
-                        if (resp.ok) this.queryCentroidInsight = await resp.json();
-                    },
+            this.isLoadingAutoKeywords = true;
+            console.log("[UI] Starting fetchAutoDomainKeywords...");
 
-            async fetchAutoDomainKeywords() {
-                try {
-                    console.log("[Init API] Starting fetchAutoDomainKeywords...");
-                    const res = await fetch('/get_auto_domain_keywords');
-                    const data = await res.json();
+            try {
+                const res = await fetch('/get_auto_domain_keywords');
+                const data = await res.json();
 
-                    // Check if data.keywords exists and is an array
-                    this.allAutoDomainKeywordsList = Array.isArray(data.keywords) ? data.keywords : [];
+                this.allAutoDomainKeywordsList = Array.isArray(data.keywords)
+                    ? data.keywords
+                    : [];
 
-                    // 2. Comma-string for the       display
-                    this.autoDomainKeywords = this.allAutoDomainKeywordsList.length
-                        ? this.allAutoDomainKeywordsList.join(', ')
-                        : '[No auto domain keywords found]';
+                this.autoDomainKeywords = this.allAutoDomainKeywordsList.length
+                    ? this.allAutoDomainKeywordsList.join(', ')
+                    : '[No auto domain keywords found]';
 
-                    // 3. Set for toggling individual keywords
-                    this.activeAutoDomainKeywordsSet = new Set(this.allAutoDomainKeywordsList);
+                this.activeAutoDomainKeywordsSet = new Set(this.allAutoDomainKeywordsList);
 
-                    // 4. Build options using the helper method
-                    this.updateTopNOptions();
-                    this.applyTopNKeywords();
+                this.updateTopNOptions();
+                this.applyTopNKeywords();
 
-                    console.log("[Init API] Finished fetchAutoDomainKeywords with",
-                        this.allAutoDomainKeywordsList.length, "keywords");
-                }
-                catch (error) {
-                    console.error('Failed to fetch auto domain keywords:', error);
-                    this.allAutoDomainKeywordsList = [];
-                    this.autoDomainKeywords = '[Error loading auto domain keywords]';
-                    this.activeAutoDomainKeywordsSet = new Set();
+                this.autoKeywordsLoaded = true;
 
-                    // Still call updateTopNOptions to ensure UI is consistent
-                    this.updateTopNOptions();
-                }
-            },
+                console.log("[UI] Loaded", this.allAutoDomainKeywordsList.length, "auto keywords.");
+            } catch (error) {
+                console.error('[UI] Failed to fetch auto domain keywords:', error);
+                this.allAutoDomainKeywordsList = [];
+                this.autoDomainKeywords = '[Error loading auto domain keywords]';
+                this.activeAutoDomainKeywordsSet = new Set();
+                this.updateTopNOptions();
+            } finally {
+                this.isLoadingAutoKeywords = false;
+            }
+        },
+        
 
 
             // open the modal, fetch data
@@ -2333,47 +2603,8 @@ document.addEventListener('alpine:init', () => {
             
             
             // Send the active keywords to backend (update config/file)
-            async syncActiveKeywordsToBackend() {
-                try {
-                    console.log("Syncing keywords to backend:", Array.from(this.activeAutoDomainKeywordsSet));
-                    const response = await fetch('/update_auto_domain_keywords', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            keywords: Array.from(this.activeAutoDomainKeywordsSet),
-                            target_field: "AUTO_DOMAIN_KEYWORDS"  // Add this line to specify the target field
-                        })
-                    });
-                    const result = await response.json();
-                    if (!result.success) {
-                        console.error("Backend sync failed:", result.error);
-                        throw new Error(result.error || "Unknown error");
-                    }
-                    console.log("Keywords synced successfully");
-                } catch (e) {
-                    console.error("Sync error:", e);
-                    this.showToast(`Failed to update keywords: ${e.message}`, "error");
-                }
-            },
-            clearChatWithConfirmation() {
-                if (confirm('Are you sure you want to clear the chat history?')) {
-                    this.chatHistory = []; // Change from this.messages to this.chatHistory
-
-                    // If saving to localStorage
-                    localStorage.removeItem('chatMessages');
-
-                    // If using server-side storage, add an API call
-                    fetch('/clear-chat', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                });
-                    // Scroll to top (optional)
-                    this.scrollToBottom();
-                }
-},
-        // ─── Markdown + Sanitization Helper ───────────────────────
+          
+        
         safeRenderMarkdown(text) {
             if (!text) return '';
             if (!window.marked || !window.DOMPurify) {

@@ -199,15 +199,18 @@ body {
 }
 
 /* === CARDS === */
-.card {
+card {
     background-color: #ffffff;
-    border-radius: 12px;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.05);
-    padding: 24px;
+    border-radius: 8px;
+    /* slightly smaller corners */
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+    /* lighter, tighter shadow */
+    padding: 16px;
+    /* reduce from 24px → 16px */
     border: 1px solid rgba(0, 0, 0, 0.1);
-    margin-top: 16px;
-    transition: box-shadow 0.3s ease;
-}
+    margin-top: 8px;
+    /* reduce from 16px → 8px */
+    transition: box-shadow 0.3s ease;  }
 
 .card:hover {
     box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05), 0 1px 3px rgba(0, 0, 0, 0.1);
@@ -362,23 +365,6 @@ input[type=range].custom-slider::-moz-range-thumb {
 input[type=range].custom-slider:focus::-moz-range-thumb {
     box-shadow: 0 0 0 4px rgba(170, 170, 170, 0.3);
     /* Focus effect */
-}
-/* Remove green border and background from active instances */
-.available-instances-list .flex {
-    border: none !important;
-    /* Remove border completely */
-    background: transparent !important;
-    /* Remove background color */
-}
-
-.available-instances-list .flex.bg-green-100 {
-    background: transparent !important;
-    /* Remove background color */
-}
-
-.available-instances-list .flex.border-green-300 {
-    border: none !important;
-    /* Remove green border */
 }
 
 /* Toggle Checkbox Style */
@@ -651,4 +637,82 @@ fieldset>legend {
             border: 1px solid #ddd;
             padding: 0.5rem;
         }
+        
+        /* Let fieldsets be direct children of <main> for grid layout */
+        main>form {display: contents;}
+       /* Map  sections to the grid-template-areas names */
+        .area-presets {grid-area: presets; }
+        .area-retrieval {grid-area: retrieval; }
+        .area-model { grid-area: model;    }
+        .area-chat     { grid-area: chat; }
+        .area-files    { grid-area: files; }
+        .area-docs     { grid-area: docs; }
+        .area-keywords { grid-area: keywords; }
+        .area-stats    { grid-area: stats; }
+        .area-weaviate { grid-area: weaviate; }
+        .area-dist     { grid-area: dist; }
+        .area-footer   { grid-area: footer; }
+      
 
+        /* Added new grid areas */
+        .area-dist1 {
+            grid-area: dist1;
+        }
+    
+        .area-dist2 {
+            grid-area: dist2;
+        }
+    
+        /* Fixed grid row heights */
+        main {
+            grid-auto-rows: minmax(100px, auto);
+        }
+    
+        /* Unified fieldset styling */
+        fieldset {
+            background-color: #f0f0f0;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+    
+        /* Fixed legend positioning */
+        legend {
+            background: white;
+            padding: 0 10px;
+            font-weight: bold;
+        }
+    
+        /* Improved card layout */
+        .card {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+    
+        /* Fixed footer positioning */
+        footer {
+            margin-top: auto;
+        }
+    
+        /* Responsive adjustments */
+        @media (max-width: 1024px) {
+            main {
+                grid-template-columns: 1fr;
+                grid-template-areas:
+                    'files'
+                    'keywords'
+                    'stats'
+                    'presets'
+                    'chat'
+                    'retrieval'
+                    'model'
+                    'env'
+                    'docs'
+                    'weaviate'
+                    'dist1'
+                    'dist2'
+                    'footer';
+            }
+        }

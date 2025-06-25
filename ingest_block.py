@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Generator, List, Optional, Set, Tuple, Union
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import weaviate
+from weaviate.client import WeaviateClient
 
 
 
@@ -139,7 +141,7 @@ def centroid_exists(centroid_path):
 # Accepts an optional, already connected Weaviate client instance
 # --- Corrected extract_text function ---
 
-def extract_text(filepath: Path, client_instance: Optional[weaviate.Client] = None) -> str:
+def extract_text(filepath: Path, client_instance: Optional[WeaviateClient] = None) -> str:
     """Extracts text from various file types, reusing a passed Weaviate client for PDFs."""
     ext = filepath.suffix.lower()
     logger.debug(f"Extracting text from: {filepath.name} (type: {ext})")
@@ -154,38 +156,41 @@ def extract_text(filepath: Path, client_instance: Optional[weaviate.Client] = No
         return extract_text_from_txt(filepath)
     if ext == ".pdf":
         temp_client_created = False
-        # Decide which client to use
-        if client_instance and client_instance.is_connected():
+
+        # Choose the client to use
+        if client_instance and client_instance.is_live():
             loader_client = client_instance
-            logger.debug(f"Reusing provided client instance for PDF extraction: {filepath.name}")
+            logger.debug(f"Reusing provided Weaviate client for PDF extraction: {filepath.name}")
         else:
             if client_instance:
-                logger.warning(f"Passed client not connected for {filepath.name}, creating temporary one.")
+                logger.warning(f"Provided Weaviate client not live, creating temp client for {filepath.name}")
             else:
-                logger.warning(f"No client passed to extract_text for {filepath.name}, creating temporary one.")
+                logger.warning(f"No Weaviate client passed, creating temp client for {filepath.name}")
+
             loader_client = PipelineConfig.get_client()
-            if not loader_client:
-                logger.error(f"Failed to get fallback Weaviate client for PDF extraction: {filepath.name}")
+            if not loader_client or not loader_client.is_live():
+                logger.error(f"Failed to obtain a live Weaviate client for PDF extraction: {filepath.name}")
                 return ""
             temp_client_created = True
+            logger.debug(f"Temporary Weaviate client created for PDF extraction: {filepath.name}")
 
         try:
             loader = RobustPDFLoaderV4(str(filepath), client=loader_client)
             docs = loader.load()
             return "\n".join(doc.page_content for doc in docs if doc.page_content)
         except Exception as e:
-            logger.error(f"Error processing PDF file {filepath.name} with RobustLoader: {e}", exc_info=True)
+            logger.error(f"Error extracting PDF text {filepath.name}: {e}", exc_info=True)
             return ""
         finally:
             if temp_client_created:
                 try:
                     loader_client.close()
-                    logger.debug(f"Closed temporary client after PDF extraction: {filepath.name}")
+                    logger.debug(f"Closed temporary Weaviate client after PDF extraction: {filepath.name}")
                 except Exception as close_err:
-                    logger.error(f"Error closing temporary client for {filepath.name}: {close_err}")
-    
+                    logger.error(f"Error closing temporary Weaviate client for {filepath.name}: {close_err}")
+
     # Unsupported extension
-    return ""  # no content extracted for this file type
+    return ""
 
 
 class CleanableOllamaEmbeddings(OllamaEmbeddings):

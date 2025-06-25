@@ -1,48 +1,184 @@
+# Disable optional telemetry as early as possible
 import os
-# Disable optional telemetry
 os.environ['POSTHOG_DISABLED'] = 'true'
 
-import logging
-import json
-import traceback
-import docker
-from docker.errors import NotFound as DockerNotFound, APIError as DockerAPIError
-from werkzeug.utils import secure_filename
-import yaml
+# ─── Standard library ────────────────────────────────────────────────────────────────
 import csv
-from typing import Dict, Any, List, Optional
-from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, session
-from flask_session import Session # Import Session from flask_session
-from flask_sqlalchemy import SQLAlchemy
+import io
+import json
+import logging
+import re
+import socket
+import subprocess
+import sys
+import threading
+import time
+import urllib.parse
+import yaml
+import pipeline
+import numpy as np
 from datetime import datetime
 from pathlib import Path
-from dotenv import load_dotenv
-import re
-import shutil
-import weaviate
-from weaviate.exceptions import WeaviateConnectionError, WeaviateStartUpError # Use for specific catching
-import urllib.parse
-from logging.handlers import RotatingFileHandler # Use rotating handler for safety
-import sys # For StreamHandler
-from config import save_yaml_config, CONFIG_YAML_PATH
-import threading, time
-import socket
 from threading import Thread, Timer
-from ingest_block       import run_ingestion as run_incremental_ingestion
-from centroid_manager   import centroid_exists, CentroidManager, should_recalculate_centroid
-from calculate_centroid import calculate_and_save_centroid
-from validate_configs   import main as validate_configs
-from config import cfg
-from pydantic import BaseModel, Field, ValidationError
-from centroid_manager import CentroidManager, get_centroid_stats
-from flask import send_file
+from typing import Any, Dict, List, Optional
+
+# ─── Third-party libraries ──────────────────────────────────────────────────────────
+import docker
 import matplotlib
-matplotlib.use('Agg')
+matplotlib.use('Agg')  # must be set before pyplot
 import matplotlib.pyplot as plt
-import io
-import subprocess
-import tempfile
-import signal
+import requests
+import weaviate
+from dotenv import load_dotenv
+from flask import (
+    current_app, Flask, g, jsonify, render_template,
+    request, send_file, session, url_for
+)
+from flask_login import LoginManager
+from flask_session import Session
+from flask_sqlalchemy import SQLAlchemy
+from logging.handlers import RotatingFileHandler
+from pydantic import BaseModel, Field, ValidationError
+from requests.exceptions import RequestException
+from werkzeug.exceptions import HTTPException
+from werkzeug.utils import secure_filename
+
+# ─── Local application modules ─────────────────────────────────────────────────────
+from calculate_centroid import calculate_and_save_centroid
+from centroid_manager import (
+    CentroidManager, centroid_exists, get_centroid_stats,
+    should_recalculate_centroid
+)
+from config import cfg, CONFIG_YAML_PATH, save_yaml_config, AppConfig
+if cfg is None:
+    logger.critical("Config failed to load; exiting.")
+    sys.exit(1)
+
+from ingest_block import run_ingestion as run_incremental_ingestion
+from pipeline import (
+    initialize_pipeline,
+    init_pipeline_once,
+    is_pipeline_valid,
+    PIPELINE_INSTANCE
+)
+from datetime import datetime
+from validate_configs import main as validate_configs
+
+# ─── Validate config files at startup ────────────────────────────────────────────────
+try:
+    validate_configs()
+except SystemExit as e:
+    if e.code != 0:
+        logging.critical(
+            f"Configuration validation failed (exit code {e.code}). Shutting down."
+        )
+        sys.exit(e.code)
+
+# ─── Load environment variables ───────────────────────────────────────────────────────
+load_dotenv()
+
+# ─── API key status cache ────────────────────────────────────────────────────────────
+API_KEY_STATUS_CACHE = {
+    "deepseek":  bool(os.getenv("DEEPSEEK_API_KEY")),
+    "openai":    bool(os.getenv("OPENAI_API_KEY")),
+    "anthropic": bool(os.getenv("ANTHROPIC_API_KEY")),
+    "cohere":    bool(os.getenv("COHERE_API_KEY")),
+}
+
+# ─── Flask application setup ────────────────────────────────────────────────────────
+app = Flask(__name__, static_folder="static")
+app.secret_key = os.getenv(
+    "FLASK_SECRET_KEY",
+    "fallback_secret_key_for_dev_only"
+)
+if app.secret_key == "fallback_secret_key_for_dev_only":
+    print(
+        "WARNING: Using fallback Flask secret key. "
+        "Set FLASK_SECRET_KEY environment variable for production."
+    )
+
+# Login manager
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = "login"
+
+@login_manager.user_loader
+def load_user(user_id):
+    return None  # No login system implemented yet
+
+# Session store
+app.config.update(
+    SESSION_TYPE="filesystem",
+    SESSION_PERMANENT=False,
+    SESSION_USE_SIGNER=True,
+    SESSION_FILE_DIR="./.flask_session",
+    SESSION_FILE_THRESHOLD=100,
+)
+Session(app)
+
+# Database (SQLite chat history)
+db = SQLAlchemy()
+db_path = Path(app.instance_path) / "chat_history.db"
+app.config.update(
+    SQLALCHEMY_DATABASE_URI=f"sqlite:///{db_path}",
+    SQLALCHEMY_TRACK_MODIFICATIONS=False,
+)
+
+# ─── Logging setup ──────────────────────────────────────────────────────────────────
+log_level = logging.INFO
+formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+
+# Ensure instance folder exists
+try:
+    os.makedirs(app.instance_path, exist_ok=True)
+except OSError as e:
+    print(f"CRITICAL: Could not create instance path '{app.instance_path}': {e}", file=sys.stderr)
+
+# File handler
+log_file = Path(app.instance_path) / "app.log"
+file_handler = RotatingFileHandler(str(log_file), maxBytes=5*1024*1024, backupCount=3)
+file_handler.setFormatter(formatter)
+file_handler.setLevel(log_level)
+
+# Console handler
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setFormatter(formatter)
+console_handler.setLevel(log_level)
+
+# Apply to root logger
+root = logging.getLogger()
+root.setLevel(log_level)
+root.handlers.clear()
+root.addHandler(file_handler)
+root.addHandler(console_handler)
+
+# Suppress overly-verbose logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("weaviate").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+logger = logging.getLogger(__name__)
+logger.info("Logging configured: Level=%s, File=%s", logging.getLevelName(log_level), log_file)
+
+# ─── Docker client for multi-instance control ───────────────────────────────────────
+docker_available = False
+docker_client = None
+try:
+    docker_client = docker.from_env()
+    docker_client.ping()
+    docker_available = True
+    logger.info("Docker client initialized and connected successfully.")
+except Exception as err:
+    logger.error(f"Failed to initialize Docker client: {err}. Multi-instance disabled.")
+
+# ─── Shared constants ────────────────────────────────────────────────────────────────
+WEAVIATE_STATE_FILE     = Path("./weaviate_state.json").resolve()
+DEFAULT_BASE_HTTP_PORT  = 8090
+DEFAULT_BASE_GRPC_PORT  = 51001
+WEAVIATE_IMAGE          = "semitechnologies/weaviate:1.25.1"
+WEAVIATE_DATA_DIR_HOST  = Path("./weaviate_data").resolve()
+SAVE_LOCK               = threading.Lock()
+
 
 
 class KeywordBuilderRequest(BaseModel):
@@ -78,106 +214,6 @@ class KeywordBuilderRequest(BaseModel):
          allow_population_by_field_name = True
          extra = 'ignore'    # silently drop any unknown fields
 
-
-
-# run the validator; it sys.exits( non-zero ) on errors
-try:
-    validate_configs()
-except SystemExit as e:
-    # only treat non-zero exit as fatal
-    if e.code != 0:
-        logging.critical(f"Configuration validation failed (exit code {e.code}). Shutting down.")
-        sys.exit(e.code)
-    # else: exit code 0 → validation passed → continue startup
-
-
-load_dotenv()
-
-
-# --- Configure Flask App ---
-app = Flask(__name__)
-app.secret_key = os.getenv('FLASK_SECRET_KEY', 'fallback_secret_key_for_dev_only')
-if app.secret_key == 'fallback_secret_key_for_dev_only':
-    print("WARNING: Using fallback Flask secret key. Set FLASK_SECRET_KEY environment variable for production.")
-# --- End Flask App Config ---
-
-logger = app.logger
-log_level = logging.INFO # Or DEBUG based on needs
-log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-
-
-SAVE_LOCK = threading.Lock()
-
-
-
-# Use instance path for log file - NOW 'app' exists
-log_file_path = os.path.join(app.instance_path, 'app.log')
-# Ensure instance path exists BEFORE creating handler
-try:
-    os.makedirs(app.instance_path, exist_ok=True)
-except OSError as e:
-    print(f"CRITICAL: Failed to create instance path '{app.instance_path}': {e}", file=sys.stderr)
-  
-# File Handler (Rotating)
-# Rotate logs at 5MB, keep 3 backups
-file_handler = RotatingFileHandler(log_file_path, maxBytes=5*1024*1024, backupCount=3, encoding='utf-8')
-file_handler.setFormatter(log_formatter)
-file_handler.setLevel(log_level)
-
-# Console Handler
-stream_handler = logging.StreamHandler(sys.stdout)
-stream_handler.setFormatter(log_formatter)
-stream_handler.setLevel(log_level)
-
-# Get the root logger and configure it
-root_logger = logging.getLogger()
-root_logger.setLevel(log_level)
-root_logger.handlers.clear() # Remove any default handlers first
-root_logger.addHandler(file_handler)
-root_logger.addHandler(stream_handler)
-
-# Optional: Quieten noisy libraries
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("weaviate").setLevel(logging.WARNING)
-logging.getLogger("urllib3").setLevel(logging.WARNING)
-# logging.getLogger("pdfplumber").setLevel(logging.WARNING) # Uncomment if needed
-
-logger = logging.getLogger(__name__) # Get logger for app.py itself
-logger.info("Logging configured: Level=%s, File=%s", logging.getLevelName(log_level), log_file_path)
-# --- END Logging Configuration Block ---
-
-# --- Configure Database ---
-db = SQLAlchemy()
-db_path = os.path.join(app.instance_path, 'chat_history.db')
-app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
-# --- Configure Flask-Session ---
-sess = Session()
-app.config["SESSION_TYPE"] = "filesystem"
-app.config["SESSION_PERMANENT"] = False
-app.config["SESSION_USE_SIGNER"] = True
-app.config["SESSION_FILE_DIR"] = "./.flask_session"
-app.config["SESSION_FILE_THRESHOLD"] = 100
-
-# --- Multi-Instance Constants ---
-WEAVIATE_STATE_FILE = Path("./weaviate_state.json").resolve()
-DEFAULT_BASE_HTTP_PORT = 8090
-DEFAULT_BASE_GRPC_PORT = 51001
-WEAVIATE_IMAGE = "semitechnologies/weaviate:1.25.1"
-WEAVIATE_DATA_DIR_HOST = Path("./weaviate_data").resolve()
-
-# --- Docker Client Initialization ---
-docker_available = False
-docker_client = None
-try:
-    docker_client = docker.from_env()
-    docker_client.ping()
-    docker_available = True
-    logger.info("Docker client initialized and connected successfully.")
-except Exception as docker_err:
-    logger.error(f"Failed to initialize Docker client: {docker_err}. Multi-instance creation disabled.")
-
 # --- Database Model ---
 class SavedChat(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -196,67 +232,36 @@ except ImportError:
     try: from pydantic.error_wrappers import ValidationError
     except ImportError: logger.error("Pydantic ValidationError could not be imported."); ValidationError = Exception
 
-# --- Import Project Modules (Config, Pipeline) ---
-config_available = False
-cfg = None
-AppConfig = None
-FlowStyleList = list
-
-# Add this detailed config validation check after the config import
+ # --- Import Project Modules (Config, Pipeline) ---
 try:
-    from config import cfg, AppConfig, FlowStyleList
-    config_available = True
-    logger.info("Successfully imported configuration (cfg, AppConfig).")
-except ImportError as config_import_error:
-    logger.critical(f"CRITICAL: Failed to import configuration: {config_import_error}", exc_info=True)
-    config_available = False
-    exit(1)  # Exit immediately with error code
+     from config import cfg, CONFIG_YAML_PATH, save_yaml_config, AppConfig
+     logger.info("Successfully imported configuration (cfg, AppConfig).")
+except ImportError as e:
+     logger.critical(f"CRITICAL: Failed to import configuration modules: {e}", exc_info=True)
+     sys.exit(1)
 
-# Add this detailed config validation check
-if not cfg:
-    logger.critical("CRITICAL: Configuration loaded but 'cfg' is None. Diagnosing issue...")
-    # Check each section that might have failed
+if cfg is None:
+    logger.critical("CRITICAL: Configuration loaded but 'cfg' is None. Diagnosing issue…")
+     # 1) Can we instantiate defaults?
     try:
-        temp_cfg = AppConfig()  # Try to create default config
-        logger.critical("Default config created successfully. Issue is with loading from YAML.")
-        
-        # Try loading raw YAML to identify problematic section
-        import yaml
-        try:
-            with open(CONFIG_YAML_PATH, 'r', encoding='utf-8') as f:
-                raw_config = yaml.safe_load(f)
-                logger.critical(f"Raw YAML loaded. Checking sections...")
-                
-                # Check each section individually
-                for section in ['security', 'retrieval', 'model', 'document', 'paths', 'env', 'pipeline']:
-                    if section not in raw_config:
-                        logger.critical(f"Missing section in YAML: '{section}'")
-                    else:
-                        try:
-                            # Try to validate just this section
-                            section_class = getattr(AppConfig, section).annotation
-                            section_class(**raw_config[section])
-                            logger.critical(f"Section '{section}' validates correctly")
-                        except Exception as section_error:
-                            logger.critical(f"ERROR in section '{section}': {section_error}")
-        except Exception as yaml_error:
-            logger.critical(f"Failed to load raw YAML: {yaml_error}")
-    except Exception as default_cfg_error:
-        logger.critical(f"Failed to create default config: {default_cfg_error}")
-    
+         _ = AppConfig()
+         logger.critical("Default AppConfig instantiated successfully; loading from YAML failed.")
+    except Exception as default_error:
+         logger.critical(f"Failed to create default AppConfig: {default_error}", exc_info=True)
+
+     # 2) Inspect raw YAML for missing top-level sections
+    import yaml
+    try:
+         with open(CONFIG_YAML_PATH, 'r', encoding='utf-8') as f:
+             raw = yaml.safe_load(f) or {}
+         missing = [sec for sec in AppConfig.model_fields if sec not in raw]
+         for sec in missing:
+             logger.critical(f"Missing section in YAML: '{sec}'")
+    except Exception as yaml_error:
+         logger.critical(f"Failed to inspect raw YAML: {yaml_error}", exc_info=True)
+
     logger.critical("Configuration diagnosis complete. Exiting application.")
-    exit(1)  # Exit with error code
-
-pipeline_available = False
-pipeline = None
-IndustrialAutomationPipeline = None
-try:
-    from pipeline import IndustrialAutomationPipeline
-    pipeline_available = True
-    logger.info("Successfully imported IndustrialAutomationPipeline.")
-except ImportError:
-    logger.error("Failed to import IndustrialAutomationPipeline. Check pipeline.py.", exc_info=True)
-
+    sys.exit(1)
 
 # ---  Ingestion Script Imports ---
 ingest_full_available = False
@@ -300,64 +305,34 @@ except Exception as e: logger.error(f"CRITICAL: Could not create required direct
 # --- Global Presets Variable ---
 presets = {}
 
-# At module scope, before your function definition:
-_pipeline_initializing = False
 
-def initialize_pipeline(app_context=None):
-    """Initializes or re-initializes the global pipeline object exactly once at a time,
-       but only if the configured Weaviate endpoint is reachable."""
-    global pipeline, pipeline_available, _pipeline_initializing
+# === Utility: Reload config and re-init pipeline ===
+def reload_and_maybe_reinit(ctx, override_weaviate: bool = False):
+    
 
-    if _pipeline_initializing:
-        return
-    _pipeline_initializing = True
+    with ctx:
+        try:
+            # 1) Reload YAML-backed cfg
+            cfg.reload()
+            if override_weaviate:
+                # if you ever need to force to a hard-coded instance
+                cfg.retrieval.WEAVIATE_HOST = "localhost"
+                cfg.retrieval.WEAVIATE_HTTP_PORT = 8092
+                logger.info("Weaviate override applied after config reload.")
 
-    try:
-        # pick the right context
-        ctx = app_context or app.app_context()
-        with ctx:
-            logger.info("Initializing pipeline…")
+            logger.info("Reloaded config from disk.")
 
-            # short-circuit if pipeline code or config missing
-            if not pipeline_available:
-                logger.error("Skip init: Pipeline module unavailable.")
-                pipeline = None
-                return
-            if not config_available or cfg is None:
-                logger.error("Skip init: Config unavailable.")
-                pipeline = None
-                return
+            # 2) Always call init_pipeline_once – it will only rebuild if:
+            #    - forced, or
+            #    - host/port changed, or
+            #    - live client params don’t match current cfg
+            init_pipeline_once(force=override_weaviate)
 
-            # --- 1) probe Weaviate socket ---
-            host = cfg.retrieval.WEAVIATE_HOST
-            port = cfg.retrieval.WEAVIATE_HTTP_PORT
-            try:
-                sock = socket.create_connection((host, port), timeout=2)
-                sock.close()
-            except Exception as e:
-                logger.warning(f"Weaviate unreachable at {host}:{port}, skipping pipeline init: {e}")
-                pipeline = None
-                return
+        except Exception as reload_err:
+            logger.error("Reload or pipeline init failed.", exc_info=True)
 
-            # --- 2) close any old client ---
-            try:
-                old = getattr(pipeline, "retriever", None)
-                if old and hasattr(old, "weaviate_client"):
-                    old.weaviate_client.close()
-                    logger.info("Closed existing Weaviate client.")
-            except Exception as close_err:
-                logger.warning(f"Error closing old client: {close_err}")
 
-            # --- 3) actually build the pipeline now that we know Weaviate is live ---
-            pipeline = IndustrialAutomationPipeline()
-            logger.info("Pipeline initialized successfully.")
 
-    except Exception as e:
-        pipeline = None
-        logger.error(f"Pipeline initialization failed: {e}", exc_info=True)
-
-    finally:
-        _pipeline_initializing = False
 
 
 # === Utility Functions ===
@@ -441,49 +416,41 @@ def save_presets(presets_data, filename=PRESETS_FILE):
 # === NEW: Multi-Instance Helper Functions ===
 
 def save_config_to_yaml(config_dict: Dict[str, Any]) -> bool:
-        """Validates and saves the config dictionary to the YAML file."""
-        global cfg # Ensure we update the global cfg instance
-        if not config_available or not AppConfig:
-            logging.error("Cannot save YAML: Config system (cfg or AppConfig) not available.")
-            raise RuntimeError("Configuration system not loaded.")
+    """Validates and saves the config dictionary to the YAML file."""
+    global cfg  # Ensure we update the global cfg instance
 
-        try:
-            # 1. Validate the incoming dictionary by creating a new AppConfig instance
-            validated_config = AppConfig(**config_dict)
+    # Guard against missing config
+    if cfg is None:
+        logging.error("Cannot save YAML: 'cfg' is None.")
+        raise RuntimeError("Configuration system not loaded.")
 
-            # 2. Update the global 'cfg' instance
-            # This is slightly tricky as Pydantic models are often immutable after creation.
-            # Easiest might be to reassign 'cfg' if AppConfig loading allows it,
-            # or update section by section if 'cfg' must remain the same object.
-            # Let's try section-by-section update:
-            for section_name in validated_config.model_fields.keys():
-                setattr(cfg, section_name, getattr(validated_config, section_name))
+    try:
+        # 1. Validate the incoming dictionary by creating a new AppConfig instance
+        validated_config = AppConfig(**config_dict)
 
-            # 3. Prepare the dictionary for YAML dump (using validated data)
-            # Use model_dump() for Pydantic v2, or .dict() for v1
-            dump_dict = validated_config.model_dump() if hasattr(validated_config, 'model_dump') else validated_config.dict()
+        # 2. Replace the global 'cfg' with the validated config model
+        cfg = validated_config
 
-            # Handle FlowStyleList for keywords before dumping
-            #if FlowStyleList and 'env' in dump_dict:
-            #    for key in ['DOMAIN_KEYWORDS', 'AUTO_DOMAIN_KEYWORDS', 'USER_ADDED_KEYWORDS']:
-            #        if key in dump_dict['env'] and isinstance(dump_dict['env'][key], list):
-            #            dump_dict['env'][key] = FlowStyleList(dump_dict['env'][key])
+        # 3. Prepare the dictionary for YAML dump
+        dump_dict = validated_config.model_dump()  # Pydantic v2
 
+        # 4. Atomic write to YAML
+        temp_path = f"{CONFIG_YAML_PATH}.tmp"
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            yaml.safe_dump(dump_dict, f, indent=2, sort_keys=False)
+        os.replace(temp_path, CONFIG_YAML_PATH)
 
-            # 4. Atomic write to YAML using standard Dumper
-            temp_path = f"{CONFIG_YAML_PATH}.tmp"
-            with open(temp_path, 'w', encoding='utf-8') as f:
-                yaml.dump(dump_dict, f, indent=2, sort_keys=False)
-            os.replace(temp_path, CONFIG_YAML_PATH)
-            logging.info(f"Configuration saved successfully to {CONFIG_YAML_PATH}")
-            return True
+        logging.info(f"Configuration saved successfully to {CONFIG_YAML_PATH}")
+        return True
 
-        except ValidationError as e:
-            logging.error(f"Configuration validation failed: {e}")
-            raise # Re-raise for Flask route to catch
-        except Exception as e:
-            logging.error(f"Failed to save YAML configuration: {e}", exc_info=True)
-            raise RuntimeError(f"Config save failed: {str(e)}")
+    except ValidationError as e:
+        logging.error(f"Configuration validation failed: {e}")
+        raise
+
+    except Exception as e:
+        logging.error(f"Failed to save YAML configuration: {e}", exc_info=True)
+        raise RuntimeError(f"Config save failed: {str(e)}")
+
 
 def get_new_auto_keywords(filename="new_auto_keywords.txt") -> List[str]:
         """Reads keywords from the new_auto_keywords.txt file."""
@@ -543,7 +510,7 @@ def get_next_ports(existing_instances: Dict) -> tuple[int, int]:
 
 def get_active_instance_name() -> Optional[str]:
         """Finds the instance name matching the current cfg connection details."""
-        if not cfg: return None
+        if cfg is None: return None
         current_host = cfg.retrieval.WEAVIATE_HOST
         current_http_port = cfg.retrieval.WEAVIATE_HTTP_PORT
         #logger = app.logger # Use app logger
@@ -586,12 +553,27 @@ def get_active_instance_name() -> Optional[str]:
 # === Flask Routes ===
 
 # --- Main Route & API Endpoints ---
+
+
+@app.errorhandler(Exception)
+def handle_all_errors(e):
+    # Let Flask’s built-in HTTPExceptions (404, 403, etc.) pass through unmodified
+    if isinstance(e, HTTPException):
+        return e
+
+    # Log and return JSON for any other uncaught exceptions
+    current_app.logger.error(f"Uncaught error: {e}", exc_info=True)
+    resp = jsonify({ "error": str(e) })
+    resp.status_code = 500
+    return resp
+
+
 @app.route("/", methods=["GET"])
 def index(): return render_template("index.html")
 
 @app.route('/get_config', methods=['GET'])
 def get_config_api():
-    if not config_available or not cfg: 
+    if cfg is None:
         return jsonify({"error": "Config unavailable."}), 503
     try:
         # Initialize the config_dict in case of an error
@@ -677,53 +659,16 @@ def delete_preset_api(preset_name):
 
 @app.route('/api/key_status', methods=['GET'])
 def api_key_status():
-    """API Endpoint: Returns the status of configured API keys."""
-    #logger = app.logger # Use app's logger
-    if not config_available or not cfg or not cfg.security:
-        logger.warning("API /api/key_status: Config/Security settings unavailable.")
-        # Return a consistent structure even on error, or a 503
-        return jsonify({
-            "deepseek": False,
-            "openai": False,
-            "anthropic": False,
-            "cohere": False,
-            "error": "Configuration unavailable"
-        }), 503 # Service Unavailable might be appropriate
-
-    try:
-        status = {
-            # Check if the key exists and has a non-empty string value
-            "deepseek": bool(getattr(cfg.security, 'DEEPSEEK_API_KEY', None)),
-            "openai": bool(getattr(cfg.security, 'OPENAI_API_KEY', None)),
-            "anthropic": bool(getattr(cfg.security, 'ANTHROPIC_API_KEY', None)),
-            "cohere": bool(getattr(cfg.security, 'COHERE_API_KEY', None))
-            # Add other keys here if needed
-        }
-        logger.info(f"API /api/key_status: Returning status: {status}")
-        return jsonify(status), 200
-
-    except Exception as e:
-        logger.error(f"API /api/key_status: Unexpected error checking key status: {e}", exc_info=True)
-        # Return a consistent error structure
-        return jsonify({
-            "deepseek": False,
-            "openai": False,
-            "anthropic": False,
-            "cohere": False,
-            "error": f"Internal server error: {str(e)}"
-        }), 500
+    return jsonify(API_KEY_STATUS_CACHE), 200
 
 
 # --- Action Endpoints (JSON based) ---
 @app.route("/run_pipeline", methods=["POST"])
 def run_pipeline():
-    # Ensure the pipeline is initialized; fallback if not
-    if not pipeline_available or not pipeline:
-        logger.warning("[run_pipeline] Pipeline not initialized. Attempting fallback init...")
-        initialize_pipeline()
-
-    # If it still failed after fallback, return error
-    if not pipeline_available or not pipeline:
+    # 1) Get or rebuild the pipeline instance
+    inst = init_pipeline_once()
+    if inst is None or not is_pipeline_valid(inst):
+        logger.critical("[run_pipeline] Pipeline unavailable or invalid.")
         return jsonify({
             "role": "assistant",
             "text": "Error: Pipeline unavailable.",
@@ -731,22 +676,29 @@ def run_pipeline():
         }), 503
 
     try:
-        data = request.get_json()
-        assert data and data.get("query")
-        user_query = data["query"].strip()
-        assert user_query
+        # 2) Parse and validate incoming query
+        data = request.get_json(silent=True) or {}
+        user_query = data.get("query", "").strip()
+        if not user_query:
+            return jsonify({
+                "role": "assistant",
+                "text": "Error: Missing or empty 'query'.",
+                "error": True
+            }), 400
 
-        chat_history = session.get('chat_history', [])
-        result_dict = pipeline.generate_response(query=user_query, chat_history=chat_history)
+        # 3) Call the pipeline
+        chat_history = session.get("chat_history", [])
+        result_dict = inst.generate_response(query=user_query, chat_history=chat_history)
+        logger.info(f"[Pipeline] Query successful. Result: {result_dict}")
 
-        logger.warning(f"[Pipeline Debug] Result from pipeline: {result_dict}")
-
+        # 4) Extract text from the result
         raw_response = result_dict.get("response", "")
         if isinstance(raw_response, dict):
             response_text = raw_response.get("response", "").strip()
         else:
             response_text = str(raw_response).strip()
 
+        # 5) Build assistant message
         assistant_message = {
             "role": "assistant",
             "text": response_text or "Sorry, I couldn't generate a valid response.",
@@ -755,105 +707,260 @@ def run_pipeline():
             "timestamp": datetime.now().isoformat()
         }
 
+        # 6) Persist chat history and return
         chat_history.append(assistant_message)
-        session['chat_history'] = chat_history
-
-        return jsonify(assistant_message)
+        session["chat_history"] = chat_history
+        return jsonify(assistant_message), 200
 
     except Exception as e:
-        logger.error(f"Error in /run_pipeline: {str(e)}", exc_info=True)
+        logger.error("Error in /run_pipeline", exc_info=True)
         return jsonify({
             "role": "assistant",
-            "text": f"Internal error: {str(e)}",
+            "text": f"Internal error: {e}",
             "error": True
         }), 500
 
 
 @app.route('/upload_files', methods=['POST'])
 def upload_files():
-    # ... (Keep implementation using request.files) ...
-    if not config_available: return jsonify({"success": False, "error": "Config unavailable"}), 500
-    try: upload_dir = Path(cfg.paths.DOCUMENT_DIR).resolve(); upload_dir.mkdir(parents=True, exist_ok=True)
-    except Exception as dir_e: return jsonify({"success": False, "error": f"Dir error: {dir_e}"}), 500
+    # Ensure configuration is loaded
+    if cfg is None:
+        return jsonify({"success": False, "error": "Configuration unavailable."}), 503
+
+    # Create upload directory
     try:
-        files = request.files.getlist("files"); assert files and not all(not f or f.filename == '' for f in files)
-        saved_files = []
+        upload_dir = Path(cfg.paths.DOCUMENT_DIR).resolve()
+        upload_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as dir_e:
+        return jsonify({"success": False, "error": f"Could not prepare upload directory: {dir_e}"}), 500
+
+    # Process incoming files
+    try:
+        files = request.files.getlist("files")
+        if not files or all(f.filename == "" for f in files):
+            return jsonify({"success": False, "error": "No files provided."}), 400
+
+        saved_files: List[str] = []
         for file in files:
-            if file and file.filename: filename = secure_filename(file.filename); file.save(upload_dir / filename); saved_files.append(filename)
-        return jsonify({"success": True, "files": saved_files})
-    except Exception as e: return jsonify({"success": False, "error": f"Upload failed: {e}"}), 500
+            if file and file.filename:
+                filename = secure_filename(file.filename)
+                target = upload_dir / filename
+                file.save(target)
+                saved_files.append(filename)
+
+        return jsonify({"success": True, "files": saved_files}), 200
+
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Upload failed: {e}"}), 500
+
 
 @app.route("/apply_preset/<preset_name>", methods=["POST"])
 def apply_preset(preset_name):
-    global presets
-    if preset_name not in presets: return jsonify({"success": False, "error": "Preset not found"}), 404
-    if not config_available or not cfg: return jsonify({"success": False, "error": "Config system unavailable."}), 503
+    """
+    Applies the selected preset config (without overriding active Weaviate instance),
+    persists changes, and reloads the pipeline if necessary.
+    """
+    global cfg, presets
+
+    if preset_name not in presets:
+        return jsonify({"success": False, "error": "Preset not found"}), 404
+    if cfg is None:
+        return jsonify({"error": "Config unavailable."}), 503
+
     try:
-        preset_data = presets[preset_name]
+        # ─── Clone safely ───
+        from copy import deepcopy
+        preset_data = deepcopy(presets[preset_name])
+
+        # ─── Protect active Weaviate settings ───
+        preset_data.setdefault("retrieval", {})
+        active_retrieval = getattr(cfg, "retrieval", {})
+        for field in ["WEAVIATE_HOST", "WEAVIATE_HTTP_PORT", "WEAVIATE_GRPC_PORT"]:
+            if field in preset_data["retrieval"]:
+                current_app.logger.warning(
+                    f"[apply_preset] Overriding '{field}' is disallowed. Keeping current: {getattr(active_retrieval, field)}"
+                )
+                preset_data["retrieval"][field] = getattr(active_retrieval, field)
+
+        # ─── Apply and persist ───
         config_changed = cfg.update_and_save(preset_data)
+        current_app.logger.info(f"Applied preset '{preset_name}', changes written: {config_changed}")
+
+        # ─── Background reload ───
         if config_changed:
-            initialize_pipeline(app.app_context())
-            if not pipeline: logger.error("Pipeline failed re-init after preset!") # Log error if re-init fails
+            Thread(
+                target=reload_and_maybe_reinit,
+                args=(current_app.app_context(),),
+                kwargs={"override_weaviate": False},  # Weaviate already protected
+                daemon=True
+            ).start()
+
+        # ─── Final config dump (sanitized) ───
         dump_method = getattr(cfg, 'model_dump', getattr(cfg, 'dict', None))
-        current_config_dict = dump_method(exclude={'security': {'DEEPSEEK_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'COHERE_API_KEY'}}) if dump_method else {}
-        return jsonify({"success": True, "message": f"Preset '{preset_name}' applied.", "config": current_config_dict})
-    except ValidationError as e: logger.error(f"Preset validation error '{preset_name}': {e}"); details = "..."; return jsonify({"success": False, "error": f"Invalid preset: {details}"}), 400
-    except Exception as e: logger.error(f"Preset apply error '{preset_name}': {e}", exc_info=True); return jsonify({"success": False, "error": str(e)}), 500
+        current_config_dict = (
+            dump_method(exclude={'security': {
+                'DEEPSEEK_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'COHERE_API_KEY'
+            }}) if dump_method else {}
+        )
+
+        return jsonify({
+            "success": True,
+            "message": f"Preset '{preset_name}' applied.",
+            "config": current_config_dict
+        })
+
+    except ValidationError as e:
+        current_app.logger.error(f"Preset validation error '{preset_name}': {e}")
+        return jsonify({"success": False, "error": "Invalid preset format."}), 400
+
+    except Exception as e:
+        current_app.logger.error(f"Preset apply error '{preset_name}': {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+
 
 @app.route("/save_preset", methods=["POST"])
 def save_preset_api():
     global presets
-    if not config_available: return jsonify({"success": False, "error": "Config unavailable."}), 503
+
+    # Ensure configuration is loaded
+    if cfg is None:
+        return jsonify({"success": False, "error": "Configuration unavailable."}), 503
+
     try:
-        data = request.get_json(); assert data
-        preset_name = data.get("preset_name", "").strip(); assert preset_name
-        preset_data = data.get("config"); assert preset_data and isinstance(preset_data, dict)
-        _ = AppConfig(**preset_data) # Validate
-       ################################################################################################################### #presets = load_presets() # Reload before update
+        data = request.get_json() or {}
+        preset_name = data.get("preset_name", "").strip()
+        if not preset_name:
+            return jsonify({"success": False, "error": "Preset name is required."}), 400
+
+        preset_data = data.get("config")
+        if not isinstance(preset_data, dict):
+            return jsonify({"success": False, "error": "Invalid or missing preset data."}), 400
+
+        # Remove illegal top-level 'presets' key if present
+        preset_data.pop("presets", None)
+
+        # Validate against AppConfig model
+        _ = AppConfig(**preset_data)
+
+        # Save in-memory and to disk
         presets[preset_name] = preset_data
-        if save_presets(presets): return jsonify({"success": True, "message": f"Preset '{preset_name}' saved."})
-        else: return jsonify({"success": False, "error": "Failed to write presets file."}), 500
-    except ValidationError as ve_preset: logger.error(f"Preset data validation failed: {ve_preset}"); details = "..."; return jsonify({"success": False, "error": f"Invalid preset data: {details}"}), 400
-    except Exception as e: logger.error(f"Preset save API error: {str(e)}", exc_info=True); return jsonify({"success": False, "error": str(e)}), 500
+        if not save_presets(presets):
+            return jsonify({"success": False, "error": "Failed to write presets file."}), 500
+
+        return jsonify({"success": True, "message": f"Preset '{preset_name}' saved."}), 200
+
+    except ValidationError as ve:
+        logger.error(f"Preset data validation failed: {ve}")
+        return jsonify({"success": False, "error": "Invalid preset data."}), 400
+
+    except Exception as e:
+        logger.error(f"Preset save API error: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 
 
 
 @app.route("/save_config", methods=["POST"])
 def save_config():
-    """Saves user config to YAML and kicks off a background pipeline reload."""
-    #logger = app.logger
+    """
+    Receives a full config payload from the UI, validates it,
+    persists it to config_settings.yaml, and triggers a background
+    pipeline reload if necessary.
+    """
+    logger = current_app.logger
 
-    # 1) Parse & validate the incoming config payload (unchanged)…
-    data = request.get_json()
-    # … your existing validation & cfg.update() logic here …
-
-    # 2) Persist to YAML
-    # 2) Deep-merge, validate, and write ALL updated fields (incl. abs+frac)
+    # 1. Parse payload
     try:
-        changed = cfg.update_and_save(data)
-        logger.info(f"API /save_config: cfg.update_and_save returned {changed}")
+        data = request.get_json(force=True)
     except Exception as e:
-        logger.error(f"API /save_config: Failed to save config via update_and_save: {e}", exc_info=True)
-        return jsonify({"error": "Failed to save configuration."}), 500
+        logger.error(f"/save_config: could not parse JSON: {e}", exc_info=True)
+        return jsonify(success=False, error="Invalid JSON"), 400
 
-    # 3) Kick off pipeline reload in background
+    # 2. STRIP INVALID COLLECTION before diff-check
+    bad_col = data.get("retrieval", {}).get("COLLECTION_NAME", "")
+    if bad_col:
+        from ingest_docs_v7 import PipelineConfig
+        client = PipelineConfig.get_client()
+        try:
+            valid_cols = client.collections.list_all(simple=True)
+        except Exception as e:
+            logger.warning(f"[save_config] Could not fetch valid collections: {e}")
+            valid_cols = []
+        finally:
+            try:
+                client.close()
+            except:
+                pass
+
+        if bad_col not in valid_cols:
+            fallback = cfg.retrieval.COLLECTION_NAME
+            logger.warning(
+                f"[save_config] Rejecting invalid COLLECTION_NAME '{bad_col}', "
+                f"resetting to '{fallback}'"
+            )
+            data.setdefault("retrieval", {})["COLLECTION_NAME"] = fallback
+
+    # 3. Validate payload
+    try:
+        validated = AppConfig(**data)
+    except Exception as e:
+        logger.error(f"/save_config validation error: {e}", exc_info=True)
+        return jsonify(success=False, error=str(e)), 400
+
+    # 4. Check for diffs and persist
+    try:
+        before = cfg.model_dump() if hasattr(cfg, "model_dump") else cfg.dict()
+        changed_keys = [
+            key for key in data
+            if before.get(key) != data.get(key)
+        ]
+
+        if not changed_keys:
+            logger.info("/save_config: No actual changes in config. Skipping save.")
+            return jsonify(
+                success=True,
+                changed=False,
+                message="No config changes detected.",
+                config=validated.model_dump()
+            ), 200
+
+        changed = cfg.update_and_save(data)
+        logger.info(f"/save_config: Updated config keys: {changed_keys}")
+
+    except Exception as e:
+        logger.error(f"/save_config save error: {e}", exc_info=True)
+        return jsonify(success=False, error="Failed to save configuration."), 500
+
+    # 5. Background reload and pipeline init
     Thread(
-        target=initialize_pipeline,
-        args=(app.app_context(),),
+        target=reload_and_maybe_reinit,
+        args=(current_app.app_context(),),
         daemon=True
     ).start()
 
-    # 4) Return immediately
-    return jsonify({
-        "success": True,
-        "message": "Configuration saved — pipeline reload running in background."
-    }), 200
+    # 6. Respond
+    return jsonify(
+        success=True,
+        changed=True,
+        updated=changed,
+        message="Configuration saved — pipeline reload running in background.",
+        config=validated.model_dump()
+    ), 200
 
 
-from flask import request, jsonify
-from pathlib import Path
-import os
-from weaviate.exceptions import WeaviateConnectionError
+@app.route('/api/config', methods=['GET'])
+def get_config():
+    """
+    Return both the current config and the saved presets in one shot.
+    """
+    cfg_data = cfg.model_dump()
+    cfg_data['presets'] = presets
+    return jsonify(cfg_data), 200
+
+
 
 @app.route('/start_ingestion', methods=['POST'])
 def start_ingestion():
@@ -862,7 +969,7 @@ def start_ingestion():
     if not ingest_full_available or not DocumentProcessor or not PipelineConfig:
         app.logger.error("Full ingestion components unavailable.")
         return jsonify({'success': False, 'error': 'Full ingestion components unavailable.'}), 503
-    if not config_available or not cfg:
+    if cfg is None:
         app.logger.error("Configuration system unavailable.")
         return jsonify({'success': False, 'error': 'Configuration system unavailable.'}), 500
 
@@ -885,7 +992,7 @@ def start_ingestion():
 
     # 4. Preflight: Weaviate connectivity
     try:
-        pre_client = PipelineConfig.get_client()
+        pre_client = g.weaviate_client
         if not pre_client.is_ready():
             raise WeaviateConnectionError("Weaviate not ready")
     except Exception as e:
@@ -908,7 +1015,7 @@ def start_ingestion():
     weaviate_client = None
     try:
         app.logger.info(f"Connecting to Weaviate at {cfg.retrieval.WEAVIATE_HOST}:{cfg.retrieval.WEAVIATE_HTTP_PORT}")
-        weaviate_client = PipelineConfig.get_client()
+        weaviate_client = g.weaviate_client
         if not weaviate_client.is_ready():
             raise WeaviateConnectionError(f"Weaviate not ready at {cfg.retrieval.WEAVIATE_HOST}")
 
@@ -978,10 +1085,14 @@ def ingest_block_route():
                 return jsonify({"status": "error", "message": msg}), 500
 
             try:
-                client = weaviate.connect_to_local(
-                    host=cfg.retrieval.WEAVIATE_HOST,
-                    port=cfg.retrieval.WEAVIATE_HTTP_PORT,
-                    grpc_port=cfg.retrieval.WEAVIATE_GRPC_PORT
+                client = weaviate.WeaviateClient.connect(
+                    connection=weaviate.connect.ConnectionParams.from_params(
+                        http_host=cfg.retrieval.WEAVIATE_HOST,
+                        http_port=cfg.retrieval.WEAVIATE_HTTP_PORT,
+                        grpc_port=cfg.retrieval.WEAVIATE_GRPC_PORT,
+                        grpc_secure=False
+                    ),
+                    additional_config=weaviate.config.AdditionalConfig(timeout=5.0)
                 )
                 calculate_and_save_centroid(
                     client,
@@ -1037,10 +1148,14 @@ def ingest_block_route():
         if should_run:
             app.logger.info("Recalculating centroid (mode=%s)…", mode)
             try:
-                client = weaviate.connect_to_local(
-                    host=cfg.retrieval.WEAVIATE_HOST,
-                    port=cfg.retrieval.WEAVIATE_HTTP_PORT,
-                    grpc_port=cfg.retrieval.WEAVIATE_GRPC_PORT
+                client = weaviate.WeaviateClient.connect(
+                    connection=weaviate.connect.ConnectionParams.from_params(
+                        http_host=cfg.retrieval.WEAVIATE_HOST,
+                        http_port=cfg.retrieval.WEAVIATE_HTTP_PORT,
+                        grpc_port=cfg.retrieval.WEAVIATE_GRPC_PORT,
+                        grpc_secure=False
+                    ),
+                    additional_config=weaviate.config.AdditionalConfig(timeout=5.0)
                 )
                 calculate_and_save_centroid(
                     client,
@@ -1066,8 +1181,9 @@ def ingest_block_route():
         return jsonify({
             "status":  "error",
             "message": str(e),
-            "trace":   traceback.format_exc().splitlines()[-5:]  # last few lines
+            "trace":   traceback.format_exc().splitlines()[-5:]
         }), 500
+
 
 # --- Chat History Routes ---
 # UPDATED: Use JSON for save/delete actions
@@ -1082,8 +1198,8 @@ def run_keyword_builder():
         # 2) Docker & config availability
         if not docker_available:
             return jsonify(success=False, error="Docker client unavailable."), 503
-        if not config_available or not cfg:
-            return jsonify(success=False, error="Config system unavailable."), 503
+        if cfg is None:
+            return jsonify({"error": "Config unavailable."}), 503
 
         # 3) Weaviate connectivity check
         port = cfg.retrieval.WEAVIATE_HTTP_PORT
@@ -1200,7 +1316,11 @@ def run_keyword_builder():
             logger.warning(f"Save output failed: {e}")
 
         # 9) Sync auto-domain keywords
-        update_auto_domain_keywords([kw["term"] for kw in keywords])
+        requests.post(
+            url_for('update_auto_domain_keywords', _external=True),
+            json={"keywords": [kw["term"] for kw in keywords], "target_field": "AUTO_DOMAIN_KEYWORDS"},
+            timeout=10
+        )
 
         # 10) Return success
         return jsonify(
@@ -1219,9 +1339,7 @@ def run_keyword_builder():
 def check_weaviate_connection(port=8080):
     """Check if Weaviate is accessible on the specified port."""
     try:
-        import requests
-        from requests.exceptions import RequestException
-        
+               
         url = f"http://localhost:{port}/v1/.well-known/ready"
         response = requests.get(url, timeout=5)
         return response.status_code == 200
@@ -1247,176 +1365,167 @@ def cache_results(key, data):
     
     return True
 
-# Add comprehensive cleanup code for all Weaviate clients
 import atexit
+
 def cleanup_resources():
-        # Close pipeline retriever client
-        if 'pipeline' in globals() and pipeline:
-            if hasattr(pipeline.retriever, 'close'):
-                try:
-                    pipeline.retriever.close()
-                    logger.info("Closed pipeline retriever client")
-                except Exception as e:
-                    logger.error(f"Error closing retriever: {e}")
-        
-        # Close any other Weaviate clients
+    # Close pipeline retriever on the actual pipeline instance
+    try:
+        from pipeline import PIPELINE_INSTANCE
+        inst = PIPELINE_INSTANCE
+    except ImportError:
+        inst = None
+
+    if inst and hasattr(inst.retriever, 'close'):
         try:
-            logger.info("Attempting to close any remaining Weaviate connections")
-            import weaviate
-            # Find all client instances that might be open
-            for client_attr in dir(weaviate):
-                if client_attr.endswith('Client'):
-                    client_class = getattr(weaviate, client_attr, None)
-                    if client_class and hasattr(client_class, '_instances'):
-                        for client in list(getattr(client_class, '_instances', [])):
-                            try:
-                                if hasattr(client, 'close') and callable(client.close):
-                                    client.close()
-                                    logger.info(f"Closed {client_attr} instance")
-                            except Exception as e:
-                                logger.error(f"Error closing {client_attr} instance: {e}")
+            inst.retriever.close()
+            logger.info("Closed pipeline retriever client")
         except Exception as e:
-            logger.error(f"Error during additional Weaviate connection cleanup: {e}")
+            logger.error(f"Error closing pipeline retriever: {e}", exc_info=True)
+
+    # Close any other Weaviate clients
+    try:
+        logger.info("Attempting to close any remaining Weaviate connections")
+        import weaviate
+
+        for attr in dir(weaviate):
+            if attr.endswith("Client"):
+                client_cls = getattr(weaviate, attr, None)
+                instances = getattr(client_cls, "_instances", None)
+                if instances:
+                    for client in list(instances):
+                        close_method = getattr(client, "close", None)
+                        if callable(close_method):
+                            try:
+                                close_method()
+                                logger.info(f"Closed {attr} instance")
+                            except Exception as e:
+                                logger.error(f"Error closing {attr} instance: {e}", exc_info=True)
+
+    except Exception as e:
+        logger.error(f"Error during additional Weaviate connection cleanup: {e}", exc_info=True)
+
 atexit.register(cleanup_resources)
 
 
-def update_auto_domain_keywords(keywords: list):
-    """
-    Updates auto_domain_keywords.txt and the config's AUTO_DOMAIN_KEYWORDS field.
-    """
-    from pathlib import Path
-
-    # 1. Write to auto_domain_keywords.txt
-    output_file = Path("auto_domain_keywords.txt")
-    try:
-        with open(output_file, "w", encoding="utf-8") as f:
-            f.write(", ".join(keywords))
-        logger.info(f"Wrote {len(keywords)} keywords to {output_file}")
-    except Exception as e:
-        logger.error(f"Failed to write keywords to {output_file}: {e}")
-
-    # 2. Update config and save
-    try:
-        # Update in-memory config
-        if hasattr(cfg, "env"):
-            cfg.env.AUTO_DOMAIN_KEYWORDS = keywords
-        else:
-            logger.warning("cfg.env is missing; cannot update AUTO_DOMAIN_KEYWORDS")
-
-        # Prepare config dict for saving
-        dump_method = getattr(cfg, 'model_dump', getattr(cfg, 'dict', None))
-        config_dict = dump_method() if dump_method else {}
-
-        # Use your validated YAML save function (handles FlowStyleList)
-        save_config_to_yaml(config_dict)
-        logger.info("AUTO_DOMAIN_KEYWORDS updated and config saved.")
-    except Exception as e:
-        logger.error(f"Failed to update config with new keywords: {e}")
-
-
-        def save_yaml_config(data: Dict, path: Path):
-            temp_path = path.with_suffix(".tmp")
-            # ... dump to temp_path ...
-            with SAVE_LOCK:
-                for attempt in range(3):
-                    try:
-                        os.replace(temp_path, path)
-                        return True
-                    except OSError as e:
-                        logger.warning(f"save attempt {attempt+1} failed: {e}")
-                        time.sleep(0.1)
-                # last-ditch copy fallback
-                shutil.copyfile(str(temp_path), str(path))
-                try:
-                    temp_path.unlink()
-                except OSError:
-                    pass
-                return True
-    
-@app.route('/centroid_stats', methods=['GET'])
+   
+@app.route("/centroid_stats")
 def centroid_stats():
-    cm = CentroidManager()
+    collection = request.args.get("collection", "")
+    cm = CentroidManager(collection_name=collection)
     centroid = cm.get_centroid()
-    if centroid is None:
-        return jsonify(success=False, error="Centroid not available"), 404
 
-    stats = get_centroid_stats(centroid)
-    # Convert keys to machine-safe names if you prefer:
-    payload = {k.replace(" ", "_").lower(): v for k, v in stats.items()}
-    return jsonify(success=True, stats=payload)
+    if centroid is None:
+        return jsonify({"success": False, "stats": {"meta": None}})
+
+    # Repair logic if meta is missing or stale
+    meta = cm.get_metadata()
+    expected_keys = {"Mean", "Std Dev", "Min", "Max", "L2 Norm (Magnitude)"}
+    if not isinstance(meta, dict) or not expected_keys.issubset(meta.keys()):
+        meta = get_centroid_stats(centroid)
+        cm.save_metadata(meta)
+
+    return jsonify({
+        "success": True,
+        "stats": {
+            "meta": meta
+        }
+    })
 
 
 
 @app.route('/centroid_histogram.png')
 def centroid_histogram():
-    app.logger.info("→ centroid_histogram endpoint called")
+    current_app.logger.info("-> /centroid_histogram.png endpoint called")
 
-    # Load centroid
-    centroid = CentroidManager().get_centroid()
+    # 1. Use collection param if provided
+    collection_name = request.args.get("collection", "").strip() or cfg.retrieval.COLLECTION_NAME
+    current_app.logger.info(f"-> Using collection: {collection_name}")
+
+    # 2. Load the centroid
+    cm = CentroidManager(
+        collection_name=collection_name,
+        base_path=cfg.paths.CENTROID_DIR
+    )
+    centroid = cm.get_centroid()
+
     if centroid is None:
-        return jsonify(success=False, error="Centroid not available"), 404
-    app.logger.info(f"→ Loaded centroid of shape {getattr(centroid, 'shape', None)}")
+        current_app.logger.warning("-> No centroid found, serving placeholder.")
+        placeholder = os.path.join(current_app.static_folder, "placeholder.png")
+        return send_file(placeholder, mimetype="image/png")
 
-    # Plot histogram
-    fig, ax = plt.subplots()
-    ax.hist(centroid, bins=50)
-    ax.set_title("Centroid Value Distribution")
-    ax.set_xlabel("Value")
-    ax.set_ylabel("Frequency")
+    current_app.logger.info(f"-> Loaded centroid of shape {getattr(centroid, 'shape', None)}")
 
-    # Stream back as PNG
-    buf = io.BytesIO()
-    fig.savefig(buf, format='png')
-    buf.seek(0)
-    plt.close(fig)
+    # 3. Plot the histogram
+    try:
+        fig, ax = plt.subplots()
+        ax.hist(centroid, bins=50)
+        ax.set_title(f"Centroid Distribution — {collection_name}")
+        ax.set_xlabel("Value")
+        ax.set_ylabel("Frequency")
 
-    return send_file(buf, mimetype='image/png')
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png")
+        buf.seek(0)
+        plt.close(fig)
+
+        return send_file(buf, mimetype="image/png")
+    except Exception as e:
+        current_app.logger.error(f"Failed to generate histogram: {e}", exc_info=True)
+        placeholder = os.path.join(current_app.static_folder, "placeholder.png")
+        return send_file(placeholder, mimetype="image/png")
 
 
-################## @app.route( from here on
+
+################## @app.route from here on
    
 @app.route('/update_config_keywords', methods=['POST'])
 def update_config_keywords():
     """Updates the config with extracted keywords."""
-    #logger = app.logger
-    
-    if not config_available or not cfg:
-        return jsonify({"success": False, "error": "Config system unavailable."}), 503
-    
+    logger = app.logger
+
+    if cfg is None:
+        return jsonify({"error": "Config unavailable."}), 503
+
     try:
         data = request.get_json()
         keywords = data.get('keywords', [])
-        
+
         if not keywords:
             return jsonify({"success": False, "error": "No keywords provided"}), 400
-        
-        # Create updates dictionary for config
+
         updates = {
             'env': {
                 'AUTO_DOMAIN_KEYWORDS': keywords
             }
         }
-        
-        # Update config
-        config_changed = cfg.update_and_save(updates)
-        
-        if config_changed:
-            # Re-initialize pipeline if config changed
+
+        changed = cfg.update_and_save(updates)
+
+        if changed:
+            try:
+                cfg.reload()
+                logger.info(f"Reloaded cfg after keyword update. {len(keywords)} auto domain keywords set.")
+            except Exception as reload_err:
+                logger.error(f"Failed to reload config: {reload_err}", exc_info=True)
+                return jsonify({"success": False, "error": "Reload failed after config update."}), 500
+
             initialize_pipeline(app.app_context())
-            
+
             return jsonify({
                 "success": True,
                 "message": f"Updated configuration with {len(keywords)} keywords"
             })
+
         else:
             return jsonify({
                 "success": True,
                 "message": "No configuration changes were needed"
             })
-            
+
     except Exception as e:
         logger.error(f"Error updating config with keywords: {e}", exc_info=True)
         return jsonify({"success": False, "error": str(e)}), 500
+
 
 
 @app.route('/save_chat', methods=['POST'])
@@ -1500,8 +1609,8 @@ def delete_chat(chat_id):
 def remove_weaviate_instance():
     if not docker_available:
         return jsonify({"success": False, "error": "Docker client unavailable."}), 503
-    if not config_available or not cfg:
-         return jsonify({"success": False, "error": "Configuration system unavailable."}), 503
+    if cfg is None:
+        return jsonify({"error": "Config unavailable."}), 503
 
     logger = app.logger
     data = request.get_json()
@@ -1611,6 +1720,12 @@ def remove_weaviate_instance():
                 }
                 # Update config in memory AND save to YAML
                 cfg.update_and_save(config_updates)
+                try:
+                    cfg.reload()
+                    app.logger.info(f"Reloaded configuration after update. New host: {cfg.retrieval.WEAVIATE_HOST}, HTTP: {cfg.retrieval.WEAVIATE_HTTP_PORT}, gRPC: {cfg.retrieval.WEAVIATE_GRPC_PORT}")
+                except Exception as reload_err:
+                    app.logger.error(f"Failed to reload config after saving instance selection: {reload_err}", exc_info=True)
+                    return jsonify({"error": "Configuration reload failed after update."}), 500
                 logger.info(f"Configuration updated and saved to use fallback: {new_active_instance_name} ({config_updates['retrieval']})")
 
                 # Re-initialize the pipeline to use the new configuration
@@ -1876,10 +1991,10 @@ def list_weaviate_instances():
                 rest = [i for i in managed if i is not match]
                 final_list = [primary] + rest
             else:
-                # no match → show default as-is
+                # no match -> show default as-is
                 final_list = [default_instance] + managed
         else:
-            # default port isn’t live → skip default entirely
+            # default port isn’t live -> skip default entirely
             final_list = managed
 
         # ─── 6) Sort & return ──────────────────────────────────────────────────────
@@ -1894,121 +2009,113 @@ def list_weaviate_instances():
 
 @app.route("/select_weaviate_instance", methods=["POST"])
 def select_weaviate_instance():
-    """Activates the selected Weaviate instance, stops others, updates YAML & runtime config, and re-initializes the pipeline."""
+    """Activate a Weaviate instance, persist it, and rebuild the pipeline."""
     data = request.get_json(silent=True) or {}
-
-    # 1) Parse & validate request
-    instance_name       = data.get("instance_name") or data.get("name")
-    if not instance_name:
+    name = data.get("instance_name") or data.get("name")
+    if not name:
         return jsonify({"error": "Instance name required."}), 400
-    if not config_available or not cfg:
-        return jsonify({"error": "Configuration unavailable."}), 503
+    if cfg is None:
+        return jsonify({"error": "Config unavailable."}), 503
 
-    # 2) Determine host/ports for this instance
+    # 1) Determine host/port
     try:
-        if instance_name == "Default (from config)":
+        if name == "Default (from config)":
             with open(CONFIG_YAML_PATH, "r", encoding="utf-8") as f:
-                yaml_cfg = yaml.safe_load(f) or {}
-            selected_host       = yaml_cfg.get("retrieval", {}).get("WEAVIATE_HOST", "localhost")
-            selected_http_port  = int(yaml_cfg.get("retrieval", {}).get("WEAVIATE_HTTP_PORT", 8080) or 8080)
-            selected_grpc_port  = int(yaml_cfg.get("retrieval", {}).get("WEAVIATE_GRPC_PORT", 50051) or 50051)
-            app.logger.info(f"Selecting default-from-config: {selected_host}:{selected_http_port}")
+                raw = yaml.safe_load(f) or {}
+            host = raw.get("retrieval", {}).get("WEAVIATE_HOST", "localhost")
+            http_port = int(raw.get("retrieval", {}).get("WEAVIATE_HTTP_PORT", 8080) or 8080)
+            grpc_port = int(raw.get("retrieval", {}).get("WEAVIATE_GRPC_PORT", 50051) or 50051)
+            app.logger.info(f"Selecting default-from-config -> {host}:{http_port}")
         else:
             state = load_weaviate_state()
-            details = state.get(instance_name)
+            details = state.get(name)
             if not details:
-                return jsonify({"error": f"Instance '{instance_name}' not found in state."}), 404
-            selected_host       = details.get("host")
-            selected_http_port  = int(details.get("http_port", -1))
-            selected_grpc_port  = int(details.get("grpc_port", -1))
-            if not selected_host or selected_http_port < 0 or selected_grpc_port < 0:
-                return jsonify({"error": f"Invalid connection details for '{instance_name}'."}), 400
-            app.logger.info(f"Selecting managed instance '{instance_name}': {selected_host}:{selected_http_port}")
+                return jsonify({"error": f"Instance '{name}' not found."}), 404
+            host = details.get("host")
+            http_port = int(details.get("http_port", -1))
+            grpc_port = int(details.get("grpc_port", -1))
+            if not host or http_port < 0 or grpc_port < 0:
+                return jsonify({"error": "Invalid connection details."}), 400
+            app.logger.info(f"Selecting managed instance '{name}' -> {host}:{http_port}")
     except Exception as e:
-        app.logger.error(f"Error reading instance details: {e}", exc_info=True)
-        return jsonify({"error": "Failed to determine instance connection details."}), 500
+        app.logger.error("Error reading instance details", exc_info=True)
+        return jsonify({"error": "Failed to read instance details."}), 500
 
-    # ── Moved here: only now do we persist, avoiding None values ──
+    # 2) Persist to config
     try:
         cfg.update_and_save({
             "retrieval": {
-                "WEAVIATE_HOST":      selected_host,
-                "WEAVIATE_HTTP_PORT": selected_http_port,
-                "WEAVIATE_GRPC_PORT": selected_grpc_port
+                "WEAVIATE_HOST":      host,
+                "WEAVIATE_HTTP_PORT": http_port,
+                "WEAVIATE_GRPC_PORT": grpc_port,
             }
         })
     except Exception as e:
-        app.logger.error(f"Failed to save updated config: {e}", exc_info=True)
-        return jsonify({"error": "Failed to persist new configuration."}), 500
+        app.logger.error("Failed to save config", exc_info=True)
+        return jsonify({"error": "Could not persist configuration."}), 500
 
-    global pipeline
-    # 3) Stop all other managed containers
+    # 3) Stop/start Docker containers if using managed instances
     if docker_available:
         try:
             state = load_weaviate_state()
-            for name, details in state.items():
-                if name == instance_name:
-                    continue
-                cid = details.get("container_id")
-                if cid:
-                    try:
-                        ctr = docker_client.containers.get(cid)
-                        if ctr.status == "running":
-                            app.logger.info(f"Stopping instance '{name}'...")
-                            ctr.stop(timeout=30)
-                            state[name]["status"] = "exited"
-                    except DockerNotFound:
-                        app.logger.warning(f"Container '{name}' not found during stop.")
-                    except Exception as de:
-                        app.logger.error(f"Error stopping '{name}': {de}")
+            # stop all except this one
+            for nm, det in state.items():
+                if nm != name and det.get("container_id"):
+                    ctr = docker_client.containers.get(det["container_id"])
+                    if ctr.status == "running":
+                        app.logger.info(f"Stopping '{nm}'...")
+                        ctr.stop(timeout=30)
+                        state[nm]["status"] = "exited"
+            # start this one if needed
+            if name != "Default (from config)" and state[name].get("container_id"):
+                ctr = docker_client.containers.get(state[name]["container_id"])
+                if ctr.status != "running":
+                    app.logger.info(f"Starting '{name}'...")
+                    ctr.start()
+                    state[name]["status"] = "running"
             save_weaviate_state(state)
         except Exception as e:
-            app.logger.error(f"Error during container shutdown: {e}", exc_info=True)
+            app.logger.error("Error controlling Docker instances", exc_info=True)
 
-        # 3a) Start selected container if managed
-        if instance_name != "Default (from config)":
+    # 4) Wait for HTTP port
+    def _wait(host, port, retries=10, delay=1):
+        import socket, time
+        for _ in range(retries):
             try:
-                cid = state[instance_name].get("container_id")
-                if cid:
-                    ctr = docker_client.containers.get(cid)
-                    if ctr.status != "running":
-                        app.logger.info(f"Starting instance '{instance_name}'...")
-                        ctr.start()
-                        state[instance_name]["status"] = "running"
-                        save_weaviate_state(state)
-            except Exception as start_err:
-                app.logger.error(f"Error starting '{instance_name}': {start_err}", exc_info=True)
+                with socket.create_connection((host, port), timeout=1):
+                    return True
+            except OSError:
+                time.sleep(delay)
+        return False
 
-    # 4) Update in-memory cfg object (redundant but keeps parity)
-    cfg.retrieval.WEAVIATE_HOST       = selected_host
-    cfg.retrieval.WEAVIATE_HTTP_PORT  = selected_http_port
-    cfg.retrieval.WEAVIATE_GRPC_PORT  = selected_grpc_port
+    if not _wait(host, http_port):
+        app.logger.error(f"Weaviate not up at {host}:{http_port}")
+        return jsonify({"error": "Instance failed to start in time."}), 502
 
-    # 5) Probe new endpoint
+    # 5) Reload config and re-init pipeline
     try:
-        sock = socket.create_connection((selected_host, selected_http_port), timeout=2)
-        sock.close()
-    except Exception as pe:
-        app.logger.error(f"Cannot reach Weaviate at {selected_host}:{selected_http_port}: {pe}")
-        return jsonify({"error": "Selected instance is not reachable."}), 502
+        cfg.reload()
+        initialize_pipeline(app.app_context())
+        from pipeline import init_pipeline_once, PIPELINE_INSTANCE
+        inst = init_pipeline_once(force=True)
+    except Exception as e:
+        app.logger.error("Pipeline re-init failed", exc_info=True)
+        return jsonify({"error": "Pipeline re-initialization failed."}), 500
 
-    # 6) Re-initialize pipeline under new settings
-    initialize_pipeline(app.app_context())
+    # 6) Verify connectivity
+    retriever = getattr(inst, "retriever", None)
+    client = getattr(retriever, "weaviate_client", None)
+    if not client or not client.is_ready():
+        app.logger.error("Pipeline failed to connect after switch.")
+        return jsonify({"error": "Pipeline cannot connect to new instance."}), 500
 
-    # 7) Verify pipeline health
-    retriever = getattr(pipeline, "retriever", None)
-    if not retriever or not retriever.weaviate_client or not retriever.weaviate_client.is_ready():
-        app.logger.error(f"Pipeline failed to connect after selecting '{instance_name}'.")
-        return jsonify({"error": "Failed to connect pipeline to the selected instance."}), 500
-
-    app.logger.info(f"Pipeline successfully connected to '{instance_name}'.")
+    app.logger.info(f"Pipeline successfully connected to '{name}'.")
     return jsonify({
         "success": True,
-        "message": f"Instance '{instance_name}' activated and pipeline is live!",
-        "active_host": selected_host,
-        "active_http_port": selected_http_port
+        "message": f"Instance '{name}' is now active.",
+        "active_host": host,
+        "active_http_port": http_port
     }), 200
-
 
 
 @app.route('/list_presets', methods=['GET'])
@@ -2034,8 +2141,6 @@ def list_routes():
         })
     return jsonify({"routes": sorted(routes, key=lambda x: x["path"])})
 
-
-initialize_pipeline()
 
 @app.route('/get_auto_domain_keywords', methods=['GET'])
 def get_auto_domain_keywords():
@@ -2072,26 +2177,123 @@ def get_auto_domain_keywords():
 centroid_manager = CentroidManager()
 centroid = centroid_manager.get_centroid()
 
-@app.route("/api/centroid", methods=["GET"])
-def get_centroid_api():
-    centroid = centroid_manager.get_centroid()
-    meta = centroid_manager.get_metadata()
-    if centroid is None:
-        return jsonify({"error": "Centroid not available"}), 404
-    return jsonify({
-        "centroid": centroid.tolist(),
-        "meta": meta
-    })
+@app.route('/api/collections', methods=['GET'])
+def list_collections():
+    """
+    Returns a JSON list of all Weaviate collections (i.e., class names).
+    """
+    client = None
+    try:
+        client = PipelineConfig.get_client()
+        if not client or not client.is_live():
+            current_app.logger.error("Weaviate not ready in /api/collections")
+            return jsonify({"error": "Weaviate service unavailable"}), 503
+
+        # Try fast-path
+        try:
+            names = client.collections.list_all(simple=True)
+            if isinstance(names, dict):
+                names = list(names.keys())
+            elif not isinstance(names, list):
+                raise TypeError(f"Unexpected format from simple=True: {type(names)}")
+        except Exception as e:
+            current_app.logger.warning(f"Simple fetch failed: {e}, falling back to full list.")
+            configs = client.collections.list_all()
+            names = [c.get("class") or c.get("name") for c in configs if isinstance(c, dict)]
+
+        return jsonify({"collections": names}), 200
+
+    except Exception as e:
+        current_app.logger.error(f"API /api/collections error: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        if client:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+    
+
+VALID_NAME = re.compile(r"^[A-Za-z0-9_]+$")
+
+@app.route('/api/centroid', methods=['GET', 'POST'])
+def centroid_api():
+    logger.warning(f"[Centroid API] Using collection: {cfg.retrieval.COLLECTION_NAME!r}")
+
+    col = request.args.get('collection', '').strip()
+    if not col or not VALID_NAME.match(col):
+        return jsonify(error="Invalid collection name"), 400
+
+    # Verify collection exists
+    client = PipelineConfig.get_client()
+    try:
+        if not client or not client.is_live():
+            raise WeaviateConnectionError("Weaviate not ready")
+        existing = client.collections.list_all(simple=True)
+        if col not in existing:
+            return jsonify(error="Collection not found"), 404
+    finally:
+        client.close()
+
+    cm = CentroidManager(
+        collection_name=col,
+        base_path=cfg.paths.CENTROID_DIR
+    )
+
+    if request.method == 'POST':
+        # Recalculate centroid and save using correct method
+        client = PipelineConfig.get_client()
+        try:
+            vectors = cm.get_all_vectors(client, col)
+            if not vectors:
+                return jsonify(
+                    ok=False,
+                    error="No vectors found to calculate centroid.",
+                    shape=None,
+                    path=os.path.basename(cm.centroid_path)
+                ), 200
+            new_centroid = np.mean(np.vstack(vectors), axis=0)
+            cm.save_centroid(new_centroid)
+        finally:
+            client.close()
+
+        return jsonify(
+            ok=True,
+            shape=tuple(cm.centroid.shape),
+            path=os.path.basename(cm.centroid_path)
+        ), 200
+
+    # GET — read-only
+    cent = cm.get_centroid()
+    if cent is None:
+        return jsonify(
+            loaded=False,
+            shape=None,
+            path=os.path.basename(cm.centroid_path)
+        ), 200
+
+    return jsonify(
+        loaded=True,
+        shape=tuple(cent.shape),
+        path=os.path.basename(cm.centroid_path)
+    ), 200
+
 
 
 @app.route('/create_centroid', methods=['POST'])
 def create_centroid():
     centroid_path = request.form.get('centroid_path')
     try:
-        client = weaviate.connect_to_local(
-            host=cfg.retrieval.WEAVIATE_HOST,
-            port=cfg.retrieval.WEAVIATE_HTTP_PORT,
-            grpc_port=cfg.retrieval.WEAVIATE_GRPC_PORT
+        client = weaviate.WeaviateClient.connect(
+            connection=weaviate.connect.ConnectionParams.from_params(
+                http_host=cfg.retrieval.WEAVIATE_HOST,
+                http_port=cfg.retrieval.WEAVIATE_HTTP_PORT,
+                grpc_port=cfg.retrieval.WEAVIATE_GRPC_PORT,
+                grpc_secure=False
+            ),
+            additional_config=weaviate.config.AdditionalConfig(timeout=5.0)
         )
         calculate_and_save_centroid(
             client,
@@ -2103,132 +2305,163 @@ def create_centroid():
         try: client.close()
         except: pass
 
-    # only report success if the file now exists
     if os.path.exists(centroid_path):
-        return jsonify({"status": "created", "message": f"Centroid saved to {centroid_path}"})
+        return jsonify({
+            "status": "created",
+            "message": f"Centroid saved to {centroid_path}"
+        })
     else:
-        # no vector → no file → break the loop
         return jsonify({
             "status": "error",
             "message": "No vectors found in collection; centroid not created."
         }), 400
+
     
 
 
 @app.route('/update_auto_domain_keywords', methods=['POST'])
 def update_auto_domain_keywords():
     try:
-        data = request.get_json()
+        data = request.get_json(force=True)
         keywords = data.get('keywords', [])
         target_field = data.get('target_field', 'AUTO_DOMAIN_KEYWORDS')
-        
-        # Update the correct field in the config
-        if hasattr(cfg, "env"):
-            # Store current SELECTED_N_TOP value if it exists
-            selected_n_top = getattr(cfg.env, "SELECTED_N_TOP", None)
-            
-            if target_field == "AUTO_DOMAIN_KEYWORDS":
-                cfg.env.AUTO_DOMAIN_KEYWORDS = keywords
-            elif target_field == "DOMAIN_KEYWORDS":
-                cfg.env.DOMAIN_KEYWORDS = keywords
-            else:
-                return jsonify(success=False, error=f"Invalid target field: {target_field}"), 400
-            
-            # Restore SELECTED_N_TOP value if it existed
-            if selected_n_top is not None:
-                cfg.env.SELECTED_N_TOP = selected_n_top
-                
-        # Save to file
+
+        if not isinstance(keywords, list):
+            return jsonify(success=False, error="Invalid 'keywords' format. Must be a list."), 400
+
+        # Normalize + dedup
+        keywords = sorted(set(map(str.strip, keywords)))
+
+        if not hasattr(cfg, "env"):
+            return jsonify(success=False, error="Config is missing 'env' section"), 500
+
+        selected_n_top = getattr(cfg.env, "SELECTED_N_TOP", None)
+        current = sorted(getattr(cfg.env, target_field, []) or [])
+
+        # === DIRTY CHECK: No change ===
+        if current == keywords:
+            logger.info(f"[Config] No change in {target_field}. Skipping save.")
+            return jsonify(success=True, changed=False)
+
+        # === Apply update ===
+        if target_field == "AUTO_DOMAIN_KEYWORDS":
+            cfg.env.AUTO_DOMAIN_KEYWORDS = keywords
+        elif target_field == "DOMAIN_KEYWORDS":
+            cfg.env.DOMAIN_KEYWORDS = keywords
+        else:
+            return jsonify(success=False, error=f"Invalid target field: {target_field}"), 400
+
+        if selected_n_top is not None:
+            cfg.env.SELECTED_N_TOP = selected_n_top
+
+        # Write to text file
         with open("auto_domain_keywords.txt", "w", encoding="utf-8") as f:
             f.write(", ".join(keywords))
-            
-        # Update YAML config
+
+        # Save to config YAML
         dump_method = getattr(cfg, 'model_dump', getattr(cfg, 'dict', None))
         config_dict = dump_method()
         save_yaml_config(config_dict, CONFIG_YAML_PATH)
-        
-        return jsonify(success=True)
+
+        logger.info(f"[Config] {target_field} updated with {len(keywords)} keywords.")
+        return jsonify(success=True, changed=True)
+
     except Exception as e:
-        logger.error(f"Failed to update auto domain keywords: {e}")
+        logger.error(f"[Config] Failed to update {target_field}: {e}", exc_info=True)
         return jsonify(success=False, error=str(e)), 500
+
 
     
 
 @app.route('/update_topn_config', methods=['POST'])
 def update_topn_config():
     """Updates the config with the selected TopN value."""
-    if not config_available or not cfg:
-        return jsonify({"success": False, "error": "Config system unavailable."}), 503
-    
+    if cfg is None:
+        return jsonify({"error": "Config unavailable."}), 503
+
     try:
         data = request.get_json()
         top_n = data.get('topN')
-        
+
         if top_n is None:
-            return jsonify({"success": False, "error": "No topN value provided"}), 400
-            
-        # Create updates dictionary for config
+            return jsonify({"success": False, "error": "No topN value provided."}), 400
+        if not isinstance(top_n, int) or top_n < 1:
+            return jsonify({"success": False, "error": "Invalid topN value."}), 400
+
         updates = {
             'env': {
                 'SELECTED_N_TOP': top_n
             }
         }
-        
-        # Update config
+
         config_changed = cfg.update_and_save(updates)
-        
+        current_app.logger.info(f"TopN updated to {top_n}, config changed: {config_changed}")
+
         return jsonify({
             "success": True,
-            "message": f"Updated configuration with TopN: {top_n}"
+            "message": f"Updated configuration with TopN = {top_n}",
+            "config_changed": config_changed
         })
-        
+
     except Exception as e:
-        logger.error(f"Error updating config with TopN: {e}", exc_info=True)
+        current_app.logger.error(f"Error updating config with TopN: {e}", exc_info=True)
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/get-doc-count', methods=['GET'])
 def get_doc_count():
     try:
-        if not config_available or not cfg:
-            return jsonify({"total_docs": 0, "error": "Config unavailable"}), 503
-            
-        # read the current instance settings
+        if cfg is None:
+            return jsonify({"error": "Config unavailable."}), 503
+
+        from weaviate.client import WeaviateClient
+        from weaviate.connect import ConnectionParams
+        from weaviate.config import AdditionalConfig, Timeout
+
         collection_name = cfg.retrieval.COLLECTION_NAME
         host            = cfg.retrieval.WEAVIATE_HOST
         http_port       = cfg.retrieval.WEAVIATE_HTTP_PORT
         grpc_port       = cfg.retrieval.WEAVIATE_GRPC_PORT
-        
-        # Connect to the selected Weaviate instance
-        client = weaviate.connect_to_local(
-            host=host,
-            port=http_port,
+
+        # Proper connection params: DO NOT omit or rename
+        connection = ConnectionParams.from_params(
+            http_host=host,
+            http_port=http_port,
+            http_secure=False,
+            grpc_host=host,
             grpc_port=grpc_port,
-            skip_init_checks=True
+            grpc_secure=False
         )
-        
-        # fetch total documents in the collection
+
+        client = WeaviateClient(
+            connection_params=connection,
+            additional_config=AdditionalConfig(timeout=Timeout(init=5, call=30))
+        )
+        client.connect()
+
         count = 0
         if client.collections.exists(collection_name):
             agg = client.collections.get(collection_name).aggregate
             count = agg.over_all(total_count=True).total_count
-            
+
         client.close()
         return jsonify({"total_docs": count})
+
     except (weaviate.exceptions.WeaviateStartUpError,
             weaviate.exceptions.WeaviateConnectionError) as e:
-        # Weaviate is down/unreachable — graceful fallback
         logger.error("Weaviate unavailable when fetching document count", exc_info=True)
         return jsonify({
-                "total_docs": 0,
-                "error": "Weaviate unavailable"
-            }), 200
+            "total_docs": 0,
+            "error": "Weaviate unavailable"
+        }), 200
     except Exception as e:
-            # Any other unexpected error — still return 200
-            logger.exception("Unexpected error getting document count")
-            return jsonify({
-                "total_docs": 0,
-                "error": str(e)
-            }), 200
+        logger.exception("Unexpected error getting document count")
+        return jsonify({
+            "total_docs": 0,
+            "error": str(e)
+        }), 200
+
+
+
 
 
 @app.route('/clear-chat', methods=['POST'])
@@ -2242,23 +2475,30 @@ def clear_chat():
 
 @app.route("/inspect_instance", methods=["GET"])
 def inspect_instance():
-    """Return version, schema and counts plus chunk-stats for the active Weaviate instance."""
     client = None
     try:
-        # 1) Connect
-        host      = cfg.retrieval.WEAVIATE_HOST
-        http_port = cfg.retrieval.WEAVIATE_HTTP_PORT
-        grpc_port = cfg.retrieval.WEAVIATE_GRPC_PORT
-        client = weaviate.connect_to_local(
-            host=host, port=http_port, grpc_port=grpc_port, skip_init_checks=True
+        host       = cfg.retrieval.WEAVIATE_HOST
+        http_port  = cfg.retrieval.WEAVIATE_HTTP_PORT
+        grpc_port  = cfg.retrieval.WEAVIATE_GRPC_PORT
+        conn_to, call_to = cfg.retrieval.WEAVIATE_TIMEOUT
+
+        params = ConnectionParams.from_params(
+            http_host=host,
+            http_port=http_port,
+            grpc_host=host,
+            grpc_port=grpc_port,
+            http_secure=False,
+            grpc_secure=False
         )
 
-        # 2) Version
-        meta = client._connection.get(path="/meta").json()
-        version = meta.get("version", "unknown")
+        client = WeaviateClient.connect(
+            connection_params=params,
+            additional_config=AdditionalConfig(timeout=Timeout(init=conn_to, call=call_to))
+        )
 
-        # 3) Schema
-        schema = client._connection.get(path="/schema").json().get("classes", [])
+        meta_info = client.connection.get("/schema").json()
+        version = meta_info.get('version') or 'unknown'
+        schema = meta_info.get("classes", [])
 
         classes_info = []
         for cls in schema:
@@ -2267,7 +2507,6 @@ def inspect_instance():
             vect  = cls.get("vectorizer")
             vect_cfg = cls.get("vectorizerConfig", {})
 
-            # 4a) Object count
             try:
                 coll  = client.collections.get(name)
                 count = sum(1 for _ in coll.iterator(include_vector=False, return_properties=[]))
@@ -2282,11 +2521,9 @@ def inspect_instance():
                 "vectorizerConfig": vect_cfg
             }
 
-            # 4b) If this class has a 'source' prop, compute chunk stats
             if any(p["name"] == "source" for p in props) and count:
                 doc_counts = {}
                 for obj in coll.iterator(return_properties=["source"]):
-                    # obj is a weaviate.data._data.Object; its .properties is a dict
                     src_val = obj.properties.get("source")
                     if src_val is not None:
                         doc_counts[src_val] = doc_counts.get(src_val, 0) + 1
@@ -2311,98 +2548,117 @@ def inspect_instance():
         return jsonify({"error": str(e)}), 500
 
 
+
+
 # === Main Execution Block ===
 if __name__ == '__main__':
+    # Optional: diagnostic mode for CLI use (e.g., python app.py --diagnose)
+    if len(sys.argv) > 1 and sys.argv[1] == "--diagnose":
+        print("=== Running standalone Weaviate inspection ===")
+        with app.app_context():
+            result, status = inspect_instance()
+            print(f"\nStatus: {status}")
+            import pprint
+            pprint.pprint(result.json if hasattr(result, "json") else result)
+        sys.exit(0)
+
     logger.info("Application starting...")
 
-    with app.app_context():
-        initialize_pipeline()
+    # Ensure configuration loaded successfully
+    if cfg is None:
+        logger.critical("CRITICAL: Config failed load.")
+        sys.exit(1)
 
-    if not config_available or not cfg: logger.critical("CRITICAL: Config failed load."); exit(1) # Using exit() directly here, consider sys.exit(1)
+    # --- Create important directories before bootstrapping anything heavy ---
+    try:
+        app.instance_path_obj = Path(app.instance_path)
+        app.instance_path_obj.mkdir(parents=True, exist_ok=True)
 
-    try: # Setup directories early
-        app.instance_path_obj = Path(app.instance_path); app.instance_path_obj.mkdir(parents=True, exist_ok=True)
         Path(app.config["SESSION_FILE_DIR"]).mkdir(parents=True, exist_ok=True)
         WEAVIATE_DATA_DIR_HOST.mkdir(parents=True, exist_ok=True)
-        if cfg and cfg.paths and cfg.paths.DOCUMENT_DIR: Path(cfg.paths.DOCUMENT_DIR).resolve().mkdir(parents=True, exist_ok=True)
-    except Exception as e: logger.error(f"CRITICAL: Dir creation failed: {e}"); exit(1) # Using exit() directly
 
+        Path(cfg.paths.DOCUMENT_DIR).resolve().mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        logger.critical(f"CRITICAL: Directory creation failed: {e}", exc_info=True)
+        sys.exit(1)
+
+    # ---- Application Context Starts Here ----
     with app.app_context():
         logger.info("Entering application context for initialization.")
+
+        # --- Initialize Flask extensions exactly once ---
         try:
-            # MODIFIED: Check if extensions are already initialized before calling init_app
             if not hasattr(db, 'app') or db.app is None:
                 db.init_app(app)
-            if not hasattr(sess, 'app') or sess.app is None:
-                sess.init_app(app)
             logger.info("Flask extensions initialized.")
         except Exception as ext_e:
             logger.critical(f"Failed extensions init: {ext_e}", exc_info=True)
-            exit(1) # Using exit() directly
+            sys.exit(1)
 
-        logger.info("Checking/Creating database tables...")
+        # --- Setup database tables ---
+        logger.info("Checking/creating database tables...")
         try:
             db.create_all()
             logger.info("DB tables checked/created.")
         except Exception as db_e:
-            logger.error(f"Failed DB create tables: {db_e}", exc_info=True)
-            # Decide if you want to exit here or continue if DB creation fails
+            logger.error(f"Failed to create DB tables: {db_e}", exc_info=True)
 
-        # Initialize pipeline and load presets within the app context
-        initialize_pipeline(app.app_context()) # Pass context explicitly if needed by the function
-        load_presets() # Load global presets
-        logger.info(f"Presets loaded in main block. Count: {len(presets)}") # Log preset count
+        initialize_pipeline(app.app_context())
+        load_presets()
+        logger.info(f"Presets loaded in main block. Count: {len(presets)}")
 
-    # --- Define and Register Cleanup Function ---
+    # --- Define cleanup logic to release Weaviate gRPC resources on shutdown ---
     import atexit
-    # Note: Import weaviate here if not already globally imported, or move import inside function
-    # import weaviate # Potentially move this import inside the function if not needed globally
 
     def cleanup_resources():
-        # Close pipeline retriever client
-        if 'pipeline' in globals() and pipeline:
-            if hasattr(pipeline.retriever, 'close'):
-                try:
-                    pipeline.retriever.close()
-                    logger.info("Closed pipeline retriever client")
-                except Exception as e:
-                    logger.error(f"Error closing retriever: {e}")
-
-        # Close any other Weaviate clients
+        # Close the retriever on the live pipeline instance
         try:
-            logger.info("Attempting to close any remaining Weaviate connections")
-            # Ensure weaviate is imported before use
-            import weaviate
-            # Find all client instances that might be open
-            for client_attr in dir(weaviate):
-                if client_attr.endswith('Client'):
-                    client_class = getattr(weaviate, client_attr, None)
-                    # Check if the class exists and has the _instances attribute
-                    if client_class and hasattr(client_class, '_instances'):
-                        # Iterate over a copy of the list as closing might modify it
-                        for client in list(getattr(client_class, '_instances', [])):
-                            try:
-                                # Check if client has a close method and it's callable
-                                if hasattr(client, 'close') and callable(client.close):
-                                    client.close()
-                                    logger.info(f"Closed {client_attr} instance")
-                            except Exception as e:
-                                logger.error(f"Error closing {client_attr} instance: {e}")
+            from pipeline import PIPELINE_INSTANCE
+            inst = PIPELINE_INSTANCE
         except ImportError:
-             logger.warning("Weaviate module not found during cleanup.")
+            inst = None
+
+        if inst and hasattr(inst.retriever, 'close'):
+            try:
+                inst.retriever.close()
+                logger.info("Closed pipeline retriever client")
+            except Exception as e:
+                logger.error(f"Error closing retriever: {e}")
+
+        # Also close any residual Weaviate clients
+        try:
+            import weaviate
+            for attr in dir(weaviate):
+                if attr.endswith("Client"):
+                    cls = getattr(weaviate, attr, None)
+                    for client in getattr(cls, "_instances", []):
+                        try:
+                            client.close()
+                            logger.info(f"Closed {attr} instance")
+                        except Exception as e:
+                            logger.error(f"Error closing {attr} instance: {e}")
+        except ImportError:
+            logger.warning("Weaviate module not found during cleanup.")
         except Exception as e:
-            logger.error(f"Error during additional Weaviate connection cleanup: {e}")
+            logger.error(f"Error during additional Weaviate cleanup: {e}", exc_info=True)
 
     atexit.register(cleanup_resources)
-    # --- End Cleanup Function ---
 
-    # --- Log Final Status Before Running ---
-    if not pipeline: logger.warning("Pipeline initialization failed or skipped.")
-    if not docker_available: logger.warning("Docker client unavailable.")
+    # --- Final status logging before run ---
+    try:
+        from pipeline import PIPELINE_INSTANCE
+        pipeline_ready = True
+    except ImportError:
+        pipeline_ready = False
+
+    if not pipeline_ready:
+        logger.warning("Pipeline initialization failed or skipped.")
+    if not docker_available:
+        logger.warning("Docker client unavailable.")
+
     logger.info(f"Flask-Session: Type={app.config.get('SESSION_TYPE')}, Dir={app.config.get('SESSION_FILE_DIR')}")
     logger.info(f"Database URI: {app.config.get('SQLALCHEMY_DATABASE_URI')}")
 
-    # --- ADD THE MISSING APP.RUN() CALL HERE ---
+    # --- Launch Flask development server ---
     logger.info(f"Starting Flask server on http://0.0.0.0:5000/ (Debug: {app.debug})")
-    # Use debug=True carefully in production. use_reloader=False is often good for stability during dev.
     app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False)

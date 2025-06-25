@@ -11,15 +11,21 @@ from llm_merge_strategies import (
     ConcatStrategy,
     LocalOnlyStrategy,
 )
+from sklearn.metrics.pairwise import cosine_similarity
+from llm_providers import get_provider, LLMProvider
+from dotenv import load_dotenv
+from config import cfg
+
+
+
 import requests
 from tenacity import retry, stop_after_attempt, wait_exponential
 import hashlib
 import json
 import os
 import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
-from llm_providers import get_provider, LLMProvider
-from dotenv import load_dotenv
+import socket
+import logging
 
 
 load_dotenv()
@@ -28,6 +34,9 @@ load_dotenv()
     
 # Initialize logger
 logger = logging.getLogger(__name__)
+PIPELINE_INSTANCE = None
+_pipeline_initializing = False
+
 
 ## Core imports and dummy‐fallbacks…
 try:
@@ -52,8 +61,8 @@ except ImportError as e:
     logging.critical(f"CRITICAL: Failed to import core pipeline dependencies: {e}", exc_info=True)
     imports_ok = False
     # Define dummy classes/objects to prevent immediate crash if possible, but log error
-    class OllamaLLM: pass
-    class TechnicalRetriever: pass
+    #class OllamaLLM: pass
+    #class TechnicalRetriever: pass
     class cfg: # Dummy config
         class model: OLLAMA_MODEL="dummy"; LLM_TEMPERATURE=0.7; MAX_TOKENS=512; SYSTEM_MESSAGE=""
         class security: SANITIZE_INPUT=True; DEEPSEEK_API_KEY=""; API_TIMEOUT=20; CACHE_ENABLED=False
@@ -66,54 +75,59 @@ except ImportError as e:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-class IndustrialAutomationPipeline:
+class UnifiedPipeline:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
+
         if not imports_ok:
-             self.logger.critical("Pipeline cannot initialize due to missing imports.")
-             # Prevent further initialization if core components missing
-             raise ImportError("Core pipeline dependencies failed to import.")
+            self.logger.critical("Pipeline cannot initialize due to missing imports.")
+            raise ImportError("Core pipeline dependencies failed to import.")
 
         self.cfg = cfg
+
         try:
             self.local_llm = OllamaLLM(
                 model=self.cfg.model.OLLAMA_MODEL,
                 temperature=self.cfg.model.LLM_TEMPERATURE,
-                # Removed num_predict, let Ollama handle context/token limits unless specifically needed & supported
             )
+
             self.retriever = TechnicalRetriever()
+
+            if hasattr(self.retriever, "weaviate_client") and self.retriever.weaviate_client:
+                try:
+                    self.retriever.weaviate_client.connect()
+                    self.logger.info("Weaviate client successfully (re)connected.")
+                except Exception as e:
+                    self.logger.critical(f"Failed to reconnect Weaviate client: {e}", exc_info=True)
+                    raise RuntimeError("Pipeline init failed: could not reconnect Weaviate client.")
+
             self.embeddings = self.retriever.embeddings
+
         except Exception as init_e:
             self.logger.critical(f"Failed to initialize LLM or Retriever: {init_e}", exc_info=True)
-            raise # Stop if essential components fail
+            raise
 
-        # Use a set for fast sparse check - Ensure merged_keywords property exists in config
         self.domain_keywords_set = set(getattr(self.cfg.env, 'merged_keywords', []))
-
         self.cache_dir = "./cache"
         os.makedirs(self.cache_dir, exist_ok=True)
 
-        # --- Load Domain Centroid ---
         self.domain_centroid = self._load_domain_centroid()
         if self.domain_centroid is None and self.cfg.retrieval.PERFORM_DOMAIN_CHECK:
-            logger.warning("Domain centroid not loaded. Semantic relevance check will be skipped.")
-            # Optionally disable the check entirely if centroid is crucial
-            # self.cfg.retrieval.PERFORM_DOMAIN_CHECK = False
-        # -----------------------------
+            self.logger.warning("Domain centroid not loaded. Semantic relevance check will be skipped.")
 
         if not self.domain_keywords_set and self.cfg.retrieval.PERFORM_DOMAIN_CHECK:
-            logger.warning("Domain keywords list is EMPTY during pipeline initialization!")
+            self.logger.warning("Domain keywords list is EMPTY during pipeline initialization!")
         else:
-            logger.info(f"Pipeline initialized with {len(self.domain_keywords_set)} domain keywords.")
-         
-         # Build the list of active validators based on config flags
+            self.logger.info(f"Pipeline initialized with {len(self.domain_keywords_set)} domain keywords.")
+
+        # Validators
         self._validators = []
         if self.cfg.retrieval.PERFORM_DOMAIN_CHECK:
             self._validators.append(self._validate_semantic)
         if self.cfg.retrieval.PERFORM_TECHNICAL_VALIDATION:
             self._validators.append(self._validate_technical)
-        
-        # Choose merge strategy from config (default: API-first)
+
+        # Merge strategy
         strat = getattr(self.cfg.model, "MERGE_STRATEGY", "api_first").lower()
         if strat == "concat":
             self.merge_strategy: MergeStrategy = ConcatStrategy()
@@ -122,28 +136,56 @@ class IndustrialAutomationPipeline:
         else:
             self.merge_strategy = ApiPriorityStrategy()
 
-        # Instantiate external LLM provider once
+        # External API provider
         self.api_provider: Optional[LLMProvider] = get_provider(
             self.cfg,
             self._format_chat_history_for_api
         )
+        self._connected_host = self.cfg.retrieval.WEAVIATE_HOST
+        self._connected_port = self.cfg.retrieval.WEAVIATE_HTTP_PORT
 
 
     def _load_domain_centroid(self) -> Optional[np.ndarray]:
-        """Loads the pre-calculated domain centroid vector."""
+        """Loads the pre-calculated centroid vector for the configured collection."""
         try:
-            centroid_path = self.cfg.paths.DOMAIN_CENTROID_PATH
-            if os.path.exists(centroid_path):
-                centroid = np.load(centroid_path)
-                logger.info(f"Loaded domain centroid vector from {centroid_path} with shape {centroid.shape}")
-                # Reshape to (1, embedding_dim) for cosine_similarity
+            from centroid_manager import CentroidManager
+
+            # 1) Grab the collection name from config
+            collection_name = getattr(self.cfg.retrieval, "COLLECTION_NAME", None)
+
+            # 2) Use the dedicated CENTROID_DIR, not DOMAIN_CENTROID_PATH’s folder
+            base_dir = getattr(self.cfg.paths, "CENTROID_DIR", None)
+            if not base_dir:
+                # fallback in case CENTROID_DIR isn’t set
+                base_dir = os.path.dirname(self.cfg.paths.DOMAIN_CENTROID_PATH) or "."
+
+            # 3) Instantiate the manager with per-collection behavior
+            cm = CentroidManager(
+                collection_name=collection_name,
+                base_path=base_dir
+            )
+
+            centroid = cm.get_centroid()
+
+            if centroid is not None:
+                logger.info(
+                    f"Loaded centroid for collection '{collection_name}' "
+                    f"from {cm.centroid_path} with shape {centroid.shape}"
+                )
+                # reshape for cosine_similarity
                 return centroid.reshape(1, -1)
             else:
-                logger.error(f"Domain centroid file not found at: {centroid_path}. Run calculate_centroid.py.")
+                logger.error(
+                    f"Centroid file not found for collection '{collection_name}' "
+                    f"at {cm.centroid_path}. Run calculate_centroid.py."
+                )
                 return None
+
         except Exception as e:
             logger.error(f"Failed to load domain centroid: {e}", exc_info=True)
             return None
+
+
         
     def _validate_semantic(self, text: str) -> bool:
         # (optional) check domain centroid here if you ever want to re-enable it
@@ -642,7 +684,119 @@ class IndustrialAutomationPipeline:
             "timestamp": datetime.now().isoformat(),
             "error": error # Include error flag
         }
-    
+
+
+def is_pipeline_valid(p):
+    """
+    Return True if `p` has a live retriever.weaviate_client.
+    """
+    return (
+        p is not None
+        and hasattr(p, "retriever")
+        and getattr(p.retriever, "weaviate_client", None) is not None
+        and p.retriever.weaviate_client.is_ready()
+    )
+
+
+def init_pipeline_once(force: bool = False):
+    """
+    Lazily (re)initialize the global PIPELINE_INSTANCE only when needed.
+    Rebuilds if force=True, never built one yet, or host/port changed.
+    """
+    global PIPELINE_INSTANCE
+
+    needs_rebuild = force or PIPELINE_INSTANCE is None
+
+    if PIPELINE_INSTANCE:
+        prev_host = getattr(PIPELINE_INSTANCE, "_connected_host", None)
+        prev_port = getattr(PIPELINE_INSTANCE, "_connected_port", None)
+        curr_host = cfg.retrieval.WEAVIATE_HOST
+        curr_port = cfg.retrieval.WEAVIATE_HTTP_PORT
+
+        if (prev_host, prev_port) != (curr_host, curr_port):
+            logger.info(
+                "[Pipeline] Weaviate connection settings changed: "
+                f"{prev_host}:{prev_port} -> {curr_host}:{curr_port}; rebuilding."
+            )
+            needs_rebuild = True
+
+    if not needs_rebuild:
+        return PIPELINE_INSTANCE
+
+    # Tear down old client if exists
+    if PIPELINE_INSTANCE and hasattr(PIPELINE_INSTANCE, "retriever"):
+        try:
+            PIPELINE_INSTANCE.retriever.close()
+            logger.info("[Pipeline] Closed old retriever.")
+        except Exception as e:
+            logger.warning(f"[Pipeline] Failed to close old retriever: {e}")
+
+    # Build new
+    logger.info("[Pipeline] Initializing new UnifiedPipeline…")
+    PIPELINE_INSTANCE = UnifiedPipeline()
+
+    # Remember connection info
+    PIPELINE_INSTANCE._connected_host = cfg.retrieval.WEAVIATE_HOST
+    PIPELINE_INSTANCE._connected_port = cfg.retrieval.WEAVIATE_HTTP_PORT
+
+    logger.info(
+        "[Pipeline] New pipeline connected to "
+        f"{PIPELINE_INSTANCE._connected_host}:"
+        f"{PIPELINE_INSTANCE._connected_port}."
+    )
+
+    return PIPELINE_INSTANCE
+
+
+
+def initialize_pipeline(app_context=None, force=False):
+    """
+    Initializes or re-initializes the global pipeline object.
+    Skips if already valid or initialization is running.
+    """
+    global _pipeline_initializing, PIPELINE_INSTANCE
+
+    if _pipeline_initializing:
+        logger.info("Pipeline init already in progress. Skipping.")
+        return
+
+    _pipeline_initializing = True
+    try:
+        # Optionally use the Flask app context if provided
+        if app_context:
+            with app_context:
+                _inner_init(force)
+        else:
+            _inner_init(force)
+    finally:
+        _pipeline_initializing = False
+
+
+def _inner_init(force):
+    """
+    Helper to do the actual initialization logic under whichever context.
+    """
+    global PIPELINE_INSTANCE
+
+    host = cfg.retrieval.WEAVIATE_HOST
+    port = cfg.retrieval.WEAVIATE_HTTP_PORT
+
+    # Quick reachability check
+    try:
+        socket.create_connection((host, port), timeout=2).close()
+        logger.info(f"Weaviate reachable at {host}:{port}")
+    except Exception as e:
+        logger.warning(f"Weaviate not reachable at {host}:{port}: {e}")
+        PIPELINE_INSTANCE = None
+        return
+
+    # Rebuild if invalid or forced
+    if not is_pipeline_valid(PIPELINE_INSTANCE) or force:
+        logger.info("Rebuilding pipeline (invalid or force requested)")
+        PIPELINE_INSTANCE = init_pipeline_once(force=force)
+    else:
+        logger.info("Existing pipeline is valid; skipping rebuild")
+
 
 # === Keep direct execution block for testing (if desired) ===
 if __name__ == "__main__":
@@ -657,7 +811,7 @@ if __name__ == "__main__":
     test_pipeline = None
     try:
         print(f"\n--- Testing Pipeline with Query: '{test_query}' ---")
-        test_pipeline = IndustrialAutomationPipeline()
+        test_pipeline = UnifiedPipeline()
         # --- Test a simple query without history ---
         result = test_pipeline.generate_response(test_query, chat_history=None)
         print("\n>>> Result (No History):")

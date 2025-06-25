@@ -1,6 +1,6 @@
 {
   "Main": {
-    "status": "starting",
+    "status": "running",
     "host": "localhost",
     "http_port": 8091,
     "grpc_port": 51002,
@@ -8,5 +8,25 @@
     "container_name": "rag_weaviate_Main",
     "volume_name": "weaviate_data_Main",
     "created_at": "2025-05-22T21:08:02.103027"
+  },
+  "new": {
+    "status": "exited",
+    "host": "localhost",
+    "http_port": 8092,
+    "grpc_port": 51003,
+    "container_id": "4f67593e8a52c18ef6c8288ee014ae7f32e58ee5929e043bf53513e7732c7ee7",
+    "container_name": "rag_weaviate_new",
+    "volume_name": "weaviate_data_new",
+    "created_at": "2025-05-30T20:58:02.307585"
+  },
+  "test": {
+    "status": "exited",
+    "host": "localhost",
+    "http_port": 8093,
+    "grpc_port": 51004,
+    "container_id": "eb8090529461f84e71776020656e13621c4111c7e341887d30a6381c440f894c",
+    "container_name": "rag_weaviate_test",
+    "volume_name": "weaviate_data_test",
+    "created_at": "2025-06-23T00:08:59.216642"
   }
 }
