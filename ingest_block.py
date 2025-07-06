@@ -64,7 +64,11 @@ from centroid_manager import CentroidManager, should_recalculate_centroid
 logger = logging.getLogger(__name__)
 
 # Initialize centroid manager
-centroid_manager = CentroidManager()
+centroid_manager = CentroidManager(
+    instance_alias=cfg.retrieval.WEAVIATE_ALIAS,
+    collection_name=cfg.retrieval.COLLECTION_NAME,
+    base_path=cfg.paths.CENTROID_DIR
+)
 _centroid_mgr = centroid_manager  # Optional alias if needed
 
 
@@ -472,19 +476,22 @@ class IncrementalDocumentProcessorBlock:
                 for d in quality_docs
             ]
             if new_vectors:
-                cm = CentroidManager()
+                cm = CentroidManager(
+                    instance_alias=cfg.retrieval.WEAVIATE_ALIAS,
+                    collection_name=cfg.retrieval.COLLECTION_NAME,
+                    base_path=cfg.paths.CENTROID_DIR
+                )
                 all_vectors  = cm.get_all_vectors(client_instance, cfg.retrieval.COLLECTION_NAME)
                 old_centroid = cm.get_centroid()
                 auto_thr     = cfg.ingestion.CENTROID_AUTO_THRESHOLD
                 div_thr      = cfg.ingestion.CENTROID_DIVERSITY_THRESHOLD
-                if should_recalculate_centroid(
-                        new_vectors, all_vectors, old_centroid,
-                        auto_thr, div_thr
-                ):
+
+                if should_recalculate_centroid(new_vectors, all_vectors, old_centroid, auto_thr, div_thr):
                     cm.update_centroid(all_vectors)
                     logger.info("Centroid recalculated and updated.")
                 else:
                     logger.info("Centroid update skipped (insufficient change).")
+
         except Exception as e:
             logger.critical(f"Error during centroid update: {e}", exc_info=True)
 
@@ -954,21 +961,37 @@ def extract_tables(filepath: Path) -> list:
    
 # --- Main Execution (for running script directly) ---
 def main():
+    import argparse
+    import logging
+    import sys
+
+    def setup_logging(force_utf8=False, level=logging.INFO):
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        if force_utf8:
+            try:
+                stream_handler.stream = open(sys.stdout.fileno(), mode='w', encoding='utf-8', buffering=1)
+            except Exception:
+                pass
+        logging.basicConfig(handlers=[stream_handler], level=level, force=True)
+
     parser = argparse.ArgumentParser(description="Run incremental document ingestion.")
     parser.add_argument("--folder", "-f", type=str, default=cfg.paths.DOCUMENT_DIR if cfg else "./data",
-                         help="Folder containing documents to ingest.")
+                        help="Folder containing documents to ingest.")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging.")
     args = parser.parse_args()
 
-    # Setup basic logging if run directly
     log_level = logging.DEBUG if args.verbose else logging.INFO
-    logging.basicConfig(level=log_level, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    logger.info("Running ingest_block script directly...")
-    result = run_ingestion(args.folder)
-    #print summary to console
-    import pprint; pprint.pprint(result)
-  
+    setup_logging(force_utf8=True, level=log_level)
 
-# Only call main() if this script is run directly.
+    logger = logging.getLogger(__name__)
+    logger.info("Running ingest_block script directly...")
+
+    result = run_ingestion(args.folder)
+
+    import pprint
+    pprint.pprint(result)
+
+
 if __name__ == "__main__":
     main()

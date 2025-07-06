@@ -44,7 +44,7 @@ class WebsiteScraper:
         try:
             return self.session.get('https://api.ipify.org', timeout=5).text
         except Exception as e:
-            print(f"⚠️ Could not determine public IP: {e}")
+            print(f"Could not determine public IP: {e}")
             return "UNKNOWN (network error)"
     
     def _check_vpn_connection(self):
@@ -62,7 +62,7 @@ class WebsiteScraper:
             current_ip = self._get_public_ip()
             
             if original_ip == current_ip:
-                print("\n⚠️ WARNING: VPN NOT ACTIVE ⚠️".center(50))
+                print("\n WARNING: VPN NOT ACTIVE".center(50))
                 print(f"\nYour REAL IP address is exposed: {current_ip}")
                 print("\nRecommendations:")
                 print("- Connect to your VPN before continuing")
@@ -76,10 +76,10 @@ class WebsiteScraper:
                     time.sleep(1)
                 print("\n")
             else:
-                print(f"\n✅ VPN appears active. Original IP: {original_ip}, Current IP: {current_ip}")
+                print(f"\nVPN appears active. Original IP: {original_ip}, Current IP: {current_ip}")
                 
         except Exception as e:
-            print(f"\n⚠️ Could not verify VPN status: {e}")
+            print(f"\nCould not verify VPN status: {e}")
             print("Proceeding with potentially UNPROTECTED connection")
         
         print("="*50 + "\n")

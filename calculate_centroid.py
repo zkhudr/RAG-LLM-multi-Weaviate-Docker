@@ -11,9 +11,6 @@ import weaviate
 from config import cfg
 from centroid_manager import CentroidManager, should_recalculate_centroid, get_centroid_stats
 
-
-
-
 # Optional import for dimension probe
 try:
     from langchain_ollama import OllamaEmbeddings
@@ -22,78 +19,74 @@ except ImportError:
     _HAS_OLLAMA = False
 
 # --- Logging ---
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+def setup_logging(force_utf8=False, level=logging.INFO):
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    if force_utf8:
+        try:
+            stream_handler.stream = open(sys.stdout.fileno(), mode='w', encoding='utf-8', buffering=1)
+        except Exception:
+            pass
+    logging.basicConfig(handlers=[stream_handler], level=level, force=True)
+
+setup_logging(force_utf8=True)
+
+
 logger = logging.getLogger(__name__)
 
-
-def fetch_all_vectors(client: weaviate.Client, collection_name: str) -> List[np.ndarray]:
+def fetch_all_vectors(client: weaviate.Client, collection_name: str, retries=5, delay=2) -> List[np.ndarray]:
+    """
+    Fetches all vectors for a collection, with retries if gRPC schema isn't ready yet.
+    """
     vectors = []
     processed = 0
-    try:
-        collection = client.collections.get(collection_name)
-    except Exception as e:
-        logger.error(f"Collection '{collection_name}' not found: {e}")
-        return []
+    last_exc = None
+    for attempt in range(1, retries + 1):
+        try:
+            collection = client.collections.get(collection_name)
+            for obj in collection.iterator(include_vector=True, return_properties=[]):
+                vec = obj.vector.get("default")
+                if vec:
+                    vectors.append(np.array(vec))
+                    processed += 1
+                    if processed % 1000 == 0:
+                        logger.info(f"Fetched {processed} vectors...")
+            logger.info(f"Total fetched vectors: {processed}")
+            return vectors
+        except weaviate.exceptions.WeaviateQueryError as e:
+            if "could not find class" in str(e):
+                logger.warning(f"[FetchVectors] Attempt {attempt}/{retries}: Collection not yet visible in gRPC. Retrying in {delay}s...")
+                time.sleep(delay)
+                last_exc = e
+                continue
+            else:
+                raise
+    # Exhausted retries
+    logger.error(f"[FetchVectors] Exhausted retries. Last error: {last_exc}")
+    raise last_exc
 
-    for obj in collection.iterator(include_vector=True, return_properties=[]):
-        vec = obj.vector.get("default")
-        if vec:
-            vectors.append(np.array(vec))
-            processed += 1
-            if processed % 1000 == 0:
-                logger.info(f"Fetched {processed} vectors...")
-    logger.info(f"Total fetched vectors: {processed}")
-    return vectors
+def calculate_and_save_centroid(client, collection_name, instance_alias, base_path, force=False) -> dict:
+    alias_safe = instance_alias.replace('.', '_').replace(':', '_')
+    col_safe = collection_name.replace(' ', '_')
+    save_path = os.path.join(base_path, f"{alias_safe}_{col_safe}_centroid.npy")
 
-
-def calculate_and_save_centroid(client, collection_name, save_path, force=False) -> dict:
-    """
-    Calculates and saves centroid for the given Weaviate collection.
-    Returns a dict with status and optional error.
-    """
     os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
     vectors = fetch_all_vectors(client, collection_name)
 
     if not vectors:
-        # No vectors: create zero centroid (dimension from metadata, probe, or config)
-        
-        # 1) Try existing metadata for shape
-        dim = None
-        cm_tmp = CentroidManager(centroid_path=save_path)
-        meta = cm_tmp.get_metadata()
-        if "shape" in meta and isinstance(meta["shape"], (list, tuple)):
-            try:
-                dim = int(meta["shape"][0])
-            except Exception:
-                dim = None
-        # 2) Probe via embedding model
-        if dim is None and _HAS_OLLAMA:
-            try:
-                emb = OllamaEmbeddings(
-                    model=cfg.model.EMBEDDING_MODEL,
-                    base_url=getattr(cfg.retrieval, 'EMBEDDING_BASE_URL', None)
-                )
-                dim = len(emb.embed_query(""))
-            except Exception as e:
-                logger.error(f"Failed to probe embedding dimension: {e}")
-        # 3) Fallback to configured dimension
-        if dim is None:
-            dim = getattr(cfg.model, 'EMBEDDING_DIMENSION', None)
-            if dim is None:
-                raise RuntimeError("Cannot determine embedding dimension for zero‐vector centroid.")
+        # Instead of creating zero vector, fail gracefully
+        msg = (
+            f"The collection '{collection_name}' in instance '{instance_alias}' contains no vectors. "
+            "Centroid cannot be calculated. Please ingest documents before computing a centroid."
+        )
+        logger.warning(msg)
+        return {
+            "ok": False,
+            "skipped": True,
+            "error": msg
+        }
 
-        # Build and save zero vector
-        zero_centroid = np.zeros(dim, dtype=float)
-        cm = CentroidManager(centroid_path=save_path)
-        cm.save_centroid(zero_centroid)
-        logger.info(f"Saved zero‐vector centroid of dim {dim} to {save_path}")
-        return {"ok": True, "shape": zero_centroid.shape, "path": str(cm.centroid_path)}
-
-
-    cm = CentroidManager(centroid_path=save_path)
+    cm = CentroidManager(instance_alias=instance_alias, collection_name=collection_name, base_path=base_path)
     old = cm.get_centroid()
 
     if not force and not should_recalculate_centroid(
@@ -104,15 +97,21 @@ def calculate_and_save_centroid(client, collection_name, save_path, force=False)
         diversity_threshold=cfg.ingestion.CENTROID_DIVERSITY_THRESHOLD
     ):
         logger.info("Centroid already up-to-date. Saving stats anyway.")
-        stats = get_centroid_stats(old)
-        cm.save_metadata(stats)
-        return {
-            "ok": True,
-            "skipped": True,
-            "message": "Centroid up-to-date.",
-            "shape": old.shape,
-            "path": str(cm.centroid_path)
-        }
+        if old is not None:
+            stats = get_centroid_stats(old)
+            cm.save_metadata(stats)
+            return {
+                "ok": True,
+                "skipped": True,
+                "message": "Centroid up-to-date.",
+                "shape": old.shape,
+                "path": str(cm.centroid_path)
+            }
+        else:
+            return {
+                "ok": False,
+                "error": "Centroid metadata indicates up-to-date, but no existing centroid found."
+            }
 
     centroid = np.mean(np.vstack(vectors), axis=0)
     logger.info(f"Calculated new centroid. Shape: {centroid.shape}")
@@ -129,19 +128,18 @@ def calculate_and_save_centroid(client, collection_name, save_path, force=False)
         }
     except Exception as e:
         logger.error(f"Failed to save centroid: {e}")
-        return { "ok": False, "error": str(e) }
-
-
+        return {"ok": False, "error": str(e)}
 
 
 if __name__ == "__main__":
     host = cfg.retrieval.WEAVIATE_HOST
     http_port = cfg.retrieval.WEAVIATE_HTTP_PORT
     grpc_port = cfg.retrieval.WEAVIATE_GRPC_PORT
+    alias = cfg.retrieval.WEAVIATE_ALIAS
     collection = cfg.retrieval.COLLECTION_NAME
     centroid_dir = getattr(cfg.paths, 'CENTROID_DIR', './centroids')
+
     os.makedirs(centroid_dir, exist_ok=True)
-    save_path = os.path.join(centroid_dir, f"{collection}_centroid.npy")
 
     logger.info(f"Connecting to Weaviate at {host}:{http_port} (gRPC:{grpc_port})...")
     try:
@@ -159,7 +157,7 @@ if __name__ == "__main__":
         logger.error(f"Error accessing collection stats: {e}")
         sys.exit(1)
 
-    calculate_and_save_centroid(client, collection, save_path, force=False)
+    calculate_and_save_centroid(client, collection_name=collection, instance_alias=alias, base_path=centroid_dir, force=False)
 
     try:
         client.close()

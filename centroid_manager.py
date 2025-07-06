@@ -52,21 +52,21 @@ def should_recalculate_centroid(
 
 
 def save_metadata(self, stats: dict) -> None:
-        """Save descriptive stats (not just shape info) to metadata file."""
-        try:
-            self.metadata_path.parent.mkdir(parents=True, exist_ok=True)
-            stats["saved_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            with open(self.metadata_path, "w", encoding="utf-8") as f:
-                json.dump(stats, f, indent=2)
-            self.logger.info(f"Saved descriptive centroid metadata to {self.metadata_path}")
-        except Exception as e:
-            self.logger.error(f"Failed saving descriptive metadata: {e}")
+    """Save descriptive stats (Mean, Std Dev, etc.) to metadata JSON."""
+    try:
+        self.metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        stats["saved_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+        with open(self.metadata_path, "w", encoding="utf-8") as f:
+            json.dump(stats, f, indent=2)
+
+        self.logger.info(f"Saved descriptive centroid metadata to: {self.metadata_path}")
+    except Exception as e:
+        self.logger.error(f"Failed saving descriptive metadata: {e}", exc_info=True)
 
 
 def get_centroid_stats(centroid: np.ndarray) -> dict:
-    """
-    Returns descriptive statistics for a centroid vector.
-    """
+    """Returns descriptive statistics for a centroid vector."""
     return {
         "Dimension Count":     centroid.size,
         "Mean":                float(np.mean(centroid)),
@@ -80,38 +80,38 @@ def get_centroid_stats(centroid: np.ndarray) -> dict:
     }
 
 
+
 class CentroidManager:
     def __init__(
         self,
-        centroid_path: str    = None,
-        collection_name: str  = None,
-        base_path: str        = None
+        instance_alias: str = None,
+        centroid_path: str = None,
+        collection_name: str = None,
+        base_path: str = None
     ):
         self.logger = _LOG
 
-        # Determine file path for .npy
-        if centroid_path and not (collection_name or base_path):
+        # Determine full .npy path
+        if centroid_path and not (collection_name or base_path or instance_alias):
             p = Path(centroid_path)
-        else:
-            # Base directory for all centroids
-            base_dir = (
-                base_path
-                or getattr(cfg.paths, 'CENTROID_DIR', None)
-                or os.path.dirname(getattr(cfg.paths, 'DOMAIN_CENTROID_PATH', ''))
-                or '.'
-            )
-            Path(base_dir).mkdir(parents=True, exist_ok=True)
 
-            if collection_name:
-                fname = f"{collection_name}_centroid.npy"
-                p = Path(base_dir) / fname
-            elif centroid_path:
-                p = Path(centroid_path)
-            else:
-                p = Path(getattr(cfg.paths, 'DOMAIN_CENTROID_PATH', './domain_centroid.npy'))
+        else:
+            if not (collection_name and instance_alias):
+                raise ValueError("Must provide both collection_name and instance_alias unless centroid_path is explicitly given.")
+
+            base_dir = Path(
+                base_path
+                or getattr(cfg.paths, 'CENTROID_DIR', './centroids')
+            )
+            base_dir.mkdir(parents=True, exist_ok=True)
+
+            safe_instance = instance_alias.replace('.', '_').replace(':', '_')
+            safe_collection = collection_name.replace(' ', '_')
+            fname = f"{safe_instance}_{safe_collection}_centroid.npy"
+            p = base_dir / fname
 
         self.centroid_path = p
-        self.metadata_path = self.centroid_path.with_name(self.centroid_path.stem + "_meta.json")
+        self.metadata_path = p.with_name(p.stem + "_meta.json")
 
         self.centroid: Optional[np.ndarray] = None
         self._warned_missing = False
@@ -123,13 +123,13 @@ class CentroidManager:
             try:
                 self.centroid = np.load(self.centroid_path)
             except Exception as e:
-                self.logger.error(f"⚠️ Failed to load centroid: {e}")
+                self.logger.error(f"Failed to load centroid: {e}")
                 self.centroid = None
         else:
             self.centroid = None
 
     def save_centroid(self, vector: np.ndarray) -> None:
-        """Save centroid array and record metadata (.npy + _meta.json)."""
+        """Save centroid array and record basic metadata (.npy + _meta.json)."""
         try:
             self.centroid_path.parent.mkdir(parents=True, exist_ok=True)
             np.save(self.centroid_path, vector)
@@ -140,31 +140,37 @@ class CentroidManager:
                 "dtype": str(vector.dtype),
                 "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             }
+
             with open(self.metadata_path, "w", encoding="utf-8") as f:
                 json.dump(meta, f, indent=2)
 
-            self.logger.info(
-                f"Saved centroid to {self.centroid_path} and metadata to {self.metadata_path}"
-            )
+            self.logger.info(f"Saved centroid to: {self.centroid_path}")
+            self.logger.info(f"Saved metadata to: {self.metadata_path}")
+
         except Exception as e:
-            self.logger.error(f"⚠️ Failed to save centroid: {e}")
+            self.logger.error(f" Failed to save centroid: {e}", exc_info=True)
+
 
     def save_metadata(self, stats: dict) -> None:
-            """Save descriptive stats (not just shape info) to metadata file."""
-            try:
-                self.metadata_path.parent.mkdir(parents=True, exist_ok=True)
-                stats["saved_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                with open(self.metadata_path, "w", encoding="utf-8") as f:
-                    json.dump(stats, f, indent=2)
-                self.logger.info(f"Saved descriptive centroid metadata to {self.metadata_path}")
-            except Exception as e:
-                self.logger.error(f"Failed saving descriptive metadata: {e}")
+        """Save descriptive stats (Mean, Std Dev, etc.) to metadata file."""
+        try:
+            self.metadata_path.parent.mkdir(parents=True, exist_ok=True)
+            stats["saved_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+            with open(self.metadata_path, "w", encoding="utf-8") as f:
+                json.dump(stats, f, indent=2)
+
+            self.logger.info(f"Saved descriptive centroid metadata to: {self.metadata_path}")
+
+        except Exception as e:
+            self.logger.error(f" Failed saving descriptive metadata: {e}", exc_info=True)
+
 
 
     def get_centroid(self) -> Optional[np.ndarray]:
         """
         Return the centroid array if it exists, else None.
-        Logs a warning once if missing.
+        Logs a warning once if missing or unreadable.
         """
         if self.centroid is not None:
             return self.centroid
@@ -174,62 +180,90 @@ class CentroidManager:
                 self.centroid = np.load(self.centroid_path)
                 return self.centroid
             except Exception as e:
-                self.logger.error(f"Failed loading centroid: {e}")
+                self.logger.error(f" Failed loading centroid from {self.centroid_path}: {e}", exc_info=True)
                 return None
 
         if not self._warned_missing:
-            self.logger.warning(f"Centroid file not found at {self.centroid_path}")
+            self.logger.warning(f" Centroid file not found at: {self.centroid_path}")
             self._warned_missing = True
         return None
 
+
     def get_metadata(self) -> dict:
-        """Return stored metadata or empty dict."""
-        if self.metadata_path.exists():
-            try:
-                with open(self.metadata_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception as e:
-                self.logger.error(f"Failed loading metadata: {e}")
-        return {}
+        """Return stored metadata JSON or empty dict."""
+        if not self.metadata_path.exists():
+            self.logger.debug(f"[get_metadata] No metadata file at {self.metadata_path}")
+            return {}
 
+        try:
+            with open(self.metadata_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
 
+            if not isinstance(meta, dict):
+                self.logger.warning(f"[get_metadata] Metadata file is not a dict: {self.metadata_path}")
+                return {}
 
+            return meta
+
+        except Exception as e:
+            self.logger.error(f" Failed loading metadata from {self.metadata_path}: {e}", exc_info=True)
+            return {}
 
 
     def query_insight(self, query_vector: np.ndarray) -> dict:
         """
-        Compare a query vector to the centroid:
-        Returns distance & cosine similarity, or an error if no centroid.
+        Compare a query vector to the centroid.
+        Returns distance & cosine similarity or error.
         """
         centroid = self.get_centroid()
         if centroid is None:
             return {"error": "Centroid not calculated yet."}
-        dist = float(np.linalg.norm(query_vector - centroid))
-        sim = float(np.dot(query_vector, centroid) /
-                    (np.linalg.norm(query_vector) * np.linalg.norm(centroid)))
-        return {"distance": dist, "similarity": sim}
+
+        try:
+            dist = float(np.linalg.norm(query_vector - centroid))
+            denom = np.linalg.norm(query_vector) * np.linalg.norm(centroid)
+            sim = float(np.dot(query_vector, centroid) / denom) if denom else 0.0
+            return {"distance": dist, "similarity": sim}
+        except Exception as e:
+            self.logger.error(f"query_insight failed: {e}", exc_info=True)
+            return {"error": "Similarity computation failed."}
+
 
     def get_all_vectors(self, client, collection_name: str) -> List[np.ndarray]:
         """Fetch all vectors from a Weaviate collection as numpy arrays."""
-        vectors: List[np.ndarray] = []
+        vectors = []
         try:
             collection = client.collections.get(collection_name)
         except Exception as e:
-            self.logger.error(f"Collection '{collection_name}' fetch failed: {e}")
+            self.logger.error(f"[get_all_vectors] Collection '{collection_name}' fetch failed: {e}")
             return vectors
 
-        for obj in collection.iterator(include_vector=True, return_properties=[]):
-            vec = obj.vector.get('default')
-            if vec:
-                vectors.append(np.array(vec))
+        count = 0
+        try:
+            for obj in collection.iterator(include_vector=True, return_properties=[]):
+                vec = obj.vector.get('default')
+                if vec:
+                    vectors.append(np.array(vec))
+                    count += 1
+            self.logger.info(f"[get_all_vectors] Retrieved {count} vectors from '{collection_name}'")
+        except Exception as e:
+            self.logger.error(f"[get_all_vectors] Iterator failure: {e}", exc_info=True)
+
         return vectors
 
+
     def drift_since(self, old_centroid: Optional[np.ndarray]) -> Optional[float]:
-        """Compute L2 drift since a previous centroid; or None if unavailable."""
+        """Compute L2 drift between previous and current centroid."""
         centroid = self.get_centroid()
         if centroid is None or old_centroid is None:
             return None
+
+        if centroid.shape != old_centroid.shape:
+            self.logger.warning("drift_since: Shape mismatch, cannot compute drift.")
+            return None
+
         return float(np.linalg.norm(centroid - old_centroid))
+
 
 
 

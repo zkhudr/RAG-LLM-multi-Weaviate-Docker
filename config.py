@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Literal, Tuple
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
+from pydantic import confloat
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -112,18 +113,31 @@ class DomainKeywordExtractionConfig(BaseModel):
     no_pos_filter: bool = Field(False)
     # Legacy aliases
     min_doc_freq: Optional[int] = Field(None, alias='min_doc_freq')
+    min_quality_score: confloat(ge=0, le=1) = 0.2
     extraction_diversity: Optional[float] = Field(None, alias='extraction_diversity')
 
     @model_validator(mode='after')
     def apply_aliases(self):
+        # Handle legacy min_doc_freq
         if self.min_doc_freq is not None:
             if self.min_doc_freq_mode == 'absolute':
                 object.__setattr__(self, 'min_doc_freq_abs', self.min_doc_freq)
             else:
                 object.__setattr__(self, 'min_doc_freq_frac', float(self.min_doc_freq))
+
+        # Handle diversity/extraction_diversity
         if self.extraction_diversity is not None:
             object.__setattr__(self, 'diversity', self.extraction_diversity)
+        elif self.diversity is None:
+            # Enforce explicit configuration rather than silently defaulting
+            raise ValueError(
+                "The 'diversity' parameter is missing or null in your configuration. "
+                "Please set either 'diversity' or 'extraction_diversity' explicitly in the YAML."
+            )
+
         return self
+
+
 
 
 class SecurityConfig(BaseModel):
@@ -158,6 +172,7 @@ class RetrievalConfig(BaseModel):
     WEAVIATE_GRPC_PORT: int = int(os.getenv("WEAVIATE_HOST_GRPC_PORT", 50051))
     retrieve_with_history: bool = False
     WEAVIATE_TIMEOUT: Tuple[int, int] = (10, 120)
+    WEAVIATE_ALIAS: str = "Main"
 
     @field_validator('SEARCH_TYPE')
     def validate_search_type_cls(cls, value):
@@ -261,7 +276,10 @@ class IngestionConfig(BaseModel):
     def apply_legacy_alias(self):
         if self.CENTROID_DIVERSITY is not None:
             object.__setattr__(self, 'CENTROID_DIVERSITY_THRESHOLD', self.CENTROID_DIVERSITY)
+        elif self.CENTROID_DIVERSITY_THRESHOLD is None:
+            object.__setattr__(self, 'CENTROID_DIVERSITY_THRESHOLD', 0.01)
         return self
+
 
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -307,11 +325,26 @@ class AppConfig(BaseModel):
             return True
         return False
 
+
     def reload(self):
             """Reloads the configuration from the YAML file path."""
             with open(CONFIG_YAML_PATH, "r", encoding="utf-8") as f:
                 new_data = yaml.safe_load(f) or {}
             self.__init__(**new_data)
+
+    def model_dump_sanitized(self) -> dict:
+        """
+        Returns dict for YAML save, excluding Weaviate connection settings.
+        Always uses current live retrieval config for host/ports.
+        """
+        d = self.model_dump()
+        # Overwrite retrieval connection keys with *existing in-memory* values
+        d["retrieval"]["WEAVIATE_HOST"] = self.retrieval.WEAVIATE_HOST
+        d["retrieval"]["WEAVIATE_HTTP_PORT"] = self.retrieval.WEAVIATE_HTTP_PORT
+        d["retrieval"]["WEAVIATE_GRPC_PORT"] = self.retrieval.WEAVIATE_GRPC_PORT
+        d["retrieval"]["WEAVIATE_ALIAS"] = self.retrieval.WEAVIATE_ALIAS
+
+        return d
 
 # Instantiate config
 try:

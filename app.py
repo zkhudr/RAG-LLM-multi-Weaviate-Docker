@@ -1,10 +1,10 @@
 # Disable optional telemetry as early as possible
 import os
+import io
 os.environ['POSTHOG_DISABLED'] = 'true'
-
+import sys
 # ─── Standard library ────────────────────────────────────────────────────────────────
 import csv
-import io
 import json
 import logging
 import re
@@ -42,6 +42,8 @@ from pydantic import BaseModel, Field, ValidationError
 from requests.exceptions import RequestException
 from werkzeug.exceptions import HTTPException
 from werkzeug.utils import secure_filename
+from weaviate.exceptions import WeaviateConnectionError
+
 
 # ─── Local application modules ─────────────────────────────────────────────────────
 from calculate_centroid import calculate_and_save_centroid
@@ -63,6 +65,17 @@ from pipeline import (
 )
 from datetime import datetime
 from validate_configs import main as validate_configs
+
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# 💀 Kill previous handlers
+if logger.hasHandlers():
+    logger.handlers.clear()
+
+
+
 
 # ─── Validate config files at startup ────────────────────────────────────────────────
 try:
@@ -128,31 +141,30 @@ app.config.update(
 log_level = logging.INFO
 formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
-# Ensure instance folder exists
+# Ensure instance folder exists early
 try:
     os.makedirs(app.instance_path, exist_ok=True)
 except OSError as e:
     print(f"CRITICAL: Could not create instance path '{app.instance_path}': {e}", file=sys.stderr)
 
-# File handler
 log_file = Path(app.instance_path) / "app.log"
-file_handler = RotatingFileHandler(str(log_file), maxBytes=5*1024*1024, backupCount=3)
+
+file_handler = RotatingFileHandler(str(log_file), maxBytes=5 * 1024 * 1024, backupCount=3)
 file_handler.setFormatter(formatter)
 file_handler.setLevel(log_level)
 
-# Console handler
 console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setFormatter(formatter)
 console_handler.setLevel(log_level)
 
-# Apply to root logger
+# Root logger
 root = logging.getLogger()
 root.setLevel(log_level)
 root.handlers.clear()
 root.addHandler(file_handler)
 root.addHandler(console_handler)
 
-# Suppress overly-verbose logs
+# Suppress noisy libs
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("weaviate").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
@@ -307,29 +319,120 @@ presets = {}
 
 
 # === Utility: Reload config and re-init pipeline ===
-def reload_and_maybe_reinit(ctx, override_weaviate: bool = False):
-    
 
+def _wait_for_weaviate_rest(host, port, retries=10, delay=0.2):
+    import time
+    import httpx
+    url = f"http://{host}:{port}/v1/meta"
+    for attempt in range(1, retries + 1):
+        try:
+            r = httpx.get(url, timeout=2.0)
+            if r.status_code == 200:
+                app.logger.info(f"Weaviate REST is ready (attempt {attempt})")
+                return True
+        except Exception:
+            app.logger.debug(f"Attempt {attempt}: Weaviate not ready yet.")
+        time.sleep(delay)
+    app.logger.error(f"Weaviate REST failed to start after {retries} attempts.")
+    return False
+
+
+def reload_and_maybe_reinit(ctx, override_weaviate: bool = False):
     with ctx:
         try:
             # 1) Reload YAML-backed cfg
             cfg.reload()
+
+            # Only override if explicitly requested
             if override_weaviate:
-                # if you ever need to force to a hard-coded instance
                 cfg.retrieval.WEAVIATE_HOST = "localhost"
                 cfg.retrieval.WEAVIATE_HTTP_PORT = 8092
+                cfg.retrieval.WEAVIATE_GRPC_PORT = 51003
+                cfg.retrieval.WEAVIATE_ALIAS = "Main"
                 logger.info("Weaviate override applied after config reload.")
 
             logger.info("Reloaded config from disk.")
 
-            # 2) Always call init_pipeline_once – it will only rebuild if:
-            #    - forced, or
-            #    - host/port changed, or
-            #    - live client params don’t match current cfg
-            init_pipeline_once(force=override_weaviate)
+            # 🔹 Safely close any existing pipeline
+            global PIPELINE_INSTANCE
+            if PIPELINE_INSTANCE:
+                try:
+                    PIPELINE_INSTANCE.close()
+                    logger.info("Previous pipeline closed cleanly.")
+                except Exception as e:
+                    logger.warning(f"Error closing previous pipeline: {e}")
+                PIPELINE_INSTANCE = None  # 🟢 IMPORTANT: clear reference
+
+            # 2) Always re-init pipeline (force new instance)
+            init_pipeline_once(force=True)
 
         except Exception as reload_err:
             logger.error("Reload or pipeline init failed.", exc_info=True)
+
+@app.route("/delete_collection", methods=["POST"])
+def delete_collection():
+    """Delete a collection from Weaviate."""
+    data = request.get_json(silent=True) or {}
+    name = data.get("name")
+    if not name:
+        return jsonify({"error": "Collection name required."}), 400
+
+    try:
+        import weaviate
+
+        client = weaviate.connect_to_custom(
+            http_host=cfg.retrieval.WEAVIATE_HOST,
+            http_port=cfg.retrieval.WEAVIATE_HTTP_PORT,
+            http_secure=False,
+            grpc_host=cfg.retrieval.WEAVIATE_HOST,
+            grpc_port=cfg.retrieval.WEAVIATE_GRPC_PORT,
+            grpc_secure=False,
+            skip_init_checks=True
+        )
+
+        client.collections.delete(name)
+        app.logger.info(f"Deleted collection '{name}' successfully.")
+        return jsonify({"success": True})
+    except Exception as e:
+        app.logger.error(f"Error deleting collection '{name}'", exc_info=True)
+        return jsonify({"error": str(e)})
+
+@app.route("/create_collection", methods=["POST"])
+def create_collection():
+    """
+    Creates a new empty collection in the active Weaviate instance.
+    """
+    data = request.get_json(silent=True) or {}
+    name = data.get("name")
+    if not name:
+        return jsonify({"error": "Collection name required."}), 400
+
+    try:
+        import weaviate
+
+        # Always create client using current cfg to respect active instance
+        client = weaviate.connect_to_custom(
+            http_host=cfg.retrieval.WEAVIATE_HOST,
+            http_port=cfg.retrieval.WEAVIATE_HTTP_PORT,
+            http_secure=False,
+            grpc_host=cfg.retrieval.WEAVIATE_HOST,
+            grpc_port=cfg.retrieval.WEAVIATE_GRPC_PORT,
+            grpc_secure=False,
+            skip_init_checks=True
+        )
+
+        existing_names = client.collections.list_all()
+        if name in existing_names:
+            return jsonify({"error": "Collection already exists."}), 400
+
+        client.collections.create(name)
+        logger.info(f"Created collection '{name}' successfully.")
+        return jsonify({"success": True})
+
+    except Exception as e:
+        logger.error(f"Error creating collection '{name}': {e}", exc_info=True)
+        return jsonify({"error": str(e)})
+
 
 
 
@@ -400,18 +503,48 @@ def load_presets(filename=PRESETS_FILE):
         return presets
     
 
-def save_presets(presets_data, filename=PRESETS_FILE):
-    """Saves presets dict to JSON file."""
-    global presets # Optional: update global after save too
+@app.route("/save_preset", methods=["POST"])
+def save_preset_api():
+    global presets
+
+    # Ensure configuration is loaded
+    if cfg is None:
+        return jsonify({"success": False, "error": "Configuration unavailable."}), 503
+
     try:
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(presets_data, f, indent=2)
-        presets = presets_data # Update global variable after successful save
-        logger.info(f"Presets saved to '{filename}'.")
-        return True # Indicate success
-    except IOError as e:
-        logger.error(f"Failed to save presets to '{filename}': {e}")
-        return False # Indicate failure)
+        data = request.get_json() or {}
+        preset_name = data.get("preset_name", "").strip()
+        if not preset_name:
+            return jsonify({"success": False, "error": "Preset name is required."}), 400
+
+        preset_data = data.get("config")
+        if not isinstance(preset_data, dict):
+            return jsonify({"success": False, "error": "Invalid or missing preset data."}), 400
+
+        # Remove illegal top-level 'presets' key if present
+        preset_data.pop("presets", None)
+
+        # Validate against AppConfig model
+        validated = AppConfig(**preset_data)
+
+        # 🚨 Sanitize before saving
+        sanitized_dump = validated.model_dump_sanitized()
+
+        # Save in-memory and to disk
+        presets[preset_name] = sanitized_dump
+        if not save_presets(presets):
+            return jsonify({"success": False, "error": "Failed to write presets file."}), 500
+
+        return jsonify({"success": True, "message": f"Preset '{preset_name}' saved."}), 200
+
+    except ValidationError as ve:
+        logger.error(f"Preset data validation failed: {ve}")
+        return jsonify({"success": False, "error": "Invalid preset data."}), 400
+
+    except Exception as e:
+        logger.error(f"Preset save API error: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
 
 # === NEW: Multi-Instance Helper Functions ===
 
@@ -432,7 +565,7 @@ def save_config_to_yaml(config_dict: Dict[str, Any]) -> bool:
         cfg = validated_config
 
         # 3. Prepare the dictionary for YAML dump
-        dump_dict = validated_config.model_dump()  # Pydantic v2
+        dump_dict = validated_config.model_dump_sanitized() # Pydantic v2
 
         # 4. Atomic write to YAML
         temp_path = f"{CONFIG_YAML_PATH}.tmp"
@@ -576,32 +709,36 @@ def get_config_api():
     if cfg is None:
         return jsonify({"error": "Config unavailable."}), 503
     try:
-        # Initialize the config_dict in case of an error
         config_dict = {}
 
         dump_method = getattr(cfg, 'model_dump', getattr(cfg, 'dict', None))
         if not dump_method: 
             raise TypeError("Config object cannot be serialized.")
         
-        # Serialize the config, excluding sensitive data
-        # Exclude None‐valued fields so we don’t send null aliases
         config_dict = dump_method(exclude={'security': {...}}, exclude_none=True)
-            # ALSO: ensure the legacy alias isn’t floating around as null
+
+        # 🧼 Cleanup floaters
         dke = config_dict.get('domain_keyword_extraction', {})
         if dke.get('extraction_diversity') is None:
-                 dke.pop('extraction_diversity', None)
-        # Add default pipeline section if missing
+            dke.pop('extraction_diversity', None)
+
         if 'pipeline' not in config_dict:
             logger.warning("Pipeline section missing in config. Adding default values.")
-            config_dict['pipeline'] = {'max_history_turns': 5}  # Default pipeline values
+            config_dict['pipeline'] = {'max_history_turns': 5}
 
-        # Debug: Log the config data before sending it
-        logger.info(f"Config to be returned: {config_dict}")
-        
+        # ✅ SAFE LOGGING (avoids CP1252 crash on Windows console)
+        try:
+            preview = json.dumps(config_dict, ensure_ascii=True)[:1000] + "..."
+            logger.info(f"Config to be returned: {preview}")
+        except Exception as log_err:
+            logger.warning(f"Could not safely log config_dict: {log_err}")
+
         return jsonify(config_dict)
+
     except Exception as e: 
         logger.error(f"API /get_config error: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
+
 
 
 @app.route('/delete_preset/<path:preset_name>', methods=['DELETE'])
@@ -689,6 +826,11 @@ def run_pipeline():
         # 3) Call the pipeline
         chat_history = session.get("chat_history", [])
         result_dict = inst.generate_response(query=user_query, chat_history=chat_history)
+
+        # DEBUG: Show the raw response dict
+        print("=== FINAL RESPONSE ===")
+        print(repr(result_dict))
+
         logger.info(f"[Pipeline] Query successful. Result: {result_dict}")
 
         # 4) Extract text from the result
@@ -708,7 +850,11 @@ def run_pipeline():
         }
 
         # 6) Persist chat history and return
+        max_history = getattr(cfg.pipeline, "max_history_turns", 50)
         chat_history.append(assistant_message)
+        if len(chat_history) > max_history * 2:
+            # max_turns = 5 means 10 messages (5 turns * 2 messages)
+            chat_history = chat_history[-max_history * 2:]
         session["chat_history"] = chat_history
         return jsonify(assistant_message), 200
 
@@ -719,7 +865,6 @@ def run_pipeline():
             "text": f"Internal error: {e}",
             "error": True
         }), 500
-
 
 @app.route('/upload_files', methods=['POST'])
 def upload_files():
@@ -775,12 +920,11 @@ def apply_preset(preset_name):
         # ─── Protect active Weaviate settings ───
         preset_data.setdefault("retrieval", {})
         active_retrieval = getattr(cfg, "retrieval", {})
-        for field in ["WEAVIATE_HOST", "WEAVIATE_HTTP_PORT", "WEAVIATE_GRPC_PORT"]:
-            if field in preset_data["retrieval"]:
-                current_app.logger.warning(
-                    f"[apply_preset] Overriding '{field}' is disallowed. Keeping current: {getattr(active_retrieval, field)}"
-                )
-                preset_data["retrieval"][field] = getattr(active_retrieval, field)
+        # Unconditionally overwrite these
+        preset_data["retrieval"]["WEAVIATE_HOST"] = getattr(active_retrieval, "WEAVIATE_HOST")
+        preset_data["retrieval"]["WEAVIATE_HTTP_PORT"] = getattr(active_retrieval, "WEAVIATE_HTTP_PORT")
+        preset_data["retrieval"]["WEAVIATE_GRPC_PORT"] = getattr(active_retrieval, "WEAVIATE_GRPC_PORT")
+        preset_data["retrieval"]["WEAVIATE_ALIAS"] = getattr(active_retrieval, "WEAVIATE_ALIAS")
 
         # ─── Apply and persist ───
         config_changed = cfg.update_and_save(preset_data)
@@ -819,50 +963,6 @@ def apply_preset(preset_name):
 
 
 
-
-@app.route("/save_preset", methods=["POST"])
-def save_preset_api():
-    global presets
-
-    # Ensure configuration is loaded
-    if cfg is None:
-        return jsonify({"success": False, "error": "Configuration unavailable."}), 503
-
-    try:
-        data = request.get_json() or {}
-        preset_name = data.get("preset_name", "").strip()
-        if not preset_name:
-            return jsonify({"success": False, "error": "Preset name is required."}), 400
-
-        preset_data = data.get("config")
-        if not isinstance(preset_data, dict):
-            return jsonify({"success": False, "error": "Invalid or missing preset data."}), 400
-
-        # Remove illegal top-level 'presets' key if present
-        preset_data.pop("presets", None)
-
-        # Validate against AppConfig model
-        _ = AppConfig(**preset_data)
-
-        # Save in-memory and to disk
-        presets[preset_name] = preset_data
-        if not save_presets(presets):
-            return jsonify({"success": False, "error": "Failed to write presets file."}), 500
-
-        return jsonify({"success": True, "message": f"Preset '{preset_name}' saved."}), 200
-
-    except ValidationError as ve:
-        logger.error(f"Preset data validation failed: {ve}")
-        return jsonify({"success": False, "error": "Invalid preset data."}), 400
-
-    except Exception as e:
-        logger.error(f"Preset save API error: {e}", exc_info=True)
-        return jsonify({"success": False, "error": str(e)}), 500
-
-
-
-
-
 @app.route("/save_config", methods=["POST"])
 def save_config():
     """
@@ -880,28 +980,16 @@ def save_config():
         return jsonify(success=False, error="Invalid JSON"), 400
 
     # 2. STRIP INVALID COLLECTION before diff-check
+    
     bad_col = data.get("retrieval", {}).get("COLLECTION_NAME", "")
     if bad_col:
-        from ingest_docs_v7 import PipelineConfig
-        client = PipelineConfig.get_client()
-        try:
-            valid_cols = client.collections.list_all(simple=True)
-        except Exception as e:
-            logger.warning(f"[save_config] Could not fetch valid collections: {e}")
-            valid_cols = []
-        finally:
-            try:
-                client.close()
-            except:
-                pass
-
-        if bad_col not in valid_cols:
+        if not isinstance(bad_col, str) or not bad_col.strip():
             fallback = cfg.retrieval.COLLECTION_NAME
             logger.warning(
-                f"[save_config] Rejecting invalid COLLECTION_NAME '{bad_col}', "
-                f"resetting to '{fallback}'"
+                f"[save_config] Rejecting empty COLLECTION_NAME, resetting to '{fallback}'"
             )
             data.setdefault("retrieval", {})["COLLECTION_NAME"] = fallback
+
 
     # 3. Validate payload
     try:
@@ -928,6 +1016,12 @@ def save_config():
             ), 200
 
         changed = cfg.update_and_save(data)
+        cfg.reload()
+        cfg.retrieval.WEAVIATE_HOST = os.getenv("WEAVIATE_HOST", "localhost")
+        cfg.retrieval.WEAVIATE_HTTP_PORT = int(os.getenv("WEAVIATE_HTTP_PORT", "8092"))
+        cfg.retrieval.WEAVIATE_GRPC_PORT = int(os.getenv("WEAVIATE_GRPC_PORT", "51003"))
+        cfg.retrieval.WEAVIATE_ALIAS = os.getenv("WEAVIATE_ALIAS", "Main")
+        
         logger.info(f"/save_config: Updated config keys: {changed_keys}")
 
     except Exception as e:
@@ -964,107 +1058,108 @@ def get_config():
 
 @app.route('/start_ingestion', methods=['POST'])
 def start_ingestion():
-    """Triggers FULL document ingestion + centroid computation in one call, with preflight checks."""
+    """
+    Triggers FULL document ingestion + centroid computation in one call, with preflight checks.
+    """
+    logger = current_app.logger
+
     # 1. Check that full-ingest components are available
     if not ingest_full_available or not DocumentProcessor or not PipelineConfig:
-        app.logger.error("Full ingestion components unavailable.")
+        logger.error("Full ingestion components unavailable.")
         return jsonify({'success': False, 'error': 'Full ingestion components unavailable.'}), 503
     if cfg is None:
-        app.logger.error("Configuration system unavailable.")
+        logger.error("Configuration system unavailable.")
         return jsonify({'success': False, 'error': 'Configuration system unavailable.'}), 500
 
     # 2. Get inputs with defaults
-    data_folder   = request.form.get('data_folder')   or cfg.paths.DOCUMENT_DIR
+    data_folder = request.form.get('data_folder') or cfg.paths.DOCUMENT_DIR
     centroid_path = request.form.get('centroid_path') or cfg.paths.DOMAIN_CENTROID_PATH
 
     # 2.1 Sanity-check centroid_path
     if not isinstance(centroid_path, str) or not centroid_path.strip():
         msg = f"Invalid centroid_path: {centroid_path!r}"
-        app.logger.error(msg)
+        logger.error(msg)
         return jsonify({'success': False, 'error': msg}), 400
 
     # 3. Preflight: can we write the centroid file?
     save_dir = os.path.dirname(centroid_path) or '.'
     if not os.access(save_dir, os.W_OK):
         msg = f"Cannot write to directory: {save_dir}"
-        app.logger.error(msg)
+        logger.error(msg)
         return jsonify({'success': False, 'error': msg}), 500
 
-    # 4. Preflight: Weaviate connectivity
-    try:
-        pre_client = g.weaviate_client
-        if not pre_client.is_ready():
-            raise WeaviateConnectionError("Weaviate not ready")
-    except Exception as e:
-        msg = f"Weaviate preflight failed: {e}"
-        app.logger.error(msg)
-        return jsonify({'success': False, 'error': msg}), 503
-    finally:
-        try:
-            pre_client.close()
-        except:
-            pass
-
-    # 5. Preflight: data folder exists
+    # 4. Preflight: data folder exists
     if not Path(data_folder).is_dir():
         msg = f"Data folder not found: {data_folder}"
-        app.logger.error(msg)
+        logger.error(msg)
         return jsonify({'success': False, 'error': msg}), 404
 
-    # 6. Full ingestion + centroid
+    # 5. Initialize Weaviate client
     weaviate_client = None
     try:
-        app.logger.info(f"Connecting to Weaviate at {cfg.retrieval.WEAVIATE_HOST}:{cfg.retrieval.WEAVIATE_HTTP_PORT}")
-        weaviate_client = g.weaviate_client
-        if not weaviate_client.is_ready():
-            raise WeaviateConnectionError(f"Weaviate not ready at {cfg.retrieval.WEAVIATE_HOST}")
+        logger.info("Creating fresh Weaviate client from PipelineConfig...")
+        weaviate_client = PipelineConfig.get_client()
+        if not weaviate_client or not weaviate_client.is_ready():
+            raise ConnectionError("Weaviate client not ready.")
 
+        # 6. Full ingestion
         doc_dir = Path(data_folder).resolve()
-        app.logger.info(f"Starting full ingestion for directory: {doc_dir}")
+        logger.info(f"Starting full ingestion for directory: {doc_dir}")
         processor = DocumentProcessor(data_dir=str(doc_dir), client=weaviate_client)
         processor.execute()
         stats = getattr(processor, 'get_stats', lambda: {})()
-        app.logger.info(f"Full ingestion complete. Stats: {stats}")
+        logger.info(f"Full ingestion complete. Stats: {stats}")
 
-        # 7. Compute & save centroid
-        try:
-            calculate_and_save_centroid(
-                weaviate_client,
-                cfg.retrieval.COLLECTION_NAME,
-                centroid_path,
-                force=True
-            )
-            app.logger.info(f"Centroid saved to {centroid_path}")
-        except Exception as cc_e:
-            msg = f"Failed to create centroid: {cc_e}"
-            app.logger.error(msg, exc_info=True)
-            return jsonify({'success': False, 'error': msg}), 500
+        # 7. Compute & save centroid (respect mode)
+        mode = cfg.ingestion.CENTROID_UPDATE_MODE
+        force_recalc = (mode == "always")
+        logger.info(f"Centroid update mode: {mode} -> force={force_recalc}")
+
+        result = calculate_and_save_centroid(
+            weaviate_client,
+            cfg.retrieval.COLLECTION_NAME,
+            cfg.retrieval.WEAVIATE_ALIAS,
+            os.path.dirname(centroid_path),
+            force=force_recalc
+        )
+
+        if not result.get("ok"):
+            err = result.get("error", "Centroid computation failed.")
+            logger.error(f"Centroid error: {err}")
+            return jsonify({
+                'success': False,
+                'error': err,
+                'stats': stats
+            }), 400
+
+        logger.info(f"Centroid processed successfully. Path: {result.get('path')}")
 
         return jsonify({
             'success': True,
-            'message': 'Full ingestion and centroid creation successful.',
-            'stats': stats
+            'message': f"Full ingestion complete (centroid mode: {mode}).",
+            'stats': stats,
+            'centroid': result
         }), 200
 
     except FileNotFoundError as fnf_e:
-        app.logger.error(f"Ingestion failed: {fnf_e}")
+        logger.error(f"Ingestion failed: {fnf_e}")
         return jsonify({'success': False, 'error': str(fnf_e)}), 404
 
-    except (WeaviateConnectionError, ConnectionError) as conn_e:
-        app.logger.error(f"Weaviate connection failed: {conn_e}")
+    except (ConnectionError, WeaviateConnectionError) as conn_e:
+        logger.error(f"Weaviate connection failed: {conn_e}")
         return jsonify({'success': False, 'error': str(conn_e)}), 503
 
     except Exception as e:
-        app.logger.error(f"Full ingestion error: {e}", exc_info=True)
+        logger.error(f"Full ingestion error: {e}", exc_info=True)
         return jsonify({'success': False, 'error': str(e)}), 500
 
     finally:
         if weaviate_client and hasattr(weaviate_client, 'close'):
             try:
                 weaviate_client.close()
-                app.logger.info("Weaviate client closed after full ingestion.")
+                logger.info("Weaviate client closed after ingestion.")
             except Exception as close_e:
-                app.logger.error(f"Error closing Weaviate client: {close_e}")
+                logger.error(f"Error closing Weaviate client: {close_e}")
 
 
 
@@ -1072,8 +1167,8 @@ def start_ingestion():
 def ingest_block_route():
     try:
         # resolve paths
-        centroid_path  = request.form.get('centroid_path', cfg.paths.DOMAIN_CENTROID_PATH)
-        document_dir   = cfg.paths.DOCUMENT_DIR
+        centroid_path = request.form.get('centroid_path', cfg.paths.DOMAIN_CENTROID_PATH)
+        document_dir = cfg.paths.DOCUMENT_DIR
 
         # ─── 1) BOOTSTRAP: if no centroid, do one ingest pass + force-create it ───
         if not centroid_exists(centroid_path):
@@ -1085,29 +1180,25 @@ def ingest_block_route():
                 return jsonify({"status": "error", "message": msg}), 500
 
             try:
-                client = weaviate.WeaviateClient.connect(
-                    connection=weaviate.connect.ConnectionParams.from_params(
-                        http_host=cfg.retrieval.WEAVIATE_HOST,
-                        http_port=cfg.retrieval.WEAVIATE_HTTP_PORT,
-                        grpc_port=cfg.retrieval.WEAVIATE_GRPC_PORT,
-                        grpc_secure=False
-                    ),
-                    additional_config=weaviate.config.AdditionalConfig(timeout=5.0)
-                )
-                calculate_and_save_centroid(
+                client = PipelineConfig.get_client()
+                if not client or not client.is_ready():
+                    raise ConnectionError("Weaviate client not ready.")
+                result = calculate_and_save_centroid(
                     client,
                     cfg.retrieval.COLLECTION_NAME,
-                    centroid_path,
+                    cfg.retrieval.WEAVIATE_ALIAS,
+                    os.path.dirname(centroid_path),
                     force=True
                 )
+                if not result.get("ok"):
+                    err = result.get("error", "Centroid computation failed.")
+                    app.logger.error(f"Centroid error: {err}")
+                    return jsonify({"status": "error", "message": err}), 400
             finally:
-                try: client.close()
-                except: pass
-
-            if not os.path.exists(centroid_path):
-                err = f"Fallback centroid creation failed: no file at {centroid_path}"
-                app.logger.error(err)
-                return jsonify({"status": "error", "message": err}), 500
+                try:
+                    client.close()
+                except:
+                    pass
 
             app.logger.info("Fallback centroid created. Continuing with normal ingestion.")
 
@@ -1118,8 +1209,8 @@ def ingest_block_route():
             app.logger.error(f"Incremental ingestion error: {msg}")
             return jsonify({"status": "error", "message": msg}), 500
 
-        new_vectors  = ingest_result["new_vectors"]
-        all_vectors  = ingest_result["all_vectors"]
+        new_vectors = ingest_result["new_vectors"]
+        all_vectors = ingest_result["all_vectors"]
         old_centroid = ingest_result.get("old_centroid")
 
         # pull user’s mode & threshold
@@ -1145,44 +1236,52 @@ def ingest_block_route():
                 should_run = True
 
         # recalc & save if needed
+        centroid_result = None
         if should_run:
             app.logger.info("Recalculating centroid (mode=%s)…", mode)
             try:
-                client = weaviate.WeaviateClient.connect(
-                    connection=weaviate.connect.ConnectionParams.from_params(
-                        http_host=cfg.retrieval.WEAVIATE_HOST,
-                        http_port=cfg.retrieval.WEAVIATE_HTTP_PORT,
-                        grpc_port=cfg.retrieval.WEAVIATE_GRPC_PORT,
-                        grpc_secure=False
-                    ),
-                    additional_config=weaviate.config.AdditionalConfig(timeout=5.0)
-                )
-                calculate_and_save_centroid(
+                client = PipelineConfig.get_client()
+                if not client or not client.is_ready():
+                    raise ConnectionError("Weaviate client not ready.")
+                centroid_result = calculate_and_save_centroid(
                     client,
                     cfg.retrieval.COLLECTION_NAME,
-                    centroid_path,
+                    cfg.retrieval.WEAVIATE_ALIAS,
+                    os.path.dirname(centroid_path),
                     force=True
                 )
+                if not centroid_result.get("ok"):
+                    err = centroid_result.get("error", "Centroid computation failed.")
+                    app.logger.error(f"Centroid error: {err}")
+                    return jsonify({
+                        "status": "error",
+                        "message": err
+                    }), 400
             finally:
-                try: client.close()
-                except: pass
+                try:
+                    client.close()
+                except:
+                    pass
 
         return jsonify({
-            "status":           "ok",
-            "new_vectors":      new_vectors,
-            "all_vectors":      all_vectors,
-            "old_centroid":     old_centroid,
+            "status": "ok",
+            "new_vectors": new_vectors,
+            "all_vectors": all_vectors,
+            "old_centroid": old_centroid,
             "centroid_updated": should_run,
-            "message":          f"Ingested {len(new_vectors)} new vectors; centroid {'updated' if should_run else 'unchanged'}."
+            "centroid": centroid_result if centroid_result else None,
+            "message": f"Ingested {len(new_vectors)} new vectors; centroid {'updated' if should_run else 'unchanged'}."
         }), 200
 
     except Exception as e:
         app.logger.error(f"/ingest_block error: {e}", exc_info=True)
         return jsonify({
-            "status":  "error",
+            "status": "error",
             "message": str(e),
-            "trace":   traceback.format_exc().splitlines()[-5:]
+            "trace": traceback.format_exc().splitlines()[-5:]
         }), 500
+
+
 
 
 # --- Chat History Routes ---
@@ -1410,16 +1509,29 @@ atexit.register(cleanup_resources)
    
 @app.route("/centroid_stats")
 def centroid_stats():
-    collection = request.args.get("collection", "")
-    cm = CentroidManager(collection_name=collection)
-    centroid = cm.get_centroid()
+    collection = request.args.get("collection", "").strip()
+    instance = request.args.get("instance", "").strip()
+
+    if not collection or not instance:
+        return jsonify({"success": False, "error": "Missing collection or instance parameter"}), 400
+
+    try:
+        cm = CentroidManager(
+            instance_alias=instance,
+            collection_name=collection,
+            base_path=cfg.paths.CENTROID_DIR
+        )
+        centroid = cm.get_centroid()
+    except Exception as e:
+        app.logger.error(f"[centroid_stats] Failed to initialize CentroidManager: {e}", exc_info=True)
+        return jsonify({"success": False, "error": "Failed to load centroid"}), 500
 
     if centroid is None:
         return jsonify({"success": False, "stats": {"meta": None}})
 
-    # Repair logic if meta is missing or stale
     meta = cm.get_metadata()
     expected_keys = {"Mean", "Std Dev", "Min", "Max", "L2 Norm (Magnitude)"}
+
     if not isinstance(meta, dict) or not expected_keys.issubset(meta.keys()):
         meta = get_centroid_stats(centroid)
         cm.save_metadata(meta)
@@ -1433,20 +1545,32 @@ def centroid_stats():
 
 
 
+
 @app.route('/centroid_histogram.png')
 def centroid_histogram():
     current_app.logger.info("-> /centroid_histogram.png endpoint called")
 
-    # 1. Use collection param if provided
-    collection_name = request.args.get("collection", "").strip() or cfg.retrieval.COLLECTION_NAME
-    current_app.logger.info(f"-> Using collection: {collection_name}")
+    collection_name = request.args.get("collection", "").strip()
+    instance_alias = request.args.get("instance", "").strip()
 
-    # 2. Load the centroid
-    cm = CentroidManager(
-        collection_name=collection_name,
-        base_path=cfg.paths.CENTROID_DIR
-    )
-    centroid = cm.get_centroid()
+    if not collection_name or not instance_alias:
+        current_app.logger.warning("-> Missing 'collection' or 'instance' query parameter.")
+        placeholder = os.path.join(current_app.static_folder, "placeholder.png")
+        return send_file(placeholder, mimetype="image/png")
+
+    current_app.logger.info(f"-> Using collection: {collection_name} (instance: {instance_alias})")
+
+    try:
+        cm = CentroidManager(
+            instance_alias=instance_alias,
+            collection_name=collection_name,
+            base_path=cfg.paths.CENTROID_DIR
+        )
+        centroid = cm.get_centroid()
+    except Exception as e:
+        current_app.logger.error(f"Failed to load centroid: {e}", exc_info=True)
+        placeholder = os.path.join(current_app.static_folder, "placeholder.png")
+        return send_file(placeholder, mimetype="image/png")
 
     if centroid is None:
         current_app.logger.warning("-> No centroid found, serving placeholder.")
@@ -1455,11 +1579,10 @@ def centroid_histogram():
 
     current_app.logger.info(f"-> Loaded centroid of shape {getattr(centroid, 'shape', None)}")
 
-    # 3. Plot the histogram
     try:
         fig, ax = plt.subplots()
         ax.hist(centroid, bins=50)
-        ax.set_title(f"Centroid Distribution — {collection_name}")
+        ax.set_title(f"Centroid Distribution — {instance_alias}_{collection_name}")
         ax.set_xlabel("Value")
         ax.set_ylabel("Frequency")
 
@@ -1473,6 +1596,7 @@ def centroid_histogram():
         current_app.logger.error(f"Failed to generate histogram: {e}", exc_info=True)
         placeholder = os.path.join(current_app.static_folder, "placeholder.png")
         return send_file(placeholder, mimetype="image/png")
+
 
 
 
@@ -1504,6 +1628,10 @@ def update_config_keywords():
         if changed:
             try:
                 cfg.reload()
+                cfg.retrieval.WEAVIATE_HOST = os.getenv("WEAVIATE_HOST", "localhost")
+                cfg.retrieval.WEAVIATE_HTTP_PORT = int(os.getenv("WEAVIATE_HTTP_PORT", "8092"))
+                cfg.retrieval.WEAVIATE_GRPC_PORT = int(os.getenv("WEAVIATE_GRPC_PORT", "51003"))
+                cfg.retrieval.WEAVIATE_ALIAS = os.getenv("WEAVIATE_ALIAS", "Main")
                 logger.info(f"Reloaded cfg after keyword update. {len(keywords)} auto domain keywords set.")
             except Exception as reload_err:
                 logger.error(f"Failed to reload config: {reload_err}", exc_info=True)
@@ -1722,6 +1850,10 @@ def remove_weaviate_instance():
                 cfg.update_and_save(config_updates)
                 try:
                     cfg.reload()
+                    cfg.retrieval.WEAVIATE_HOST = os.getenv("WEAVIATE_HOST", cfg.retrieval.WEAVIATE_HOST)
+                    cfg.retrieval.WEAVIATE_HTTP_PORT = int(os.getenv("WEAVIATE_HTTP_PORT", cfg.retrieval.WEAVIATE_HTTP_PORT))
+                    cfg.retrieval.WEAVIATE_GRPC_PORT = int(os.getenv("WEAVIATE_GRPC_PORT", cfg.retrieval.WEAVIATE_GRPC_PORT))
+                    cfg.retrieval.WEAVIATE_ALIAS = os.getenv("WEAVIATE_ALIAS", cfg.retrieval.WEAVIATE_ALIAS)
                     app.logger.info(f"Reloaded configuration after update. New host: {cfg.retrieval.WEAVIATE_HOST}, HTTP: {cfg.retrieval.WEAVIATE_HTTP_PORT}, gRPC: {cfg.retrieval.WEAVIATE_GRPC_PORT}")
                 except Exception as reload_err:
                     app.logger.error(f"Failed to reload config after saving instance selection: {reload_err}", exc_info=True)
@@ -2006,7 +2138,6 @@ def list_weaviate_instances():
         return jsonify({"error": "Failed to list instances"}), 500
 
 
-
 @app.route("/select_weaviate_instance", methods=["POST"])
 def select_weaviate_instance():
     """Activate a Weaviate instance, persist it, and rebuild the pipeline."""
@@ -2025,6 +2156,7 @@ def select_weaviate_instance():
             host = raw.get("retrieval", {}).get("WEAVIATE_HOST", "localhost")
             http_port = int(raw.get("retrieval", {}).get("WEAVIATE_HTTP_PORT", 8080) or 8080)
             grpc_port = int(raw.get("retrieval", {}).get("WEAVIATE_GRPC_PORT", 50051) or 50051)
+            alias = raw.get("retrieval", {}).get("WEAVIATE_ALIAS", "Default")
             app.logger.info(f"Selecting default-from-config -> {host}:{http_port}")
         else:
             state = load_weaviate_state()
@@ -2034,6 +2166,7 @@ def select_weaviate_instance():
             host = details.get("host")
             http_port = int(details.get("http_port", -1))
             grpc_port = int(details.get("grpc_port", -1))
+            alias = name  # always use the selected name
             if not host or http_port < 0 or grpc_port < 0:
                 return jsonify({"error": "Invalid connection details."}), 400
             app.logger.info(f"Selecting managed instance '{name}' -> {host}:{http_port}")
@@ -2043,22 +2176,22 @@ def select_weaviate_instance():
 
     # 2) Persist to config
     try:
-        cfg.update_and_save({
-            "retrieval": {
-                "WEAVIATE_HOST":      host,
-                "WEAVIATE_HTTP_PORT": http_port,
-                "WEAVIATE_GRPC_PORT": grpc_port,
-            }
-        })
+        new_retrieval_config = {
+            "WEAVIATE_HOST": host,
+            "WEAVIATE_HTTP_PORT": http_port,
+            "WEAVIATE_GRPC_PORT": grpc_port,
+            "WEAVIATE_ALIAS": alias
+        }
+        app.logger.info(f"Persisting retrieval config: {new_retrieval_config}")
+        cfg.update_and_save({"retrieval": new_retrieval_config})
     except Exception as e:
         app.logger.error("Failed to save config", exc_info=True)
         return jsonify({"error": "Could not persist configuration."}), 500
 
-    # 3) Stop/start Docker containers if using managed instances
+    # 3) Manage Docker containers if applicable
     if docker_available:
         try:
             state = load_weaviate_state()
-            # stop all except this one
             for nm, det in state.items():
                 if nm != name and det.get("container_id"):
                     ctr = docker_client.containers.get(det["container_id"])
@@ -2066,7 +2199,6 @@ def select_weaviate_instance():
                         app.logger.info(f"Stopping '{nm}'...")
                         ctr.stop(timeout=30)
                         state[nm]["status"] = "exited"
-            # start this one if needed
             if name != "Default (from config)" and state[name].get("container_id"):
                 ctr = docker_client.containers.get(state[name]["container_id"])
                 if ctr.status != "running":
@@ -2077,27 +2209,18 @@ def select_weaviate_instance():
         except Exception as e:
             app.logger.error("Error controlling Docker instances", exc_info=True)
 
-    # 4) Wait for HTTP port
-    def _wait(host, port, retries=10, delay=1):
-        import socket, time
-        for _ in range(retries):
-            try:
-                with socket.create_connection((host, port), timeout=1):
-                    return True
-            except OSError:
-                time.sleep(delay)
-        return False
+    app.logger.warning(f"[DEBUG] Probing URL: http://{host}:{http_port}/v1/.well-known/openid-configuration")
 
-    if not _wait(host, http_port):
-        app.logger.error(f"Weaviate not up at {host}:{http_port}")
+    # 4) Wait for REST to be ready
+    if not _wait_for_weaviate_rest(host, http_port, retries=15, delay=0.5):
+        app.logger.error(f"Weaviate REST not up at {host}:{http_port}")
         return jsonify({"error": "Instance failed to start in time."}), 502
 
-    # 5) Reload config and re-init pipeline
+    # 5) Re-init pipeline (IMPORTANT: no reload)
     try:
-        cfg.reload()
-        initialize_pipeline(app.app_context())
-        from pipeline import init_pipeline_once, PIPELINE_INSTANCE
+        from pipeline import init_pipeline_once
         inst = init_pipeline_once(force=True)
+        app.logger.info(f"Pipeline re-initialized with alias: {inst.cfg.retrieval.WEAVIATE_ALIAS}")
     except Exception as e:
         app.logger.error("Pipeline re-init failed", exc_info=True)
         return jsonify({"error": "Pipeline re-initialization failed."}), 500
@@ -2105,9 +2228,21 @@ def select_weaviate_instance():
     # 6) Verify connectivity
     retriever = getattr(inst, "retriever", None)
     client = getattr(retriever, "weaviate_client", None)
-    if not client or not client.is_ready():
-        app.logger.error("Pipeline failed to connect after switch.")
+    if not client:
+        app.logger.error("Pipeline has no Weaviate client.")
+        return jsonify({"error": "Pipeline missing client reference."}), 500
+
+    if not client.is_ready():
+        app.logger.error("Weaviate client reports not ready after switch.")
         return jsonify({"error": "Pipeline cannot connect to new instance."}), 500
+
+    # Extra: List collections to confirm
+    try:
+        col_list = client.collections.list_all()
+        app.logger.info(f"Connected collections: {col_list}")
+    except Exception as e:
+        app.logger.error("Collection listing failed after switch.", exc_info=True)
+        return jsonify({"error": "Pipeline cannot list collections on new instance."}), 500
 
     app.logger.info(f"Pipeline successfully connected to '{name}'.")
     return jsonify({
@@ -2116,7 +2251,6 @@ def select_weaviate_instance():
         "active_host": host,
         "active_http_port": http_port
     }), 200
-
 
 @app.route('/list_presets', methods=['GET'])
 def list_presets_api():
@@ -2174,7 +2308,11 @@ def get_auto_domain_keywords():
     
     # app.py (add after other imports)
 
-centroid_manager = CentroidManager()
+centroid_manager = CentroidManager(
+    instance_alias=cfg.retrieval.WEAVIATE_ALIAS,
+    collection_name=cfg.retrieval.COLLECTION_NAME,
+    base_path=cfg.paths.CENTROID_DIR
+)
 centroid = centroid_manager.get_centroid()
 
 @app.route('/api/collections', methods=['GET'])
@@ -2185,7 +2323,7 @@ def list_collections():
     client = None
     try:
         client = PipelineConfig.get_client()
-        if not client or not client.is_live():
+        if not client or not client.is_live() or not client.is_ready():
             current_app.logger.error("Weaviate not ready in /api/collections")
             return jsonify({"error": "Weaviate service unavailable"}), 503
 
@@ -2220,31 +2358,38 @@ VALID_NAME = re.compile(r"^[A-Za-z0-9_]+$")
 
 @app.route('/api/centroid', methods=['GET', 'POST'])
 def centroid_api():
-    logger.warning(f"[Centroid API] Using collection: {cfg.retrieval.COLLECTION_NAME!r}")
-
     col = request.args.get('collection', '').strip()
+    alias = request.args.get('instance', '').strip()
+
     if not col or not VALID_NAME.match(col):
         return jsonify(error="Invalid collection name"), 400
+    if not alias:
+        return jsonify(error="Missing instance alias"), 400
+
+    logger.warning(f"[Centroid API] Requested: collection={col!r}, instance={alias!r}")
 
     # Verify collection exists
     client = PipelineConfig.get_client()
+    if not client or not client.is_live() or not client.is_ready():
+        logger.error("Weaviate client not ready during /api/centroid")
+        return jsonify(error="Weaviate not ready"), 503
+
     try:
-        if not client or not client.is_live():
-            raise WeaviateConnectionError("Weaviate not ready")
         existing = client.collections.list_all(simple=True)
         if col not in existing:
             return jsonify(error="Collection not found"), 404
-    finally:
-        client.close()
+    except Exception as e:
+        logger.error(f"Failed listing collections: {e}", exc_info=True)
+        return jsonify(error="Error querying Weaviate collections"), 500
 
     cm = CentroidManager(
+        instance_alias=alias,
         collection_name=col,
         base_path=cfg.paths.CENTROID_DIR
     )
 
     if request.method == 'POST':
-        # Recalculate centroid and save using correct method
-        client = PipelineConfig.get_client()
+        # Recalculate centroid
         try:
             vectors = cm.get_all_vectors(client, col)
             if not vectors:
@@ -2254,18 +2399,26 @@ def centroid_api():
                     shape=None,
                     path=os.path.basename(cm.centroid_path)
                 ), 200
+
             new_centroid = np.mean(np.vstack(vectors), axis=0)
             cm.save_centroid(new_centroid)
-        finally:
-            client.close()
 
-        return jsonify(
-            ok=True,
-            shape=tuple(cm.centroid.shape),
-            path=os.path.basename(cm.centroid_path)
-        ), 200
+            return jsonify(
+                ok=True,
+                shape=list(cm.centroid.shape),
+                path=os.path.basename(cm.centroid_path)
+            ), 200
 
-    # GET — read-only
+        except Exception as e:
+            logger.error(f"Centroid calculation failed: {e}", exc_info=True)
+            return jsonify(
+                ok=False,
+                error="Centroid calculation error",
+                shape=None,
+                path=os.path.basename(cm.centroid_path)
+            ), 500
+
+    # GET – return shape if exists
     cent = cm.get_centroid()
     if cent is None:
         return jsonify(
@@ -2276,29 +2429,24 @@ def centroid_api():
 
     return jsonify(
         loaded=True,
-        shape=tuple(cent.shape),
+        shape=list(cent.shape),
         path=os.path.basename(cm.centroid_path)
     ), 200
-
 
 
 @app.route('/create_centroid', methods=['POST'])
 def create_centroid():
     centroid_path = request.form.get('centroid_path')
     try:
-        client = weaviate.WeaviateClient.connect(
-            connection=weaviate.connect.ConnectionParams.from_params(
-                http_host=cfg.retrieval.WEAVIATE_HOST,
-                http_port=cfg.retrieval.WEAVIATE_HTTP_PORT,
-                grpc_port=cfg.retrieval.WEAVIATE_GRPC_PORT,
-                grpc_secure=False
-            ),
-            additional_config=weaviate.config.AdditionalConfig(timeout=5.0)
-        )
+        client = PipelineConfig.get_client()
+        if not client or not client.is_ready():
+            raise ConnectionError("Weaviate client not ready.")
+
         calculate_and_save_centroid(
             client,
             cfg.retrieval.COLLECTION_NAME,
-            centroid_path,
+            cfg.retrieval.WEAVIATE_ALIAS,
+            os.path.dirname(centroid_path),
             force=True
         )
     finally:
@@ -2315,6 +2463,7 @@ def create_centroid():
             "status": "error",
             "message": "No vectors found in collection; centroid not created."
         }), 400
+
 
     
 

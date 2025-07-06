@@ -13,24 +13,25 @@ retrieval:
   PERFORM_DOMAIN_CHECK: true
   PERFORM_TECHNICAL_VALIDATION: true
   WEAVIATE_HOST: localhost
-  WEAVIATE_HTTP_PORT: 8091
-  WEAVIATE_GRPC_PORT: 51002
+  WEAVIATE_HTTP_PORT: 8092
+  WEAVIATE_GRPC_PORT: 51003
   retrieve_with_history: false
   WEAVIATE_TIMEOUT: [10, 120]
+  WEAVIATE_ALIAS: test
 model:
-  PROVIDER_URLS: {deepseek: 'https://api.deepseek.com/v1/chat/completions', openai: 'https://api.openai.com/v1/chat/completions',
-    anthropic: 'https://api.anthropic.com/v1/complete', cohere: 'https://api.cohere.com/v1/completions'}
-  EXTERNAL_API_MODEL_DEFAULTS: {openai: gpt-3.5-turbo, anthropic: claude-v1, cohere: command-nightly,
-    deepseek: deepseek-chat}
-  LLM_TEMPERATURE: 0.4
+  PROVIDER_URLS: {anthropic: 'https://api.anthropic.com/v1/complete', cohere: 'https://api.cohere.com/v1/completions',
+    deepseek: 'https://api.deepseek.com/v1/chat/completions', openai: 'https://api.openai.com/v1/chat/completions'}
+  EXTERNAL_API_MODEL_DEFAULTS: {anthropic: claude-v1, cohere: command-nightly, deepseek: deepseek-chat,
+    openai: gpt-3.5-turbo}
+  LLM_TEMPERATURE: 0.6
   MAX_TOKENS: 1024
   OLLAMA_MODEL: deepseek-r1
   EMBEDDING_MODEL: nomic-embed-text
   TOP_P: 0.9
   FREQUENCY_PENALTY: 0.1
-  SYSTEM_MESSAGE: Synthesize information strictly from the provided context documents.
-    Answer thoroughly based ONLY on the retrieved text. If the answer isn't in the
-    context, state that clearly.
+  SYSTEM_MESSAGE: You are a helpful AI assistant for industrial automation. Use the
+    provided context and conversation history to answer accurately and clearly. Provide
+    sufficient detail but remain focused on the question.
   EXTERNAL_API_PROVIDER: deepseek
   EXTERNAL_API_MODEL_NAME: null
   MERGE_STRATEGY: api_first
@@ -41,7 +42,7 @@ document:
   FILE_TYPES: [pdf, txt, csv, docx, md]
   PARSE_TABLES: true
   GENERATE_SUMMARY: true
-paths: {DOCUMENT_DIR: ./data, DOMAIN_CENTROID_PATH: ./domain_centroid.npy, CENTROID_DIR: ./centroids}
+paths: {DOCUMENT_DIR: ./data3, DOMAIN_CENTROID_PATH: ./domain_centroid.npy, CENTROID_DIR: ./centroids}
 env:
   DOMAIN_KEYWORDS: [Industrial Automation, Honeywell, SCADA, PLC, IoT, Honeywell Digital
       Transformation, Process Automation, Manufacturing Automation, Industrial Internet
@@ -123,28 +124,12 @@ env:
       \u043D\u043D\u043E\u0441\u0442\u044C \u0437\u0430 \u043E\u043F\u0440\u0435\u0434\
       \u0435\u043B\u0435\u043D\u0438\u0435", sustaining safety operational, socar
       state oil, interface herculink computer, water ph measurement, use conjugate
-      priors, implemented controledge hc900, controllers honeywell confidential, pernis
-      refinery, honeywell automation, thermistor provides feedback, define loss function,
-    honeywell china thailand, refinery donges refinery, operating temperature range,
-    contact honeywell account, rreeppllaaccee wwiitthhoouutt cchhaarrggee, macro drivers
-      products, inference graphical models, execution portfolio transformation, automation
-      vendor means, honeywell ionic modular, markov model 17, information important
-      aspects, configuration elcn bridge, sensing honeywell com, herculine electric
-      actuator, litvinov refinery, life cycle support, china thailand honeywell, 083336
-      083339 crank, description glossary term, 23 process honeywell, kcabdeef overview
-      honeywell, version masterlogic 200, gaap measures, reductions honeywell confidential,
-    metering automation powered, adjusted earnings share, enhanced airflow sensors,
-    industrial hart smartview, fax honeywell korea, controledge hc900, refinery sannazzaro
-      refinery, ccc supervisory trainview, introduction 17 markov, cressier refinery,
-    modbus communications totalizers, advantages legacy scada, masterlogic 200 specifications,
-    honeywell advanced analytical, rs232c masterlogic plc, honeywell disclaims implied,
-    machine production performance, safety operational excellence, appendix honeywell
-      portfolio, hidden markov, expected future developments, 2018 honeywell]
-  USER_ADDED_KEYWORDS: []
+      priors]
+  USER_ADDED_KEYWORDS: [Emerson, competitors, SLB, VSD]
   SELECTED_N_TOP: 155
 pipeline: {max_history_turns: 5}
-ingestion: {CENTROID_AUTO_THRESHOLD: 0.5, CENTROID_DIVERSITY_THRESHOLD: 0.01, CENTROID_UPDATE_MODE: auto,
+ingestion: {CENTROID_AUTO_THRESHOLD: 0.5, CENTROID_DIVERSITY_THRESHOLD: 0.48, CENTROID_UPDATE_MODE: auto,
   MIN_QUALITY_SCORE: 0.3, CENTROID_DIVERSITY: null}
 domain_keyword_extraction: {keybert_model: all-MiniLM-L6-v2, top_n_per_doc: 50, final_top_n: 200,
-  min_doc_freq_mode: absolute, min_doc_freq_abs: 1, min_doc_freq_frac: 0.0, diversity: 0.3,
-  no_pos_filter: true, min_doc_freq: 1, extraction_diversity: null}
+  min_doc_freq_mode: absolute, min_doc_freq_abs: 3, min_doc_freq_frac: 0.071, diversity: 0.3,
+  no_pos_filter: true, min_doc_freq: 3, min_quality_score: 0.2, extraction_diversity: null}

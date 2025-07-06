@@ -9,6 +9,7 @@ from weaviate.config import AdditionalConfig, Timeout
 from langchain_weaviate import WeaviateVectorStore
 from langchain_ollama import OllamaEmbeddings
 from tenacity import retry, stop_after_attempt, wait_exponential
+import numpy as np
 
 from config import cfg
 
@@ -98,7 +99,6 @@ class TechnicalRetriever:
             self.logger.error("Vector store not initialized.")
             return ""
 
-        # ✅ Ensure client is live before querying
         try:
             if not self.client.is_live():
                 self.logger.warning("Weaviate client was closed. Reconnecting…")
@@ -110,6 +110,17 @@ class TechnicalRetriever:
         s_type = self.cfg.retrieval.SEARCH_TYPE.lower()
         k      = self.cfg.retrieval.K_VALUE
         α      = self.cfg.retrieval.LAMBDA_MULT
+
+        try:
+            query_vector = self.embeddings.embed_query(query)
+            norm = float(np.linalg.norm(query_vector))
+            if norm == 0:
+                self.logger.error(f"Query vector is zero! Query='{query}'")
+            else:
+                self.logger.info(f"[DEBUG] Query vector norm: {norm:.6f}")
+        except Exception:
+            self.logger.exception("Failed to compute query embedding vector.")
+            return ""
 
         self.logger.info(f"Retrieving context: type={s_type}, k={k}")
         try:
@@ -134,11 +145,15 @@ class TechnicalRetriever:
                 self.logger.warning("No documents returned from vectorstore search.")
                 return ""
 
-            return "\n\n".join(getattr(doc, "page_content", "") for doc in docs if getattr(doc, "page_content", "").strip())
+            return "\n\n".join(
+                getattr(doc, "page_content", "") for doc in docs
+                if getattr(doc, "page_content", "").strip()
+            )
 
         except Exception:
             self.logger.exception("Error during context retrieval")
             return ""
+
 
 
     def close(self) -> None:
@@ -153,7 +168,18 @@ class TechnicalRetriever:
 
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO)
+    def setup_logging(force_utf8=False, level=logging.INFO):
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        if force_utf8:
+            try:
+                stream_handler.stream = open(sys.stdout.fileno(), mode='w', encoding='utf-8', buffering=1)
+            except Exception:
+                pass
+        logging.basicConfig(handlers=[stream_handler], level=level, force=True)
+
+    setup_logging(force_utf8=True)
+
     try:
         retriever = TechnicalRetriever()
         print("Context:", retriever.get_context("test query"))
@@ -164,6 +190,7 @@ if __name__ == '__main__':
             retriever.close()
         except Exception:
             pass
+
 
 
 class RetrieverSingleton:

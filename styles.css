@@ -696,23 +696,78 @@ fieldset>legend {
             margin-top: auto;
         }
     
-        /* Responsive adjustments */
-        @media (max-width: 1024px) {
-            main {
-                grid-template-columns: 1fr;
-                grid-template-areas:
-                    'files'
-                    'keywords'
-                    'stats'
-                    'presets'
-                    'chat'
-                    'retrieval'
-                    'model'
-                    'env'
-                    'docs'
-                    'weaviate'
-                    'dist1'
-                    'dist2'
-                    'footer';
-            }
+/* Responsive adjustments */
+@media (max-width: 1024px) {
+    main {
+        grid-template-columns: 1fr;
+        grid-template-areas:
+            'files'
+            'keywords'
+            'stats'
+            'presets'
+            'chat'
+            'retrieval'
+            'model'
+            'env'
+            'docs'
+            'weaviate'
+            'dist1'
+            'dist2'
+            'footer';
+    }
+
+    fieldset.inner-fieldset {
+        border: 1px solid #E5E7EB;
+        padding: 1.5rem;
+        border-radius: 6px;
+    }
+
+    fieldset.inner-fieldset .grid {
+        padding-left: 0.5rem;
+        padding-right: 0.5rem;
+    }
+}
+
+/* Chat message bubbles (always active) */
+.chat-bubble {
+    padding: 0.75rem;
+    border-radius: 0.5rem;
+    max-width: 90%;
+    font-size: 0.925rem;
+    line-height: 1.4;
+    word-break: break-word;
+}
+
+.chat-bubble-assistant {
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    color: #1f2937;
+}
+
+.chat-bubble-user {
+    background: #2563eb;
+    color: white;
+}
+
+.chat-bubble pre {
+    background: #f3f4f6;
+    padding: 0.5rem;
+    border-radius: 0.375rem;
+    font-size: 0.85rem;
+    overflow-x: auto;
+}
+
+.chat-bubble table {
+    border-collapse: collapse;
+    width: 100%;
+}
+
+.chat-bubble th,
+.chat-bubble td {
+    border: 1px solid #d1d5db;
+    padding: 0.25rem 0.5rem;
+    text-align: left;
+}
+
+
         }

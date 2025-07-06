@@ -26,7 +26,8 @@
         10,
         120
       ],
-      "retrieve_with_history": false
+      "retrieve_with_history": false,
+      "WEAVIATE_ALIAS": "Main"
     },
     "model": {
       "LLM_TEMPERATURE": 0.1,
@@ -54,217 +55,18 @@
     },
     "paths": {
       "DOCUMENT_DIR": "./data",
-      "DOMAIN_CENTROID_PATH": "./domain_centroid2.npy",
       "CENTROID_DIR": "./centroids"
     },
     "env": {
       "DOMAIN_KEYWORDS": [
         "Industrial Automation",
-        "Honeywell",
-        "SCADA",
-        "PLC",
-        "IoT",
-        "Honeywell Digital Transformation",
-        "Process Automation",
-        "Manufacturing Automation",
-        "Industrial Internet of Things (IIoT)",
-        "Automation Systems",
-        "Distributed Control System (DCS)",
-        "Real-time Data",
-        "Industrial Networks",
-        "Machine Learning in Automation",
-        "Predictive Maintenance",
-        "Edge Computing",
-        "Control Systems Engineering",
-        "Digital Twin",
-        "Industrial Control Systems (ICS)",
-        "Process Control",
-        "Smart Factories",
-        "Advanced Process Control (APC)",
-        "Remote Monitoring",
-        "Industrial Sensors",
-        "SCADA Software",
-        "Honeywell Experion",
-        "IoT Sensors",
-        "Automation Solutions",
-        "Honeywell Process Solutions",
-        "Distributed Automation",
-        "PLC Programming",
-        "SCADA Integration",
-        "Industrial Safety",
-        "Automation Architecture",
-        "Manufacturing Execution Systems (MES)",
-        "IIoT Connectivity",
-        "Smart Manufacturing",
-        "Cloud-based Automation",
-        "Industrial Data Analytics",
-        "Energy Management Systems",
-        "Predictive Analytics",
-        "Automated Control Loops",
-        "SCADA Security",
-        "Process Optimization",
-        "Industrial Robotics",
-        "Industrial Wireless Communication",
-        "Edge Analytics",
-        "Supervisory Control",
-        "Data Acquisition Systems",
-        "Data Visualization Tools",
-        "Honeywell Connected Plant",
-        "Cybersecurity in Automation",
-        "Process Control Optimization",
-        "Automated Refineries",
-        "Advanced Control Systems",
-        "Autonomous Manufacturing",
-        "PLC-based Automation",
-        "SCADA Data Collection",
-        "Industrial PLC Systems",
-        "Remote Automation",
-        "Machine Vision Systems",
-        "Data-Driven Insights",
-        "Industrial Automation Software",
-        "Control Panel Design",
-        "Industrial Automation Integration",
-        "System Integration",
-        "Industrial Ethernet",
-        "Refineries Control Systems",
-        "Distributed Sensors",
-        "Control System Architecture",
-        "Industrial IoT Devices",
-        "Wireless IoT Networks",
-        "Real-time Monitoring",
-        "Process Data Analytics",
-        "Honeywell Safety Systems",
-        "Industrial Control Panel",
-        "Automation Services for Refineries",
-        "Advanced Industrial Automation",
-        "Oil and Gas Automation",
-        "Refineries Digital Transformation",
-        "Automated Manufacturing Systems",
-        "Control and Monitoring Systems",
-        "Process Flow Automation",
-        "Honeywell Smart Industry",
-        "System Fault Detection",
-        "Factory Automation Solutions",
-        "Process Monitoring Solutions",
-        "SCADA Control Systems",
-        "PLC Diagnostics",
-        "Smart Manufacturing Solutions",
-        "Refineries Automation Solutions",
-        "Operational Technology (OT)",
-        "Digital Control Systems",
-        "PLC-based Control Systems",
-        "Honeywell Industrial Solutions",
-        "Industry 4.0 Automation",
-        "Data-Driven Process Control",
-        "Process Simulation Software",
-        "Industrial Process Systems",
-        "Honeywell Industrial IoT",
-        "Experion PKS",
-        "Safety Manager",
-        "MasterLogic PLC",
-        "HC900 Hybrid Controller",
-        "SmartLine Transmitters",
-        "C300 Controller",
-        "TotalFlow",
-        "OneWireless",
-        "Enraf",
-        "FlexTech Controllers",
-        "Genetec",
-        "Field Device Manager",
-        "Process Historian",
-        "TDC 3000",
-        "ControlEdge",
-        "LCA (Lifecycle Automation)",
-        "PMA",
-        "Experion LX",
-        "ProView",
-        "Smart Automation",
-        "Web HMI",
-        "Vibration Monitoring",
-        "Field Instruments",
-        "HMI Systems",
-        "Cloud Control",
-        "Product Simulation",
-        "WorkStation",
-        "3D Visualization",
-        "Power Systems",
-        "ControlRoom Management",
-        "DeviceNet",
-        "Control Hardware",
-        "RTAC",
-        "SCADA Solutions",
-        "Asset Performance",
-        "FieldBus",
-        "Equipment Performance Monitoring",
-        "E-Stop Systems",
-        "Variable Frequency Drives",
-        "HART Communicators",
-        "Smart Devices",
-        "Thermal Imaging",
-        "Industrial Robots",
-        "ControlEdge PLC",
-        "Process Automation Servers",
         "Gas Detection Systems"
       ],
       "AUTO_DOMAIN_KEYWORDS": [
         "2018 www honeywellprocess",
-        "lcn honeywell confidential",
-        "honeywell portfolio update",
-        "2018 2018 honeywell",
-        "q4000 frame scanner",
-        "glossary term 119",
-        "hidden markov model",
-        "2018 honeywell international",
-        "honeywellprocess com 2019",
-        "honeywell trademark",
-        "honeywell trademark honeywell",
-        "honeywell automation investment",
-        "segment profit",
-        "2019 www honeywellprocess",
-        "portfolio honeywell portfolio",
-        "comparable gaap measures",
-        "gaap measures portfolio",
-        "controller masterlogic plc",
-        "ootthheerr wwaarrrraannttiieess eexxpprreesssseedd",
-        "com 2018 honeywell",
-        "honeywell international s\u00e0rl",
-        "lcn elcn migration",
-        "refinery rijeka refinery",
-        "emission reductions honeywell",
-        "experion lcn honeywell",
-        "honeywell portfolio",
-        "trademark honeywell international",
-        "2019 honeywell",
-        "remedy honeywell warrants",
-        "hart smartview terminals",
-        "portfolio honeywell",
-        "honeywell account manager",
-        "shall honeywell liable",
-        "future use table",
-        "discriminant analysis flda",
-        "turbomachinery controls emulation",
-        "trainview operator hmi",
-        "contact honeywell sales",
-        "lcn honeywell",
-        "honeywell disclaims",
-        "refinery salzbergen refinery",
-        "standardization hmi libraries",
-        "083339 crank arm",
-        "masterlogic ml200 plc",
-        "herculink trademark honeywell",
-        "non gaap financial",
-        "honeywell com",
-        "legacy scada systems",
-        "honeywell liable consequential",
-        "honeywell process solutions",
         "pacing 12 injectors"
       ],
-      "USER_ADDED_KEYWORDS": [
-        "Emerson",
-        "competitors",
-        "SLB",
-        "VSD"
-      ],
+      "USER_ADDED_KEYWORDS": [],
       "SELECTED_N_TOP": 155
     },
     "pipeline": {
@@ -281,6 +83,51 @@
       "top_n_per_doc": 50
     }
   },
+      "industrial_short_specs": {
+      "document": {
+        "CHUNK_SIZE": 256,
+        "CHUNK_OVERLAP": 10,
+        "MIN_CONTENT_LENGTH": 30,
+        "FILE_TYPES": [
+          "pdf",
+          "txt"
+        ],
+        "PARSE_TABLES": true,
+        "GENERATE_SUMMARY": false
+      },
+      "ingestion": {
+        "CENTROID_AUTO_THRESHOLD": 0.3,
+        "CENTROID_DIVERSITY_THRESHOLD": 0.01,
+        "CENTROID_UPDATE_MODE": "auto",
+        "MIN_QUALITY_SCORE": 0.15
+      },
+      "domain_keyword_extraction": {
+        "keybert_model": "all-MiniLM-L6-v2",
+        "top_n_per_doc": 20,
+        "final_top_n": 50,
+        "min_doc_freq_mode": "absolute",
+        "min_doc_freq_abs": 1,
+        "min_doc_freq_frac": null,
+        "diversity": 0.1,
+        "min_quality_score": 0.1,
+        "no_pos_filter": true,
+        "extraction_diversity": null
+      },
+      "retrieval": {
+        "K_VALUE": 8,
+        "SCORE_THRESHOLD": 0.3,
+        "LAMBDA_MULT": 0.5,
+        "SEARCH_TYPE": "hybrid",
+        "DOMAIN_SIMILARITY_THRESHOLD": 0.6,
+        "SPARSE_RELEVANCE_THRESHOLD": 0.05,
+        "FUSED_RELEVANCE_THRESHOLD": 0.2,
+        "SEMANTIC_WEIGHT": 0.85,
+        "SPARSE_WEIGHT": 0.15,
+        "PERFORM_DOMAIN_CHECK": true,
+        "PERFORM_TECHNICAL_VALIDATION": true
+      }
+    },
+  
   "Informative_LLMHeavy": {
     "model": {
       "LLM_TEMPERATURE": 0.8,
@@ -303,7 +150,8 @@
       "SPARSE_RELEVANCE_THRESHOLD": 0.15,
       "FUSED_RELEVANCE_THRESHOLD": 0.45,
       "SEMANTIC_WEIGHT": 0.7,
-      "SPARSE_WEIGHT": 0.3
+      "SPARSE_WEIGHT": 0.3,
+      "WEAVIATE_ALIAS": "Main"
     },
     "security": {
       "CACHE_ENABLED": true,
@@ -373,7 +221,8 @@
         10,
         120
       ],
-      "retrieve_with_history": false
+      "retrieve_with_history": false,
+      "WEAVIATE_ALIAS": "Main"
     },
     "model": {
       "LLM_TEMPERATURE": 0.6,
@@ -401,7 +250,6 @@
     },
     "paths": {
       "DOCUMENT_DIR": "./data",
-      "DOMAIN_CENTROID_PATH": "./domain_centroid.npy",
       "CENTROID_DIR": "./centroids"
     },
     "env": {
@@ -705,7 +553,8 @@
       "WEAVIATE_HOST": "localhost",
       "WEAVIATE_HTTP_PORT": 8091,
       "WEAVIATE_GRPC_PORT": 51002,
-      "retrieve_with_history": false
+      "retrieve_with_history": false,
+      "WEAVIATE_ALIAS": "Main"
     },
     "model": {
       "LLM_TEMPERATURE": 0.4,
@@ -733,7 +582,6 @@
     },
     "paths": {
       "DOCUMENT_DIR": "./data",
-      "DOMAIN_CENTROID_PATH": "./domain_centroid.npy",
       "CENTROID_DIR": "./centroids"
     },
     "env": {
@@ -1071,7 +919,8 @@
       "SPARSE_RELEVANCE_THRESHOLD": 0.15,
       "FUSED_RELEVANCE_THRESHOLD": 0.45,
       "SEMANTIC_WEIGHT": 0.7,
-      "SPARSE_WEIGHT": 0.3
+      "SPARSE_WEIGHT": 0.3,
+      "WEAVIATE_ALIAS": "Main"
     },
     "security": {
       "CACHE_ENABLED": true,
@@ -1283,7 +1132,8 @@
         10,
         120
       ],
-      "retrieve_with_history": false
+      "retrieve_with_history": false,
+      "WEAVIATE_ALIAS": "Main"
     },
     "model": {
       "LLM_TEMPERATURE": 1,
@@ -1311,170 +1161,11 @@
     },
     "paths": {
       "DOCUMENT_DIR": "./data",
-      "DOMAIN_CENTROID_PATH": "./domain_centroid.npy",
       "CENTROID_DIR": "./centroids"
     },
     "env": {
-      "DOMAIN_KEYWORDS": [
-        "Industrial Automation",
-        "Honeywell",
-        "SCADA",
-        "PLC",
-        "IoT",
-        "Honeywell Digital Transformation",
-        "Process Automation",
-        "Manufacturing Automation",
-        "Industrial Internet of Things (IIoT)",
-        "Automation Systems",
-        "Distributed Control System (DCS)",
-        "Real-time Data",
-        "Industrial Networks",
-        "Machine Learning in Automation",
-        "Predictive Maintenance",
-        "Edge Computing",
-        "Control Systems Engineering",
-        "Digital Twin",
-        "Industrial Control Systems (ICS)",
-        "Process Control",
-        "Smart Factories",
-        "Advanced Process Control (APC)",
-        "Remote Monitoring",
-        "Industrial Sensors",
-        "SCADA Software",
-        "Honeywell Experion",
-        "IoT Sensors",
-        "Automation Solutions",
-        "Honeywell Process Solutions",
-        "Distributed Automation",
-        "PLC Programming",
-        "SCADA Integration",
-        "Industrial Safety",
-        "Automation Architecture",
-        "Manufacturing Execution Systems (MES)",
-        "IIoT Connectivity",
-        "Smart Manufacturing",
-        "Cloud-based Automation",
-        "Industrial Data Analytics",
-        "Energy Management Systems",
-        "Predictive Analytics",
-        "Automated Control Loops",
-        "SCADA Security",
-        "Process Optimization",
-        "Industrial Robotics",
-        "Industrial Wireless Communication",
-        "Edge Analytics",
-        "Supervisory Control",
-        "Data Acquisition Systems",
-        "Data Visualization Tools",
-        "Honeywell Connected Plant",
-        "Cybersecurity in Automation",
-        "Process Control Optimization",
-        "Automated Refineries",
-        "Advanced Control Systems",
-        "Autonomous Manufacturing",
-        "PLC-based Automation",
-        "SCADA Data Collection",
-        "Industrial PLC Systems",
-        "Remote Automation",
-        "Machine Vision Systems",
-        "Data-Driven Insights",
-        "Industrial Automation Software",
-        "Control Panel Design",
-        "Industrial Automation Integration",
-        "System Integration",
-        "Industrial Ethernet",
-        "Refineries Control Systems",
-        "Distributed Sensors",
-        "Control System Architecture",
-        "Industrial IoT Devices",
-        "Wireless IoT Networks",
-        "Real-time Monitoring",
-        "Process Data Analytics",
-        "Honeywell Safety Systems",
-        "Industrial Control Panel",
-        "Automation Services for Refineries",
-        "Advanced Industrial Automation",
-        "Oil and Gas Automation",
-        "Refineries Digital Transformation",
-        "Automated Manufacturing Systems",
-        "Control and Monitoring Systems",
-        "Process Flow Automation",
-        "Honeywell Smart Industry",
-        "System Fault Detection",
-        "Factory Automation Solutions",
-        "Process Monitoring Solutions",
-        "SCADA Control Systems",
-        "PLC Diagnostics",
-        "Smart Manufacturing Solutions",
-        "Refineries Automation Solutions",
-        "Operational Technology (OT)",
-        "Digital Control Systems",
-        "PLC-based Control Systems",
-        "Honeywell Industrial Solutions",
-        "Industry 4.0 Automation",
-        "Data-Driven Process Control",
-        "Process Simulation Software",
-        "Industrial Process Systems",
-        "Honeywell Industrial IoT",
-        "Experion PKS",
-        "Safety Manager",
-        "MasterLogic PLC",
-        "HC900 Hybrid Controller",
-        "SmartLine Transmitters",
-        "C300 Controller",
-        "TotalFlow",
-        "OneWireless",
-        "Enraf",
-        "FlexTech Controllers",
-        "Genetec",
-        "Field Device Manager",
-        "Process Historian",
-        "TDC 3000",
-        "ControlEdge",
-        "LCA (Lifecycle Automation)",
-        "PMA",
-        "Experion LX",
-        "ProView",
-        "Smart Automation",
-        "Web HMI",
-        "Vibration Monitoring",
-        "Field Instruments",
-        "HMI Systems",
-        "Cloud Control",
-        "Product Simulation",
-        "WorkStation",
-        "3D Visualization",
-        "Power Systems",
-        "ControlRoom Management",
-        "DeviceNet",
-        "Control Hardware",
-        "RTAC",
-        "SCADA Solutions",
-        "Asset Performance",
-        "FieldBus",
-        "Equipment Performance Monitoring",
-        "E-Stop Systems",
-        "Variable Frequency Drives",
-        "HART Communicators",
-        "Smart Devices",
-        "Thermal Imaging",
-        "Industrial Robots",
-        "ControlEdge PLC",
-        "Process Automation Servers",
-        "Gas Detection Systems"
-      ],
-      "AUTO_DOMAIN_KEYWORDS": [
-        "2018 www honeywellprocess",
-        "lcn honeywell confidential",
-        "honeywell portfolio update",
-        "2018 2018 honeywell",
-        "q4000 frame scanner",
-        "glossary term 119",
-        "hidden markov model",
-        "2018 honeywell international",
-        "honeywellprocess com 2019",
-        "honeywell trademark"
-      ],
+      "DOMAIN_KEYWORDS": [],
+      "AUTO_DOMAIN_KEYWORDS": [],
       "USER_ADDED_KEYWORDS": [
         "sparky",
         "bleep",
@@ -1486,7 +1177,7 @@
         "Superman sucks",
         "My yellow labrador retriever Juno",
         "AI can take over the world, but not before I get my coffee",
-        "I dont need anger management, I need poeple to stop pissing me off"
+        "I don;t need anger management, I need poeple to stop pissing me off"
       ],
       "SELECTED_N_TOP": 155
     },
@@ -1532,7 +1223,8 @@
       "WEAVIATE_HOST": "localhost",
       "WEAVIATE_HTTP_PORT": 8091,
       "WEAVIATE_GRPC_PORT": 51002,
-      "retrieve_with_history": false
+      "retrieve_with_history": false,
+      "WEAVIATE_ALIAS": "Main"
     },
     "model": {
       "LLM_TEMPERATURE": 1,
@@ -1560,7 +1252,6 @@
     },
     "paths": {
       "DOCUMENT_DIR": "./data",
-      "DOMAIN_CENTROID_PATH": "./domain_centroid.npy",
       "CENTROID_DIR": "./centroids"
     },
     "env": {
@@ -2005,7 +1696,8 @@
         10,
         120
       ],
-      "retrieve_with_history": false
+      "retrieve_with_history": false,
+      "WEAVIATE_ALIAS": "Main"
     },
     "model": {
       "LLM_TEMPERATURE": 0.88,
@@ -2041,7 +1733,6 @@
     },
     "paths": {
       "DOCUMENT_DIR": "./data",
-      "DOMAIN_CENTROID_PATH": "./domain_centroid.npy",
       "CENTROID_DIR": "./centroids"
     },
     "env": {
@@ -2421,7 +2112,8 @@
         10,
         120
       ],
-      "retrieve_with_history": false
+      "retrieve_with_history": false,
+      "WEAVIATE_ALIAS": "Main"
     },
     "model": {
       "LLM_TEMPERATURE": 0.7,
@@ -2449,7 +2141,6 @@
     },
     "paths": {
       "DOCUMENT_DIR": "./data",
-      "DOMAIN_CENTROID_PATH": "./domain_centroid.npy",
       "CENTROID_DIR": "./centroids"
     },
     "env": {
@@ -2657,7 +2348,8 @@
         10,
         120
       ],
-      "retrieve_with_history": false
+      "retrieve_with_history": false,
+      "WEAVIATE_ALIAS": "Main"
     },
     "model": {
       "LLM_TEMPERATURE": 1,
@@ -2685,7 +2377,6 @@
     },
     "paths": {
       "DOCUMENT_DIR": "./data",
-      "DOMAIN_CENTROID_PATH": "./domain_centroid.npy",
       "CENTROID_DIR": "./centroids"
     },
     "env": {
@@ -3036,7 +2727,8 @@
       "SPARSE_RELEVANCE_THRESHOLD": 0.1,
       "FUSED_RELEVANCE_THRESHOLD": 0.4,
       "SEMANTIC_WEIGHT": 0.7,
-      "SPARSE_WEIGHT": 0.3
+      "SPARSE_WEIGHT": 0.3,
+      "WEAVIATE_ALIAS": "Main"
     },
     "security": {
       "CACHE_ENABLED": true,
@@ -3089,7 +2781,8 @@
         10,
         120
       ],
-      "retrieve_with_history": false
+      "retrieve_with_history": false,
+      "WEAVIATE_ALIAS": "Main"
     },
     "model": {
       "LLM_TEMPERATURE": 0.1,
@@ -3117,7 +2810,6 @@
     },
     "paths": {
       "DOCUMENT_DIR": "./data",
-      "DOMAIN_CENTROID_PATH": "./domain_centroid.npy",
       "CENTROID_DIR": "./centroids"
     },
     "env": {
@@ -3478,7 +3170,8 @@
         10,
         120
       ],
-      "retrieve_with_history": false
+      "retrieve_with_history": false,
+      "WEAVIATE_ALIAS": "Main"
     },
     "model": {
       "LLM_TEMPERATURE": 0.6,
@@ -3506,7 +3199,6 @@
     },
     "paths": {
       "DOCUMENT_DIR": "./data",
-      "DOMAIN_CENTROID_PATH": "./domain_centroid.npy",
       "CENTROID_DIR": "./centroids"
     },
     "env": {
@@ -3869,7 +3561,8 @@
         10,
         120
       ],
-      "retrieve_with_history": false
+      "retrieve_with_history": false,
+      "WEAVIATE_ALIAS": "Main"
     },
     "model": {
       "LLM_TEMPERATURE": 2,
@@ -3905,7 +3598,6 @@
     },
     "paths": {
       "DOCUMENT_DIR": "./data",
-      "DOMAIN_CENTROID_PATH": "./domain_centroid.npy",
       "CENTROID_DIR": "./centroids"
     },
     "env": {

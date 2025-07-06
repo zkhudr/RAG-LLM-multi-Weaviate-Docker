@@ -9,8 +9,6 @@ document.addEventListener('alpine:init', () => {
         collections: [],
         selected: null,
         status: 'Loading collections…',
-
-
         envUserKeywordsString: '',
         // ─── CORE STATE ───
         docFreqMode: 'absolute',   
@@ -119,6 +117,18 @@ document.addEventListener('alpine:init', () => {
             no_pos_filter: false
         }
           },
+        
+          emptyCentroid() {
+            return {
+                centroid: null,
+                shape: null,
+                path: null,
+                meta: null,
+                loaded: false
+            };
+        },
+
+
 
         // ─── LIFECYCLE METHODS ───
         init() {
@@ -139,13 +149,17 @@ document.addEventListener('alpine:init', () => {
             this.isLoadingPresets = true;
             this.isLoadingAutoKeywords = true;
 
+            
+
             Promise.all([
                 fetch('/api/config').then(r => r.json()),
                 fetch('/api/collections').then(r => r.json())
             ])
                 .then(([configData, collectionsData]) => {
-                    this.formConfig = configData;
-                    this.presets = configData.presets || {};
+                    // Remove presets before assigning
+                    const { presets, ...configOnly } = configData || {};
+                    this.formConfig = configOnly;
+                    this.presets = presets || {};
 
                     const arr = Array.isArray(collectionsData)
                         ? collectionsData
@@ -158,20 +172,33 @@ document.addEventListener('alpine:init', () => {
 
                     this.collections = arr;
 
-                    const stored = localStorage.getItem('selected_collection');
+                    // Load from localStorage
+                    const storedCollection = localStorage.getItem('selected_collection');
                     const collectionFromConfig = this.formConfig?.retrieval?.COLLECTION_NAME || null;
-                    const isStoredValid = stored && arr.includes(stored);
+                    const aliasFromConfig = this.formConfig?.retrieval?.WEAVIATE_ALIAS || null;
+                    const isStoredValid = storedCollection && arr.includes(storedCollection);
                     const isConfigValid = collectionFromConfig && arr.includes(collectionFromConfig);
 
                     if (isStoredValid) {
-                        console.log(`[Init] Restoring collection from localStorage: ${stored}`);
-                        this.selected = stored;
+                        console.log(`[Init] Restoring collection from localStorage: ${storedCollection}`);
+                        this.selected = storedCollection;
                     } else if (isConfigValid) {
                         console.log(`[Init] Using config-specified collection: ${collectionFromConfig}`);
                         this.selected = collectionFromConfig;
                     } else {
                         console.warn(`[Init] No valid stored/config collection — defaulting to: ${arr[0] || 'none'}`);
                         this.selected = arr[0] || null;
+                    }
+
+                    // Store alias
+                    const aliasOverride = localStorage.getItem('selected_instance_alias');
+                    if (aliasOverride) {
+                        this.selectedInstanceAlias = aliasOverride;
+                    } else if (aliasFromConfig) {
+                        this.selectedInstanceAlias = aliasFromConfig;
+                        localStorage.setItem('selected_instance_alias', aliasFromConfig);
+                    } else {
+                        this.selectedInstanceAlias = 'main';
                     }
 
                     if (this.selected) {
@@ -200,7 +227,6 @@ document.addEventListener('alpine:init', () => {
                         this.autoKeywordsLoaded = true;
                         this.fetchAutoDomainKeywords?.();
                     }
-
                 })
                 .catch(err => {
                     console.error('Initialization error in Promise.all:', err);
@@ -221,6 +247,7 @@ document.addEventListener('alpine:init', () => {
                     min_doc_freq_frac: 0
                 };
             }
+            
 
             const kde = this.formConfig.domain_keyword_extraction;
             if (kde.extraction_diversity == null) {
@@ -278,13 +305,16 @@ document.addEventListener('alpine:init', () => {
 
         
         async loadCentroid() {
-            if (!this.selected) return;
+            const collection = this.selected;
+            const instance = localStorage.getItem('selected_instance_alias') || 'Main';
 
-            console.warn(`[loadCentroid] for '${this.selected}'`);
-            this.status = `Loading centroid for '${this.selected}'…`;
+            if (!collection || !instance) return;
+
+            console.warn(`[loadCentroid] for '${collection}' from instance '${instance}'`);
+            this.status = `Loading centroid for '${instance}_${collection}'…`;
 
             try {
-                const res = await fetch(`/api/centroid?collection=${encodeURIComponent(this.selected)}`);
+                const res = await fetch(`/api/centroid?collection=${encodeURIComponent(collection)}&instance=${encodeURIComponent(instance)}`);
                 const text = await res.text();
                 const contentType = res.headers.get("content-type") || "";
 
@@ -313,9 +343,8 @@ document.addEventListener('alpine:init', () => {
                     this.histogramUrl = '/static/placeholder.png';
                     this.centroidStats.centroid = false;
                     return;
-                  }
+                }
 
-                // ✅ Safe update only when fully loaded
                 this.centroidStats = {
                     centroid: true,
                     shape: json.shape,
@@ -324,8 +353,8 @@ document.addEventListener('alpine:init', () => {
                     loaded: true
                 };
 
-                this.histogramUrl = `/centroid_histogram.png?collection=${encodeURIComponent(this.selected)}&t=${Date.now()}`;
-                console.warn(`[loadCentroid] Centroid loaded for '${this.selected}', fetching stats`);
+                this.histogramUrl = `/centroid_histogram.png?collection=${encodeURIComponent(collection)}&instance=${encodeURIComponent(instance)}&t=${Date.now()}`;
+                console.warn(`[loadCentroid] Centroid loaded for '${collection}', fetching stats`);
                 await this.fetchCentroidStats();
 
             } catch (err) {
@@ -337,53 +366,10 @@ document.addEventListener('alpine:init', () => {
             }
         },
         
-        
-        
-        
-        fetchCentroidStats() {
-
-            console.warn('[CentroidStats] Fetch triggered. this.selected =', this.selected);
-            console.warn('[FETCH FUNC] fetchCentroidStats() called, this.selected =', this.selected);
-
-            if (!this.selected) return;
-
-            fetch(`/centroid_stats?collection=${encodeURIComponent(this.selected)}`)
-                .then(res => res.json())
-                .then(data => {
-                    const meta = data?.stats?.meta;  // ✅ Properly nested
-                    const ok = data?.success && meta && Object.keys(meta).length;
-
-                    if (ok) {
-                        console.log("[CentroidStats] Meta received:", meta);
-                        this.centroidStats.meta = meta;
-                        console.log("Final centroidStats.meta", this.centroidStats.meta);
-                        this.centroidStats.centroid = true;
-                    } else {
-                        console.warn("[CentroidStats] Empty or missing meta payload.");
-                        this.centroidStats.meta = {};
-                        this.centroidStats.centroid = false;
-                    }
-                })
-                .catch(err => {
-                    console.error("[CentroidStats] Failed to fetch:", err);
-                    this.centroidStats.meta = {};
-                    this.centroidStats.centroid = false;
-                });
-        },
-        
-            
-        emptyCentroid() {
-            return {
-                centroid: null,
-                shape: null,
-                path: null,
-                meta: null,
-                loaded: false
-            };
-        },
-
         async recalculate() {
             if (!this.selected) return;
+
+            const instance = this.selectedInstance || 'Main'; // fallback if undefined
 
             console.log('[Recalc] skipCollection:', true, 'payload.retrieval.COLLECTION_NAME:', this.selected);
             await this.saveConfig({ skipCollection: true });
@@ -391,9 +377,10 @@ document.addEventListener('alpine:init', () => {
             this.status = `Recalculating centroid for '${this.selected}'…`;
 
             try {
-                const res = await fetch(`/api/centroid?collection=${encodeURIComponent(this.selected)}`, {
-                    method: 'POST'
-                });
+                const res = await fetch(
+                    `/api/centroid?collection=${encodeURIComponent(this.selected)}&instance=${encodeURIComponent(instance)}`,
+                    { method: 'POST' }
+                );
 
                 const text = await res.text();
 
@@ -422,7 +409,7 @@ document.addEventListener('alpine:init', () => {
                     this.histogramUrl = '/static/placeholder.png';
 
                     console.log("[Recalc] Loading centroid...");
-                    await this.loadCentroid(); // ✅ ensure loadCentroid completes first
+                    await this.loadCentroid();
 
                     console.log("[Recalc] Scheduling centroidStats fetch");
                     setTimeout(() => {
@@ -434,7 +421,7 @@ document.addEventListener('alpine:init', () => {
                         } else {
                             console.error('[CTX FIX] Alpine fetchCentroidStats is missing');
                         }
-                      }, 200); // ⏱ allow slight delay for UI + file sync
+                    }, 200);
                 } else {
                     this.status = `Recalc error: ${json.error || 'Centroid could not be calculated or saved.'}`;
                     this.centroidStats = this.emptyCentroid();
@@ -447,7 +434,7 @@ document.addEventListener('alpine:init', () => {
                 this.histogramUrl = '/static/placeholder.png';
             }
         },
-         
+        
         // === Auto Domain Keywords Controls ===
 
             autoDomainKeywordsList: [],        // Currently active auto keywords
@@ -537,6 +524,31 @@ document.addEventListener('alpine:init', () => {
             }
               },
 
+        promptForChatName(defaultName) {
+            return new Promise((resolve) => {
+                this.confirmationModal = {
+                    show: true,
+                    title: "Save Chat",
+                    message: "", // We'll put the input in the modal
+                    confirmButtonClass: "bg-green-600 hover:bg-green-700",
+                    onConfirm: () => {
+                        const nameInput = document.getElementById('chatNameInput');
+                        const name = nameInput?.value?.trim();
+                        this.confirmationModal.show = false;
+                        resolve(name || null);
+                    },
+                    onCancel: () => {
+                        this.confirmationModal.show = false;
+                        resolve(null);
+                    }
+                };
+
+                this.$nextTick(() => {
+                    const input = document.getElementById('chatNameInput');
+                    if (input) input.focus();
+                });
+            });
+                  },
 
         restoreAutoDomainKeywords() {
             if (this.lastAutoDomainKeywordsList.length) {
@@ -564,6 +576,52 @@ document.addEventListener('alpine:init', () => {
             },
 
             // === Backend Sync ===
+
+        async fetchCollections() {
+            try {
+                const response = await fetch('/api/collections');
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                const arr = Array.isArray(data) ? data : (data?.collections || []);
+                if (!Array.isArray(arr)) throw new Error("Invalid collections payload");
+                this.collections = arr;
+            } catch (err) {
+                console.error("[fetchCollections] Error:", err);
+                this.collections = [];
+                this.showToast?.("Failed to load collections", "error");
+            }
+              },
+
+        async createNewCollection() {
+            const name = prompt("Enter new collection name:");
+            if (!name || !name.trim()) return;
+
+            this.statusMessage = `Creating collection '${name}'...`;
+            try {
+                const res = await fetch("/create_collection", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ name: name.trim() })
+                });
+                const result = await res.json();
+                if (!res.ok || !result.success) {
+                    const msg = result.error || `Error ${res.status}`;
+                    this.showToast(`Creation failed: ${msg}`, "error");
+                } else {
+                    this.showToast(`Collection '${name}' created.`, "success");
+                    // Refresh collections
+                    await this.fetchCollections();
+                    // Auto-select the new collection
+                    this.selected = name;
+                }
+            } catch (e) {
+                console.error("Error creating collection:", e);
+                this.showToast(`Error: ${e.message}`, "error");
+            } finally {
+                this.statusMessage = "Idle";
+            }
+        },
+            
         async syncActiveKeywordsToBackend() {
             const keywords = Array.from(this.activeAutoDomainKeywordsSet || []);
 
@@ -653,17 +711,18 @@ document.addEventListener('alpine:init', () => {
               
         async saveConfig({ skipCollection = false } = {}) {
             if (this.isLoading() && !skipCollection) {
-                console.warn('[Button Click] Save Config ignored, already loading:', this.statusMessage);
+                console.warn('[saveConfig] Ignored, already loading:', this.statusMessage);
                 if (this.showToast) this.showToast("Please wait for the current operation to finish.", "info");
                 return false;
             }
 
             console.log(
-                "formConfig structure:", Object.keys(this.formConfig),
+                "[saveConfig] Preparing payload...",
+                "\nformConfig keys:", Object.keys(this.formConfig),
                 "\nretrieval keys:", Object.keys(this.formConfig.retrieval),
-                "\nfull config:\n", JSON.stringify(this.formConfig, null, 2),
+                "\nFull config:\n", JSON.stringify(this.formConfig, null, 2)
             );
-            console.log("Saving configuration via /save_config...");
+
             this.statusMessage = 'Saving config';
 
             const dke = this.formConfig.domain_keyword_extraction;
@@ -679,11 +738,19 @@ document.addEventListener('alpine:init', () => {
 
             try {
                 const payload = JSON.parse(JSON.stringify(this.formConfig));
+                // --- Bulletproof numeric coercion ---
+                if (payload.pipeline && payload.pipeline.max_history_turns != null) {
+                    payload.pipeline.max_history_turns = Number(payload.pipeline.max_history_turns);
+                    if (isNaN(payload.pipeline.max_history_turns)) {
+                        console.warn("[saveConfig] Invalid max_history_turns, falling back to 5.");
+                        payload.pipeline.max_history_turns = 5;
+                    }
+                }
+
                 console.log("[saveConfig] skipCollection:", skipCollection, "payload.retrieval.COLLECTION_NAME:", payload.retrieval?.COLLECTION_NAME);
 
-                // Protect backend from poisoned config
                 if (skipCollection && payload?.retrieval?.COLLECTION_NAME) {
-                    console.warn('[saveConfig] Skipping COLLECTION_NAME during save');
+                    console.warn('[saveConfig] Skipping COLLECTION_NAME during save.');
                     delete payload.retrieval.COLLECTION_NAME;
                 }
 
@@ -695,29 +762,34 @@ document.addEventListener('alpine:init', () => {
                     body: JSON.stringify(payload)
                 });
 
+                if (!response.ok) {
+                    const text = await response.text();
+                    throw new Error(`HTTP ${response.status}: ${text}`);
+                }
+
                 const result = await response.json();
                 const msg = result.message || '';
                 const isSoft = msg.includes("pipeline reload");
 
-                // 🔥 FIX HERE: check `result.success` not `result.ok`
-                if (!response.ok || (result.success === false && !isSoft)) {
-                    const errorMsg = result.error || msg || `HTTP error ${response.status}`;
+                if (result.success === false && !isSoft) {
+                    const errorMsg = result.error || msg || "Unknown error saving config.";
                     throw new Error(errorMsg);
                 }
 
                 if (result.config) {
-                    console.log("[saveConfig] Merging validated config from backend");
+                    console.log("[saveConfig] Merging config from backend...");
+                    console.log("[saveConfig] Backend returned config:", result.config);
                     this.deepMerge(this.formConfig, result.config);
                 }
 
-                this.showToast(msg || 'Configuration saved successfully!', isSoft ? 'info' : 'success');
+                this.showToast(msg || "Configuration saved successfully!", isSoft ? 'info' : 'success');
                 this._markConfigClean();
                 return true;
 
             } catch (error) {
                 console.error('Configuration Save Error:', error);
-                const msg = error?.message || error?.toString() || 'Unknown error';
-                const isSoft = msg.includes('pipeline reload');
+                const msg = error?.message || String(error) || "Unknown error";
+                const isSoft = msg.includes("pipeline reload");
                 this.statusMessage = isSoft ? 'Idle' : 'Save Error';
                 this.showToast(msg, isSoft ? 'info' : 'error');
                 return !isSoft;
@@ -729,6 +801,30 @@ document.addEventListener('alpine:init', () => {
             }
         },
             
+        deleteCollection(name) {
+            this.requireConfirmation({
+                title: "Delete Collection",
+                message: `Are you sure you want to delete '${name}'? This cannot be undone.`,
+                confirmButtonClass: "bg-red-600 hover:bg-red-700",
+                onConfirm: () => {
+                    fetch("/delete_collection", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ name })
+                    })
+                        .then(res => res.json())
+                        .then(data => {
+                            if (data.success) {
+                                this.showToast?.(`Collection '${name}' deleted.`, "success");
+                                this.fetchCollections();
+                            } else {
+                                this.showToast?.(`Error: ${data.error || "Unknown error"}`, "error");
+                            }
+                        });
+                }
+            });
+        },
+          
             
                        // === INITIALIZATION METHOD (Called manually below) ===
         async loadInitialData() {
@@ -749,6 +845,16 @@ document.addEventListener('alpine:init', () => {
                         }
                     })(),
                     (async () => {
+                        console.log("[Init API] Starting fetchCollections...");
+                        try {
+                            await this.fetchCollections();
+                            console.log("[Init API] Finished fetchCollections.");
+                        } catch (e) {
+                            console.error("[Init API] fetchCollections FAILED:", e);
+                            throw e;
+                        }
+                    })(),
+                    (async () => {
                         console.log("[Init API] Fetching document count...");
                         try {
                             const response = await fetch('/get-doc-count');
@@ -760,7 +866,6 @@ document.addEventListener('alpine:init', () => {
                             this.totalDocs = 0;
                         }
 
-                        // 🧠 Merge logic from old version here
                         const dke = this.formConfig.domain_keyword_extraction;
                         if (dke.min_doc_freq_abs != null) {
                             dke.min_doc_freq_frac = this.totalDocs
@@ -849,6 +954,7 @@ document.addEventListener('alpine:init', () => {
                 this.showToast(`Initialization failed: ${error.message}. Check console & backend.`, 'error', 10000);
             }
         },
+                    
                     
 
             // ADD THIS METHOD: Called by the button click in index.html
@@ -1031,6 +1137,7 @@ document.addEventListener('alpine:init', () => {
                     onConfirm: async () => {
                         console.log(`[Confirm Action] User chose Save & Proceed for ${actionName}.`);
                         const saveSuccess = await this.saveConfig();
+                        window.location.reload();
                         if (saveSuccess) {
                             console.log(`[Confirm Action] Config saved. Proceeding with ${actionName}...`);
                             actionFunction();
@@ -1414,62 +1521,76 @@ document.addEventListener('alpine:init', () => {
                     },
 
             // Called by the 'Activate' button
-            async activateRAG(instanceName) {
-                if (!instanceName || this.isLoading()) {
-                    if (!instanceName) console.warn('[Button Click] Activate ignored, no instance name.');
-                    else console.warn('[Button Click] Activate ignored, already loading:', this.statusMessage);
-                    return;
+        async activateRAG(instanceName) {
+            if (!instanceName || this.isLoading()) {
+                if (!instanceName) console.warn('[Button Click] Activate ignored, no instance name.');
+                else console.warn('[Button Click] Activate ignored, already loading:', this.statusMessage);
+                return;
+            }
+
+            console.log(`[API Call] Activating instance: ${instanceName}`);
+            this.statusMessage = `Activating ${instanceName}...`;
+
+            try {
+                const response = await fetch('/select_weaviate_instance', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ instance_name: instanceName })
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+
+                if (this.showToast) {
+                    this.showToast(
+                        result.message || `Instance '${instanceName}' activated.`,
+                        'success'
+                    );
                 }
 
-                console.log(`[API Call] Activating instance: ${instanceName}`);
-                this.statusMessage = `Activating ${instanceName}...`;
+                await this.loadInitialConfig();
+                this.selectedInstanceAlias = instanceName;
+                localStorage.setItem('selected_instance_alias', instanceName);
 
-                try {
-                    const response = await fetch('/select_weaviate_instance', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ instance_name: instanceName })
-                    });
-                    const result = await response.json();
-                    if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+                // 🔁 REFRESH COLLECTION LIST IMMEDIATELY
+                await this.fetchCollections?.();
+                if (!this.collections.includes(this.selected)) {
+                    const fallback = this.collections[0] || null;
+                    console.warn(`[Auto-select] Old selection '${this.selected}' not in new list. Using '${fallback}'`);
+                    this.selected = fallback;
+                    localStorage.setItem('selected_collection', fallback);
+                }
 
-                    // show success toast
-                    if (this.showToast) {
-                        this.showToast(
-                            result.message || `Instance '${instanceName}' activated.`,
-                            'success'
-                        );
+                // Optionally reload centroid visuals
+                await this.loadCentroid();
+                await this.fetchWeaviateInstances();
+
+
+                this.weaviateInstances.forEach(inst => {
+                    inst.active = (inst.name === instanceName);
+                });
+
+                this.statusMessage = 'Idle';
+            }
+            catch (error) {
+                console.error('[API Error] Activate Instance FAILED:', error);
+                this.statusMessage = 'Activation Error';
+                if (this.showToast) {
+                    this.showToast(
+                        `Error activating instance: ${error.message}`,
+                        'error'
+                    );
+                }
+                setTimeout(() => {
+                    if (
+                        this.statusMessage === `Activating ${instanceName}...` ||
+                        this.statusMessage === 'Activation Error'
+                    ) {
+                        this.statusMessage = 'Idle';
                     }
-
-                    // reload core config (so your input bindings, endpoint, etc. update)
-                    await this.loadInitialConfig();
-
-                    // **in‐place** flip the active flag locally
-                    this.weaviateInstances.forEach(inst => {
-                        inst.active = (inst.name === instanceName);
-                    });
-
-                    this.statusMessage = 'Idle';
-                }
-                catch (error) {
-                    console.error('[API Error] Activate Instance FAILED:', error);
-                    this.statusMessage = 'Activation Error';
-                    if (this.showToast) {
-                        this.showToast(
-                            `Error activating instance: ${error.message}`,
-                            'error'
-                        );
-                    }
-                    setTimeout(() => {
-                        if (
-                            this.statusMessage === `Activating ${instanceName}...` ||
-                            this.statusMessage === 'Activation Error'
-                        ) {
-                            this.statusMessage = 'Idle';
-                        }
-                    }, 3000);
-                }
-            },
+                }, 3000);
+            }
+        },
+            
 
 
                     // --- Chat Functionality ---
@@ -1610,7 +1731,7 @@ document.addEventListener('alpine:init', () => {
                         this.$nextTick(() => {
                             const win = this.$refs.chatHistoryContainer;
                             if (!win) {
-                                console.warn('[scrollToBottom] ⚠️ $refs.chatHistoryContainer missing');
+                                console.warn('[scrollToBottom] $refs.chatHistoryContainer missing');
                                 return;
                             }
                             win.scrollTop = win.scrollHeight;
@@ -1637,48 +1758,43 @@ document.addEventListener('alpine:init', () => {
                     },
 
                     async saveChat() {
-                        if (this.isLoading() || !Array.isArray(this.chatHistory) || this.chatHistory.length ===
-                            0) {
+                        if (this.isLoading() || !Array.isArray(this.chatHistory) || this.chatHistory.length === 0) {
                             if (this.showToast) this.showToast("Nothing to save in current chat.", "info");
                             return;
                         }
-                        // Use prompt for simplicity, could be replaced with a modal input
-                        const chatName = prompt("Enter a name for this chat:",
-                            `Chat ${new Date().toLocaleDateString()}`);
-                        if (!chatName) return; // User cancelled
+
+                        const defaultName = `Chat ${new Date().toLocaleDateString()}`;
+                        const chatName = await this.promptForChatName(defaultName);
+
+                        if (!chatName) {
+                            if (this.showToast) this.showToast("Save cancelled.", "info");
+                            return;
+                        }
 
                         console.log(`[API Call] Saving current chat as: ${chatName}`);
                         this.statusMessage = 'Saving chat...';
+
                         try {
-                            const response = await fetch('/save_chat',
-                                { // Ensure Flask POST endpoint accepts JSON
-                                    method: 'POST',
-                                    headers:
-                                    {
-                                        'Content-Type': 'application/json'
-                                    },
-                                    // Send name and the current history state
-                                    body: JSON.stringify(
-                                        {
-                                            name: chatName,
-                                            history: this.chatHistory
-                                        })
-                                });
+                            const response = await fetch('/save_chat', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    name: chatName,
+                                    history: this.chatHistory
+                                })
+                            });
+
                             const result = await response.json();
-                            if (!response.ok || !result.success) throw new Error(result.error ||
-                                `HTTP error! Status: ${response.status}`);
+                            if (!response.ok || !result.success)
+                                throw new Error(result.error || `HTTP error! Status: ${response.status}`);
 
-                            if (this.showToast) this.showToast(result.message || `Chat '${chatName}' saved.`,
-                                'success');
-                            await this.fetchSavedChats(); // Refresh list
-
-                        }
-                        catch (error) {
+                            this.showToast?.(result.message || `Chat '${chatName}' saved.`, 'success');
+                            await this.fetchSavedChats();
+                        } catch (error) {
                             console.error('[API Error] Save Chat FAILED:', error);
                             this.statusMessage = 'Save Error';
-                            if (this.showToast) this.showToast(`Error saving chat: ${error.message}`, 'error');
-                        }
-                        finally {
+                            this.showToast?.(`Error saving chat: ${error.message}`, 'error');
+                        } finally {
                             if (this.statusMessage === 'Saving chat...') {
                                 setTimeout(() => {
                                     this.statusMessage = 'Idle';
@@ -1686,6 +1802,7 @@ document.addEventListener('alpine:init', () => {
                             }
                         }
                     },
+
 
                     // Uses confirmation modal
                     loadChatWithConfirmation(chatId) {
@@ -1954,17 +2071,21 @@ document.addEventListener('alpine:init', () => {
                         data_folder: dataFolder
                     })
                 });
+
                 const result = await response.json();
+
                 if (result.status === 'created') {
-                    alert("Centroid file created successfully. Starting ingestion...");
+                    this.showToast?.("Centroid file created successfully. Starting ingestion...", "success");
                     await this._performStartIncrementalIngestion();
                 } else {
-                    alert("Failed to create centroid file: " + result.message);
+                    this.showToast?.("Failed to create centroid file: " + (result.message || "Unknown error"), "error");
                 }
             } catch (err) {
-                alert("AJAX error: " + err);
+                console.error("[_createCentroidFile] AJAX error:", err);
+                this.showToast?.("AJAX error: " + err.message, "error");
             }
         },
+          
             
         // 3) Your existing, battle-tested ingestion logic
         async _performStartIncrementalIngestion() {
@@ -2104,7 +2225,8 @@ document.addEventListener('alpine:init', () => {
                             `Section ${section} type mismatch: Frontend=${typeof dst}, Backend=${typeof src}`
                         );
                     }
-                    // d) special merge for env/document
+
+                    // d) special merge for env/document arrays
                     if (
                         (section === 'env' || section === 'document') &&
                         Object.keys(src).some(key => MERGE_KEYS.includes(key))
@@ -2144,7 +2266,8 @@ document.addEventListener('alpine:init', () => {
                 if (savedN != null) {
                     this.selectedTopN = savedN;
                 }
-                // Now recompute menu options
+
+                // Recompute menu options
                 this.allAutoDomainKeywordsList = ensureArray(autoKeys);
                 this.updateTopNOptions();
                 console.log(`TopN options updated:`, this.topNOptions);
@@ -2152,13 +2275,26 @@ document.addEventListener('alpine:init', () => {
                 // 5) Seed the User-Added textarea
                 this.envUserKeywordsString = (this.formConfig.env.USER_ADDED_KEYWORDS || []).join(', ');
 
-                // 6) Mark clean
+                // 6) Ensure pipeline.max_history_turns exists and is numeric
+                if (!this.formConfig.pipeline) {
+                    this.formConfig.pipeline = {};
+                }
+                if (
+                    this.formConfig.pipeline.max_history_turns === undefined ||
+                    this.formConfig.pipeline.max_history_turns === null
+                ) {
+                    console.warn("[loadInitialConfig] max_history_turns missing—defaulting to 5.");
+                    this.formConfig.pipeline.max_history_turns = 5;
+                }
+
+                // 7) Mark clean
                 this._markConfigClean();
                 console.log("Config loaded, keywords populated, and state marked clean");
 
             } catch (error) {
                 console.error("Config load failed:", error);
                 this.showToast(`Config load error: ${error.message}`, 'error');
+
                 // Reset critical arrays to safe defaults
                 this.formConfig.document.FILE_TYPES = [];
                 this.formConfig.env.DOMAIN_KEYWORDS = [];
@@ -2166,9 +2302,11 @@ document.addEventListener('alpine:init', () => {
                 this.formConfig.env.USER_ADDED_KEYWORDS = [];
                 this.autoDomainKeywordsList = [];
                 this.autoDomainKeywords = '';
+
                 throw error;
             }
         },
+    
               
 
                     // Add deepMerge helper in your component
@@ -2510,37 +2648,35 @@ document.addEventListener('alpine:init', () => {
                     }, // End of deletePresetWithConfirmation
 
                     
-        async fetchCentroidStats() {
-            if (!this.selected) return;
+        fetchCentroidStats() {
+            console.warn('[CentroidStats] Fetch triggered. this.selected =', this.selected, 'instance =', this.selectedInstanceAlias);
+            if (!this.selected || !this.selectedInstanceAlias) return;
 
-            try {
-                const res = await fetch(`/centroid_stats?collection=${encodeURIComponent(this.selected)}`);
-                const data = await res.json();
+            fetch(`/centroid_stats?collection=${encodeURIComponent(this.selected)}&instance=${encodeURIComponent(this.selectedInstanceAlias)}`)
+                .then(res => res.json())
+                .then(data => {
+                    const meta = data?.stats?.meta;
+                    const ok = data?.success && meta && Object.keys(meta).length;
 
-                const meta = data?.stats?.meta;
-                const ok = data?.success && meta && Object.keys(meta).length;
-
-                if (ok) {
-                    this.centroidStats.meta = meta;
-                    this.centroidStats.centroid = true;
-                    this.status = "Centroid stats loaded.";
-                } else {
-                    console.warn("No stats returned for centroid.");
+                    if (ok) {
+                        console.log("[CentroidStats] Meta received:", meta);
+                        this.centroidStats.meta = meta;
+                        this.centroidStats.centroid = true;
+                        console.log("Final centroidStats.meta", this.centroidStats.meta);
+                    } else {
+                        console.warn("[CentroidStats] Empty or missing meta payload.");
+                        this.centroidStats.meta = {};
+                        this.centroidStats.centroid = false;
+                    }
+                })
+                .catch(err => {
+                    console.error("[CentroidStats] Failed to fetch:", err);
                     this.centroidStats.meta = {};
                     this.centroidStats.centroid = false;
-                    this.status = "No centroid stats available.";
-                }
-            } catch (err) {
-                console.error("Failed to fetch centroid stats:", err);
-                this.centroidStats.meta = {};
-                this.centroidStats.centroid = false;
-                this.status = "Error fetching centroid stats.";
-            }
+                });
         },
-                           
-                      
-                      
-
+                    
+    
         async fetchAutoDomainKeywords() {
             if (this.isLoadingAutoKeywords || this.autoKeywordsLoaded) {
                 console.warn("[UI] Skipping duplicate fetchAutoDomainKeywords call.");

@@ -26,6 +26,8 @@ import os
 import numpy as np
 import socket
 import logging
+import sys
+
 
 
 load_dotenv()
@@ -41,38 +43,62 @@ _pipeline_initializing = False
 ## Core imports and dummy‐fallbacks…
 try:
     from langchain_ollama import OllamaLLM
-    from config import cfg # Use 'cfg' directly if it's the loaded instance
+    from config import cfg
     from retriever import TechnicalRetriever
     from llm_merge_strategies import ApiPriorityStrategy, ConcatStrategy, LocalOnlyStrategy, MergeStrategy
-    
-    # Try to import CentroidManager
-    try:
-        from centroid_manager import CentroidManager
-        centroid_manager = CentroidManager()
-        centroid_available = True
-        logger.info("CentroidManager initialized successfully")
-    except ImportError:
-        logger.warning("CentroidManager not available, centroid features disabled")
-        centroid_manager = None
-        centroid_available = False
-        
+    from centroid_manager import CentroidManager
+
     imports_ok = True
+
 except ImportError as e:
     logging.critical(f"CRITICAL: Failed to import core pipeline dependencies: {e}", exc_info=True)
     imports_ok = False
-    # Define dummy classes/objects to prevent immediate crash if possible, but log error
-    #class OllamaLLM: pass
-    #class TechnicalRetriever: pass
-    class cfg: # Dummy config
-        class model: OLLAMA_MODEL="dummy"; LLM_TEMPERATURE=0.7; MAX_TOKENS=512; SYSTEM_MESSAGE=""
-        class security: SANITIZE_INPUT=True; DEEPSEEK_API_KEY=""; API_TIMEOUT=20; CACHE_ENABLED=False
-        class retrieval: PERFORM_DOMAIN_CHECK=False; DOMAIN_SIMILARITY_THRESHOLD=0.6; SPARSE_RELEVANCE_THRESHOLD=0.1; FUSED_RELEVANCE_THRESHOLD=0.4; SEMANTIC_WEIGHT=0.7; SPARSE_WEIGHT=0.3
-        class paths: DOMAIN_CENTROID_PATH="./dummy_centroid.npy"
-        class env: merged_keywords=[]
-    centroid_manager = None
+
+    # Dummy fallback cfg for crash prevention only
+    class cfg:
+        class model:
+            OLLAMA_MODEL = "dummy"
+            LLM_TEMPERATURE = 0.7
+            MAX_TOKENS = 512
+            SYSTEM_MESSAGE = ""
+
+        class security:
+            SANITIZE_INPUT = True
+            DEEPSEEK_API_KEY = ""
+            API_TIMEOUT = 20
+            CACHE_ENABLED = False
+
+        class retrieval:
+            PERFORM_DOMAIN_CHECK = False
+            DOMAIN_SIMILARITY_THRESHOLD = 0.6
+            SPARSE_RELEVANCE_THRESHOLD = 0.1
+            FUSED_RELEVANCE_THRESHOLD = 0.4
+            SEMANTIC_WEIGHT = 0.7
+            SPARSE_WEIGHT = 0.3
+            COLLECTION_NAME = "dummy"
+            WEAVIATE_ALIAS = "dummy"
+
+        class paths:
+            CENTROID_DIR = "./centroids"
+
+        class env:
+            merged_keywords = []
+
 
 ## Configure logging (after imports)
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+def setup_logging(force_utf8=False, level=logging.INFO):
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    if force_utf8:
+        try:
+            stream_handler.stream = open(sys.stdout.fileno(), mode='w', encoding='utf-8', buffering=1)
+        except Exception:
+            pass
+    logging.basicConfig(handlers=[stream_handler], level=level, force=True)
+
+setup_logging(force_utf8=True)
+
 logger = logging.getLogger(__name__)
 
 class UnifiedPipeline:
@@ -107,7 +133,6 @@ class UnifiedPipeline:
             self.logger.critical(f"Failed to initialize LLM or Retriever: {init_e}", exc_info=True)
             raise
 
-        self.domain_keywords_set = set(getattr(self.cfg.env, 'merged_keywords', []))
         self.cache_dir = "./cache"
         os.makedirs(self.cache_dir, exist_ok=True)
 
@@ -115,17 +140,27 @@ class UnifiedPipeline:
         if self.domain_centroid is None and self.cfg.retrieval.PERFORM_DOMAIN_CHECK:
             self.logger.warning("Domain centroid not loaded. Semantic relevance check will be skipped.")
 
-        if not self.domain_keywords_set and self.cfg.retrieval.PERFORM_DOMAIN_CHECK:
-            self.logger.warning("Domain keywords list is EMPTY during pipeline initialization!")
+        # Compose active collection ID early
+        self.active_collection_id = f"{self.cfg.retrieval.WEAVIATE_ALIAS}|{self.cfg.retrieval.COLLECTION_NAME}"
+        self.logger.info(f"Active collection context: {self.active_collection_id}")
+
+        # Log keywords for this collection
+        current_keywords = self._get_keywords_for_active_collection()
+        if not current_keywords and self.cfg.retrieval.PERFORM_DOMAIN_CHECK:
+            self.logger.warning(
+                f"No domain keywords configured for {self.active_collection_id} during pipeline initialization."
+            )
         else:
-            self.logger.info(f"Pipeline initialized with {len(self.domain_keywords_set)} domain keywords.")
+            self.logger.info(
+                f"Pipeline initialized with {len(current_keywords)} domain keywords for {self.active_collection_id}."
+            )
 
         # Validators
         self._validators = []
         if self.cfg.retrieval.PERFORM_DOMAIN_CHECK:
             self._validators.append(self._validate_semantic)
         if self.cfg.retrieval.PERFORM_TECHNICAL_VALIDATION:
-            self._validators.append(self._validate_technical)
+            self._validators.append(self._validate_query_keyword_scope)
 
         # Merge strategy
         strat = getattr(self.cfg.model, "MERGE_STRATEGY", "api_first").lower()
@@ -145,56 +180,60 @@ class UnifiedPipeline:
         self._connected_port = self.cfg.retrieval.WEAVIATE_HTTP_PORT
 
 
-    def _load_domain_centroid(self) -> Optional[np.ndarray]:
-        """Loads the pre-calculated centroid vector for the configured collection."""
-        try:
-            from centroid_manager import CentroidManager
-
-            # 1) Grab the collection name from config
-            collection_name = getattr(self.cfg.retrieval, "COLLECTION_NAME", None)
-
-            # 2) Use the dedicated CENTROID_DIR, not DOMAIN_CENTROID_PATH’s folder
-            base_dir = getattr(self.cfg.paths, "CENTROID_DIR", None)
-            if not base_dir:
-                # fallback in case CENTROID_DIR isn’t set
-                base_dir = os.path.dirname(self.cfg.paths.DOMAIN_CENTROID_PATH) or "."
-
-            # 3) Instantiate the manager with per-collection behavior
-            cm = CentroidManager(
-                collection_name=collection_name,
-                base_path=base_dir
-            )
-
-            centroid = cm.get_centroid()
-
-            if centroid is not None:
-                logger.info(
-                    f"Loaded centroid for collection '{collection_name}' "
-                    f"from {cm.centroid_path} with shape {centroid.shape}"
-                )
-                # reshape for cosine_similarity
-                return centroid.reshape(1, -1)
+    def _get_keywords_for_active_collection(self) -> List[str]:
+            """
+            Return the list of keywords for the currently active collection-instance.
+            """
+            key = f"{self.cfg.retrieval.WEAVIATE_ALIAS}|{self.cfg.retrieval.COLLECTION_NAME}"
+            kw_map = getattr(self.cfg.env, "COLLECTION_KEYWORDS", {})
+            keywords = kw_map.get(key, [])
+            if not keywords:
+                self.logger.warning(f"No keywords configured for {key}.")
             else:
-                logger.error(
-                    f"Centroid file not found for collection '{collection_name}' "
-                    f"at {cm.centroid_path}. Run calculate_centroid.py."
-                )
-                return None
-
-        except Exception as e:
-            logger.error(f"Failed to load domain centroid: {e}", exc_info=True)
-            return None
+                self.logger.info(f"Loaded {len(keywords)} keywords for {key}.")
+            return keywords
 
 
-        
+    def _load_domain_centroid(self) -> Optional[np.ndarray]:
+                """Loads the pre-calculated centroid vector for the configured collection + instance."""
+                try:
+                    from centroid_manager import CentroidManager
+
+                    collection_name = self.cfg.retrieval.COLLECTION_NAME
+                    instance_alias = self.cfg.retrieval.WEAVIATE_ALIAS
+                    base_dir = self.cfg.paths.CENTROID_DIR
+
+                    cm = CentroidManager(
+                        instance_alias=instance_alias,
+                        collection_name=collection_name,
+                        base_path=base_dir
+                    )
+
+                    centroid = cm.get_centroid()
+                    if centroid is not None:
+                        logger.info(
+                            f"Loaded centroid for '{instance_alias}:{collection_name}' "
+                            f"from {cm.centroid_path} (shape={centroid.shape})"
+                        )
+                        return centroid.reshape(1, -1)
+                    else:
+                        logger.error(
+                            f"Centroid file not found for '{instance_alias}:{collection_name}' "
+                            f"at {cm.centroid_path}. Run calculate_centroid.py."
+                        )
+                        return None
+
+                except Exception as e:
+                    logger.error(f"Failed to load domain centroid: {e}", exc_info=True)
+                    return None
+                        
     def _validate_semantic(self, text: str) -> bool:
         # (optional) check domain centroid here if you ever want to re-enable it
         return True
 
-    def _validate_technical(self, text: str) -> bool:
-            # your keyword-based check from before
-            terms = [k.lower() for k in self.cfg.env.DOMAIN_KEYWORDS]
-            return any(term in text.lower() for term in terms)
+    def _validate_query_keyword_scope(self, text: str) -> bool:
+        terms = [k.lower() for k in self._get_keywords_for_active_collection()]
+        return any(term in text.lower() for term in terms)
 
     def _sanitize_input(self, query: str) -> str:
         """Basic sanitization of input query."""
@@ -253,20 +292,32 @@ class UnifiedPipeline:
         if self.domain_centroid is None:
             logger.warning("Cannot calculate semantic score, domain centroid not loaded.")
             return 0.0, {}
-        
+
         try:
             query_embedding = self.embeddings.embed_query(query)
             query_vector = np.array(query_embedding).reshape(1, -1)
-            centroid_feedback = centroid_manager.query_insight(query_vector.flatten())
+
+            # Fresh CentroidManager scoped to instance + collection
+            from centroid_manager import CentroidManager
+            cm = CentroidManager(
+                instance_alias=self.cfg.retrieval.WEAVIATE_ALIAS,
+                collection_name=self.cfg.retrieval.COLLECTION_NAME,
+                base_path=self.cfg.paths.CENTROID_DIR
+            )
+
+            centroid_feedback = cm.query_insight(query_vector.flatten())
             if centroid_feedback and "similarity" in centroid_feedback:
                 similarity = centroid_feedback["similarity"]
             else:
                 similarity = cosine_similarity(query_vector, self.domain_centroid)[0][0]
+
             similarity = max(0.0, min(1.0, float(similarity)))
             return similarity, centroid_feedback
+
         except Exception as e:
             logger.error(f"Error calculating semantic score: {e}", exc_info=True)
-            return 0.0, {}    
+            return 0.0, {}
+   
 
 
     def _calculate_sparse_score(self, query_terms: List[str]) -> float:
@@ -395,11 +446,11 @@ class UnifiedPipeline:
         cache_key = self._get_cache_key(f"{query}_{json.dumps(hist_key)}")
         if (cached := self._load_from_cache(cache_key)):
             self.logger.info("Returning cached response")
-            cached.setdefault('response','')
-            cached.setdefault('source','cache')
-            cached.setdefault('model','cache')
-            cached.setdefault('context','')
-            cached.setdefault('error',False)
+            cached.setdefault('response', '')
+            cached.setdefault('source', 'cache')
+            cached.setdefault('model', 'cache')
+            cached.setdefault('context', '')
+            cached.setdefault('error', False)
             cached['timestamp'] = datetime.now().isoformat()
             return cached
 
@@ -410,7 +461,9 @@ class UnifiedPipeline:
             if self.cfg.security.SANITIZE_INPUT and (not sanitized or len(sanitized) < 3):
                 return self._format_response(
                     response="Query too short or invalid after sanitization",
-                    source="validation", context=None, error=True
+                    source="validation",
+                    context=None,
+                    error=True
                 )
 
             terms = [t for t in sanitized.lower().split() if len(t) > 1]
@@ -420,8 +473,10 @@ class UnifiedPipeline:
                 ok, centroid_feedback = self._check_domain_relevance_hybrid(sanitized, terms)
                 if not ok:
                     return self._format_response(
-                        response="Query appears outside industrial automation scope.",
-                        source="domain_check", context=None, error=False
+                        response=f"Query appears outside the scope of {self.active_collection_id}",
+                        source="domain_check",
+                        context=None,
+                        error=False
                     )
                 self.logger.info("Domain check passed")
             else:
@@ -430,7 +485,7 @@ class UnifiedPipeline:
             # ── RETRIEVE CONTEXT ──
             retrieval_q = sanitized
             if self.cfg.retrieval.retrieve_with_history and hist_cache:
-                last_user = next((m["content"] for m in reversed(hist_cache) if m.get("role")=="user"), "")
+                last_user = next((m["content"] for m in reversed(hist_cache) if m.get("role") == "user"), "")
                 if last_user:
                     retrieval_q = f"Previous: {last_user}\nCurrent: {sanitized}"
             self.logger.info(f"Retrieving context for: '{retrieval_q[:100]}…'")
@@ -438,32 +493,35 @@ class UnifiedPipeline:
             if not context:
                 self.logger.warning("No context found")
 
-            # 1) Local LLM response always as dict
+            # Local LLM response
             local_resp = {"response": self._generate_local_response(sanitized, context, chat_history)}
 
-            # 2) External provider call (None if not configured)
+            # External provider call
             prov = self.cfg.model.EXTERNAL_API_PROVIDER.lower()
             api_raw = self.api_provider.call(sanitized, context, chat_history) if self.api_provider else None
-            api_resp = api_raw if isinstance(api_raw, dict) else {}
 
-
-            # 3) Warn if user wanted a provider but got nothing back
+            # Warn if provider returned nothing
             if prov != "none" and not api_raw:
                 self.logger.warning(f"Provider '{prov}' configured but returned no response or is unavailable")
 
-            # 4) Always merge dicts
+            # Always merge
             api_resp: Dict = api_raw if isinstance(api_raw, dict) else {}
             merged = self.merge_strategy.merge(local_resp, api_resp)
             text = merged.get("response", "")
-
+            self.logger.debug(
+            f"Validating query against keywords for {self.active_collection_id}: {self._get_keywords_for_active_collection()}"
+)
             # ── VALIDATION ──
             is_valid = True
             source = prov if api_resp else "local_llm"
+
             if self.cfg.retrieval.PERFORM_TECHNICAL_VALIDATION:
                 for vfn in self._validators:
                     if not vfn(text):
                         self.logger.info(f"Validation failed: {vfn.__name__}")
-                        merged = {"response":"Please clarify or ask a specific technical topic."}
+                        merged = {
+                            "response": "Please clarify or ask a specific technical topic."
+                        }
                         source = "validation_failed"
                         is_valid = False
                         break
@@ -491,15 +549,16 @@ class UnifiedPipeline:
             self.logger.exception(f"Error in generate_response: {e}")
             return self._format_response(
                 response="Sorry, an internal error occurred.",
-                source="pipeline_error", context=None, error=True
+                source="pipeline_error",
+                context=None,
+                error=True
             )
-
 
     # === MODIFIED: _generate_local_response ===
     def _generate_local_response(self, query: str, context: str, chat_history: Optional[List[Dict]] = None) -> str:
         """Generates response using local LLM, context, and chat history."""
         try:
-            system_msg_base = self.cfg.model.SYSTEM_MESSAGE or "You are a helpful industrial automation expert. Use the following context and conversation history to answer the question."
+            system_msg_base = self.cfg.model.SYSTEM_MESSAGE or "You are a helpful expert. Use the following context and conversation history to answer the question."
 
             # Format history string
             history_str = self._format_chat_history_for_prompt(chat_history)
@@ -684,6 +743,10 @@ class UnifiedPipeline:
             "timestamp": datetime.now().isoformat(),
             "error": error # Include error flag
         }
+    def close(self):
+        """Close any clients to avoid resource warnings."""
+        if hasattr(self, "retriever") and hasattr(self.retriever, "close"):
+            self.retriever.close()
 
 
 def is_pipeline_valid(p):
@@ -801,10 +864,20 @@ def _inner_init(force):
 # === Keep direct execution block for testing (if desired) ===
 if __name__ == "__main__":
     # Note: Direct testing here won't simulate chat history easily.
-    import sys
-    logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(name)s - %(message)s')
-    logger = logging.getLogger(__name__) # Re-get logger instance after basicConfig
-    logger.setLevel(logging.DEBUG)
+    def setup_logging(force_utf8=False, level=logging.INFO):
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        if force_utf8:
+            try:
+                stream_handler.stream = open(sys.stdout.fileno(), mode='w', encoding='utf-8', buffering=1)
+            except Exception:
+                pass
+        logging.basicConfig(handlers=[stream_handler], level=level, force=True)
+
+    setup_logging(force_utf8=True)
+
+    
+    logger = logging.getLogger(__name__)
 
     test_query = sys.argv[1] if len(sys.argv) > 1 else "Compare SCADA from Honeywell and SAP."
 

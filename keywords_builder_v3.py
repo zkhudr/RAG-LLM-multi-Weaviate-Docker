@@ -34,11 +34,21 @@ DEFAULT_N_CLUSTERS = 4 # Number of clusters for KMeans
 
 
 # --- Logging Setup ---
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+def setup_logging(force_utf8=False, level=logging.INFO):
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    if force_utf8:
+        try:
+            stream_handler.stream = open(sys.stdout.fileno(), mode='w', encoding='utf-8', buffering=1)
+        except Exception:
+            pass
+    logging.basicConfig(handlers=[stream_handler], level=level, force=True)
+
+setup_logging(force_utf8=True)
+
+import logging
 logger = logging.getLogger(__name__)
+
 
 # --- Helper Functions ---
 
